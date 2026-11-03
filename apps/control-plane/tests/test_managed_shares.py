@@ -340,3 +340,20 @@ def test_claim_preserves_canonical_identity_and_returns_effective_access(client,
     add_rule(db_session, share, bob, "New.md", "read", False)
     result = client.post(route, headers=bob_headers, json={"path": "New.md", "record": record()})
     assert result.json() == {"won": False, "record": first, "permission": "read"}
+
+
+def test_stale_delete_after_remote_move_is_not_an_acknowledged_delete(db_session, team):
+    share, owner, _ = team
+    note = record()
+    apply(db_session, share, owner, change("Old.md", note))
+    move = [change("Old.md", None, note), change("New.md", note)]
+    apply(db_session, share, owner, *move)
+    # Repeating the exact successful move remains idempotent.
+    apply(db_session, share, owner, *move)
+    with pytest.raises(HTTPException) as exc:
+        apply(db_session, share, owner, change("Old.md", None, note))
+    assert exc.value.status_code == 409
+    assert managed.manifest(db_session, share, owner)["records"] == {"New.md": note}
+    apply(db_session, share, owner, change("New.md", None, note))
+    # A genuinely completed deletion is still safe to retry.
+    apply(db_session, share, owner, change("New.md", None, note))

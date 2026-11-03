@@ -29,6 +29,32 @@ Live document connections pass through an authorization gateway. It rechecks eac
 
 Revocation is not deletion. Already downloaded files may remain on the user's device. Explicit deletion markers are filtered by current permissions; only matching previously tracked identities are candidates for local deletion, retaining EVC's conflict-copy checks. There is no remote erasure guarantee. This is server-enforced sharing, not end-to-end encryption from the server administrator.
 
+## Structural conflict recovery (0.2.1)
+
+A rejected file operation no longer blocks the entire inventory. On HTTP 403/409 the plugin fetches the latest **authorized** inventory, compares stable file identities, and retries independent operations whose server state is unchanged. Already completed operations are acknowledged; a deletion requires an explicit visible tombstone, because a missing entry can instead mean revoked access. Renames and folder/child changes stay together. Divergent changes enter a local, persisted decision queue; unrelated operations continue syncing. The local disputed layout is retained across polls and app restarts.
+
+Open **Shares → select share → Review file conflicts**. This is available to members as well as owners; a notice also links to the queue when new conflicts arrive. Each conflict shows local paths and the currently visible server paths:
+
+- **Use server layout** saves a verified backup, moves affected local originals into the recovery folder, and reconciles the current server layout. Local per-document history is retained, so surviving document identities can still merge their text edits.
+- **Keep my local layout** saves a verified backup and retries the operation with fresh server preconditions. It does not override permissions, identity rules, destination collisions, or access to folder children. New server children absent from the offline operation are protected: adopt the server layout and review them before moving/deleting the folder. Deleted identities cannot be resurrected; recover their content as a new file at an allowed path.
+
+If the server changed since the displayed decision, the user must review the updated paths. A failed backup, failed archive, or new local edit retains the conflict. Originals are moved, never permanently deleted by recovery. After a partial move, the completed backup and any moved originals remain; retrying creates another distinct backup. Do not clear IndexedDB or reinstall to dismiss a conflict.
+
+Recovery bundles live at the vault root in **`Relay Recovery (local only)/<timestamp>-<random ID>/`**:
+
+| Entry | Preserved data |
+| --- | --- |
+| `files/<original vault path>` | Original disk bytes, including binary attachments |
+| `documents/<ID>.txt` | Readable Markdown or Canvas editing state |
+| `documents/<ID>.unsaved.txt` | A pending editor/disk buffer, when present |
+| `documents/<ID>.yjs` | Local CRDT editing history |
+| `inventory.yjs`, `recovery.json` | Inventory history and the reviewed decision |
+| `originals/<original vault path>` | Local originals moved out of the way by a server-layout decision |
+
+The recovery directory and its descendants are excluded from managed share adoption and live editor binding, including a share of the whole vault. They remain on that device; keep your own backup of them. A `BACKUP-COMPLETE.txt` marker means the initial bundle was fully written and checked. It does **not** mean the later decision or all archive moves succeeded. Recovery does not automatically merge competing binary contents or infer which of two different moves a person intended.
+
+The server also distinguishes a stale delete from a completed delete: if the same identity was moved elsewhere, deleting its old path now returns a conflict. Exact retries of the completed move or delete remain idempotent. Local persistence drains accepted edits before closing, including edits queued immediately before document teardown.
+
 ## Pocket ID configuration
 
 Create a **confidential** OIDC client in Pocket ID: this fork's backend holds the secret and exchanges the authorization code. Register exactly:
@@ -80,7 +106,7 @@ npm ci --ignore-scripts
 npm run build:preview
 ```
 
-This generates version `0.2.0` in `dist/`. Copy `main.js`, `manifest.json`, and `styles.css` to a disposable vault's `.obsidian/plugins/team-relay-sync/`. Enable the plugin there. The ID is retained for compatibility, so it replaces the upstream plugin in that vault; the two must not be installed together. Keep automatic upstream updates off for the pilot. New fork installations start with no hosted server presets.
+This generates version `0.2.1` in `dist/`. Copy `main.js`, `manifest.json`, and `styles.css` to a disposable vault's `.obsidian/plugins/team-relay-sync/`. Enable the plugin there. The ID is retained for compatibility, so it replaces the upstream plugin in that vault; the two must not be installed together. Keep automatic upstream updates off for the pilot. New fork installations start with no hosted server presets.
 
 For a Pi deployment in Kyle's services repository, follow the parent `AGENTS.md`: fetch the selected commits directly from GitHub on the Pi, use a clean checkout, keep secrets/runtime data outside it, and record the commit. This implementation has **not** deployed or restarted any production service.
 
@@ -88,12 +114,12 @@ For a Pi deployment in Kyle's services repository, follow the parent `AGENTS.md`
 
 Local results on 2026-11-03:
 
-- Backend: 177 focused regression tests passed across native OIDC, managed permissions, existing OAuth, relay-token issuance, attachment tokens and refresh sessions.
-- Real-stack integration: passed with actual FastAPI, SQLAlchemy and the compiled Rust relay. Covered filtered metadata, concurrent edits, offline merge, persisted client state, relay restart, read-only rejection, live downgrade, and direct-relay bypass rejection.
+- Backend: 179 focused regression tests passed across native OIDC, managed permissions, existing OAuth, relay-token issuance, attachment tokens and refresh sessions.
+- Real-stack integration: passed with actual FastAPI, SQLAlchemy and the compiled Rust relay. Covered filtered metadata, concurrent edits, offline merge, persisted client state, relay restart, competing offline moves, independent-operation progress, a backed-up local-layout decision, text convergence after recovery, read-only rejection, live downgrade, and direct-relay bypass rejection.
 - OIDC: real HTTP discovery, signed JWT/JWKS verification, PKCE, nonce and userinfo round trip passed against a disposable provider with Pocket ID's documented endpoint layout. This was **not** a sign-in against a real Pocket ID installation.
 - Rust: 16 document-connection tests passed; the relay built with the existing lockfile.
-- Plugin: 130 suites / 1,336 tests passed (the opt-in real-stack case runs separately). TypeScript, Svelte typechecking, and the production preview bundle build passed. A final focused run also passed all 24 managed backend cases and all seven inventory-transport cases after the claim response gained effective permissions.
-- Desktop: Obsidian 1.13.7 loaded the plugin in a disposable vault, signed into the disposable backend, loaded/saved permission rules, and connected a managed folder. A separate Yjs client received the exact text entered in Obsidian; its reply appeared live in the editor.
+- Plugin: 132 suites / 1,367 tests passed (the opt-in real-stack case runs separately). TypeScript, Svelte typechecking, the test-type regression gate, and the production preview bundle build passed. Tests cover persisted conflicts, both decisions, live edits during requests/backup/archive, failed/partial disk operations, new server children, hidden-versus-deleted entries, binary bytes, readable editor buffers, and IndexedDB restart. The test-type gate retains its upstream frozen baseline; it is not a claim that all legacy test files are free of type errors.
+- Desktop: the earlier 0.2.0 preview in Obsidian 1.13.7 loaded the plugin in a disposable vault, signed into the disposable backend, loaded/saved permission rules, and connected a managed folder. A separate Yjs client received the exact text entered in Obsidian; its reply appeared live in the editor. The 0.2.1 conflict dialog has automated DOM interaction coverage; a new native desktop check was blocked by the locked Mac and remains pending.
 - PostgreSQL: both new migrations render successfully as PostgreSQL SQL. Runtime tests used SQLite; PostgreSQL contention and migration execution still require a deployment rehearsal.
 - `npm audit --omit=dev`: zero reported runtime advisories at this check. The inherited development dependency graph still has advisories; the preview does not claim a complete dependency/security audit.
 
@@ -121,7 +147,7 @@ This is a working preview, not yet a production reliability claim:
 1. Test the actual Pocket ID passkey/browser round trip on macOS, iOS and Android, including cancellation, app suspension, timeout and session refresh. Killing the plugin during sign-in requires starting a new flow.
 2. Test real mobile file creation, background/foreground recovery, offline app termination, rename/delete conflicts, and attachments/Canvas. Automated coverage is strongest for Markdown and the authorization boundary; mobile read-only UX is not yet qualified.
 3. Rehearse the migrations and concurrent structural operations on PostgreSQL. Test realistic vault sizes and memory/CPU on the chosen host. Inventory is polled at one-second intervals; document edits use live WebSockets. The gateway currently makes database checks per frame and on an idle timer.
-4. Structural HTTP 403/409 conflicts retain the local metadata outbox and stop reporting successful sync. There is no automatic conflict-resolution UI yet. Preserve the entire test vault, including plugin data, before troubleshooting; restore the rejected local operation or collect a reproduction. Do not clear IndexedDB or reinstall to discard an unresolved outbox. Use a fresh disposable vault to inspect the server copy without risking local edits.
+4. Exercise the new conflict dialog in a disposable Obsidian vault on desktop and mobile, including real filesystem rename failures, open editors, and app termination during an archive. Automated recovery and real-relay tests pass, but these native device checks remain pilot gates.
 5. Validate recovery from backups before putting valuable data in managed shares. Do not mix this pilot with another tool writing the same shared folder.
 
 The fork preserves the upstream Apache-2.0 server and MIT plugin licensing and notices.

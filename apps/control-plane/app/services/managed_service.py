@@ -193,6 +193,21 @@ def apply_batch(db: Session, share: models.Share, user: models.User, batch: Batc
         previous = change.previous.wire() if change.previous else None
         value = change.value.wire() if change.value else None
         actual = existing.record if existing else None
+        # An absent source is not an acknowledged delete when the same stable
+        # identity now lives elsewhere. Only an exact retry of that completed
+        # move may use the idempotency exception below.
+        if actual is None and previous and value is None:
+            moved = by_id.get(previous["id"])
+            if moved:
+                destination = changes.get(moved.path)
+                if (
+                    not destination
+                    or not destination.value
+                    or destination.value.wire() != moved.record
+                ):
+                    raise HTTPException(
+                        409, "The file inventory changed; preserve local edits and refresh"
+                    )
         # Retrying an acknowledged-but-lost response is safe and idempotent.
         if actual != previous and actual != value:
             raise HTTPException(409, "The file inventory changed; preserve local edits and refresh")
