@@ -1,4 +1,6 @@
-# EVC Team Relay
+# EVC Team Relay — permissions preview fork
+
+> Experimental fork with per-file/folder access rules and native Pocket ID sign-in. Start with the [preview setup and verification guide](docs/permissions-preview.md). Both forked server and plugin are required. The upstream documentation below describes legacy features as well.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 

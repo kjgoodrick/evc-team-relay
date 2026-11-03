@@ -33,6 +33,7 @@ dependencies = [
     "python-multipart>=0.0.31,<0.1.0",
     "authlib>=1.9.1,<2.0",
     "httpx>=0.28.1,<0.29.0",
+    "websockets>=15.0,<17",
     "pyotp>=2.9.0,<3.0",
     "qrcode>=7.4,<8.0",
     "pillow>=13.0.0,<14.0",

@@ -142,6 +142,12 @@ def _share_has_publishable_content(share: models.Share) -> bool:
 def create_share(
     db: Session, owner: models.User, payload: share_schema.ShareCreate
 ) -> models.Share:
+    if payload.managed and (
+        payload.kind != models.ShareKind.FOLDER
+        or payload.visibility != models.ShareVisibility.PRIVATE
+        or payload.web_published
+    ):
+        raise HTTPException(400, "Permission-controlled shares must be private folders")
     # Validate path safety and format
     validate_share_path_safety(payload.path, payload.kind)
 
@@ -218,6 +224,7 @@ def create_share(
             web_slug = slug_utils.generate_unique_slug(db, payload.path)
 
     share = models.Share(
+        managed=payload.managed,
         kind=payload.kind,
         path=payload.path,
         vault_id=payload.vault_id,
@@ -266,6 +273,15 @@ def update_share(
     actor_user_id: uuid.UUID | None = None,
 ) -> models.Share:
     # `changes` lists only values that really differ: a PATCH that changes
+    if share.managed and (
+        (payload.visibility is not None and payload.visibility != models.ShareVisibility.PRIVATE)
+        or any(
+            value is not None
+            for key, value in payload.model_dump().items()
+            if key.startswith("web_")
+        )
+    ):
+        raise HTTPException(400, "Permission-controlled shares cannot use legacy publishing")
     # nothing (the plugin resends the whole folder tree on every file event)
     # returns without a write, an audit row or a commit.
     changes = {}
@@ -625,7 +641,19 @@ def ensure_read_access(
     share: models.Share,
     user: models.User | None,
     password: str | None = None,
+    *,
+    metadata_only: bool = False,
+    managed_entry_id: str | None = None,
 ) -> None:
+    if share.managed:
+        from app.services import managed_service
+
+        if metadata_only:
+            return managed_service.member(db, share, user)
+        if managed_entry_id:
+            managed_service.authorize_entry(db, share, user, managed_entry_id)
+            return
+        raise HTTPException(403, "Use the permission-controlled file API")
     if user and (user.is_admin or share.owner_user_id == user.id):
         return
 
@@ -652,7 +680,20 @@ def ensure_read_access(
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Share is private")
 
 
-def ensure_write_access(db: Session, share: models.Share, user: models.User | None) -> None:
+def ensure_write_access(
+    db: Session,
+    share: models.Share,
+    user: models.User | None,
+    *,
+    managed_entry_id: str | None = None,
+) -> None:
+    if share.managed:
+        from app.services import managed_service
+
+        if managed_entry_id:
+            managed_service.authorize_entry(db, share, user, managed_entry_id, write=True)
+            return
+        raise HTTPException(403, "Use the permission-controlled file API")
     if user and (user.is_admin or share.owner_user_id == user.id):
         return
     if not user:
@@ -845,6 +886,7 @@ def list_user_shares(
 
         result.append(
             share_schema.ShareListItem(
+                managed=share.managed,
                 id=share.id,
                 kind=share.kind,
                 path=share.path,

@@ -91,6 +91,7 @@ def create_file_token(
     content_length: int,
     expires_minutes: int = 10,
     agent_write: bool | None = None,
+    session_id: str | None = None,
 ) -> str:
     """Mint a short-lived, path-scoped token for attachment (CAS) access.
 
@@ -122,6 +123,8 @@ def create_file_token(
         "exp": utcnow() + expire_delta,
         "iat": utcnow(),
     }
+    if session_id:
+        to_encode["session_id"] = session_id
     return jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
@@ -374,7 +377,9 @@ def verify_relay_token_cwt(
     else:
         cose_sign1 = inner
 
-    if not isinstance(cose_sign1, list) or len(cose_sign1) != 4:
+    # cbor2 6 decodes tagged arrays as immutable tuples; both represent the
+    # same four-element COSE_Sign1 array on the wire.
+    if not isinstance(cose_sign1, (list, tuple)) or len(cose_sign1) != 4:
         raise ValueError("Invalid COSE_Sign1 structure")
 
     protected_cbor, _unprotected, payload, signature = cose_sign1

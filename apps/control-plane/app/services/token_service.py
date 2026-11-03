@@ -56,6 +56,15 @@ def issue_relay_token(
     raw_agent_key: str | None = None,
 ) -> token_schema.RelayTokenResponse:
     share = share_service.get_share(db, payload.share_id)
+    if share.managed:
+        from app.services import managed_service
+        if raw_agent_key:
+            raise HTTPException(403, "Agent keys do not grant managed file access")
+        try:
+            return managed_service.grant(db, request, payload, user)
+        except HTTPException as error:
+            error.headers = {**(error.headers or {}), "X-Relay-Managed": "true"}
+            raise
 
     # TR-07 (#cecd6baf): an X-Agent-Key header authenticates in its own
     # right, scoped to `share` — validated up front so both the H6 check

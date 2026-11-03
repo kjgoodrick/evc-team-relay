@@ -9,6 +9,7 @@ from app.db.models import ShareKind, ShareMemberRole, ShareVisibility
 
 
 class ShareBase(BaseModel):
+    managed: bool = False
     kind: ShareKind = ShareKind.DOC
     # No min_length here: "" is the canonical "whole vault" path for FOLDER
     # shares (#1f27561a). Emptiness/format is enforced by
@@ -80,6 +81,7 @@ class ShareUpdate(BaseModel):
 
 
 class ShareRead(BaseModel):
+    managed: bool = False
     id: uuid.UUID
     kind: ShareKind
     path: str
@@ -120,6 +122,8 @@ class ShareMemberRead(BaseModel):
 
 class ShareListItem(BaseModel):
     """Share with user's role information for list view"""
+
+    managed: bool = False
 
     id: uuid.UUID
     kind: ShareKind

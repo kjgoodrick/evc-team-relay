@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timezone
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, status
@@ -24,7 +25,7 @@ def _get_user_from_token(db: Session, token: str) -> models.User:
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         ) from exc
 
-    if payload.get("scope") == "file":
+    if payload.get("scope") is not None:
         # File tokens (security.create_file_token) are single-file, few-minutes
         # grants for the /shares/{id}/files/{path}/* routes only — they must
         # never double as a general session credential elsewhere.
@@ -49,7 +50,24 @@ def _get_user_from_token(db: Session, token: str) -> models.User:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User is inactive or missing"
         )
+    validate_user_session(db, payload, user)
     return user
+
+
+def validate_user_session(db: Session, payload: dict, user: models.User) -> None:
+    if payload.get("session_id"):
+        try:
+            session_id = uuid.UUID(str(payload["session_id"]))
+        except ValueError:
+            raise HTTPException(401, "Invalid session") from None
+        session = db.get(models.UserSession, session_id)
+        if not session or session.user_id != user.id:
+            raise HTTPException(401, "Session was revoked")
+        expiry = session.expires_at
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= security.utcnow():
+            raise HTTPException(401, "Session expired")
 
 
 def get_current_user(

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(default=30)
 
     relay_public_url: AnyUrl = Field(default="wss://relay.localhost")
+    managed_relay_url: str = Field(
+        default="ws://relay-server:8080",
+        description="Private relay origin used by the managed-share WebSocket gateway",
+    )
     control_plane_public_url: str = Field(
         default="http://localhost:8000",
         description=(

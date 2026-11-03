@@ -15,6 +15,8 @@ class ServerFeatures(BaseModel):
     """Supported server features."""
 
     multi_user: bool = True
+    managed_shares: bool = True
+    native_oidc: bool = True
     share_members: bool = True
     audit_logging: bool = True
     admin_ui: bool = True

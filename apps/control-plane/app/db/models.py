@@ -162,6 +162,10 @@ class User(Base, TimestampMixin):
 class Share(Base, TimestampMixin):
     __tablename__ = "shares"
 
+    managed: Mapped[bool] = mapped_column(
+        default=False, server_default=text("false"), nullable=False
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     kind: Mapped[ShareKind] = mapped_column(
         PgEnum(ShareKind, name="sharekind", values_callable=lambda x: [e.value for e in x]),
@@ -811,6 +815,57 @@ class BillingWebhookEvent(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+    )
+
+
+class ManagedEntry(Base):
+    __tablename__ = "managed_entries"
+    __table_args__ = (UniqueConstraint("share_id", "path", name="uq_managed_path"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shares.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    path: Mapped[str] = mapped_column(String(512), nullable=False)
+    last_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    record: Mapped[dict] = mapped_column(JSON, nullable=False)
+    activity: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+
+class ManagedRule(Base):
+    __tablename__ = "managed_rules"
+    __table_args__ = (
+        UniqueConstraint("share_id", "user_id", "path", "recursive", name="uq_managed_rule"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shares.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    path: Mapped[str] = mapped_column(String(512), nullable=False)
+    recursive: Mapped[bool] = mapped_column(nullable=False)
+    permission: Mapped[str] = mapped_column(String(8), nullable=False)
+
+
+class NativeLogin(Base):
+    """Short-lived browser handoff. Tokens are issued only when the initiator claims it."""
+
+    __tablename__ = "native_logins"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("oauth_providers.id", ondelete="CASCADE"), nullable=False
+    )
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    client_challenge: Mapped[str] = mapped_column(String(43), nullable=False)
+    code_verifier: Mapped[str] = mapped_column(String(128), nullable=False)
+    nonce: Mapped[str] = mapped_column(String(64), nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(String(2048), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
     )
 
 

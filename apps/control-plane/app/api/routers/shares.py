@@ -143,7 +143,7 @@ def read_share(
     current_user: models.User | None = Depends(deps.get_optional_user),
 ):
     share = share_service.get_share(db, share_id)
-    share_service.ensure_read_access(db, share, current_user, password=password)
+    share_service.ensure_read_access(db, share, current_user, password=password, metadata_only=True)
     # Build response with web_url
     response = share_schema.ShareRead.model_validate(share)
     response.web_url = share_service.get_web_url(share)
@@ -216,6 +216,8 @@ def _authorize_share_sync(
     Failing to record usage must never fail the request.
     """
     raw_key = request.headers.get("X-Agent-Key")
+    if share.managed:
+        raise HTTPException(403, "Use the permission-controlled file API")
     if raw_key:
         agent_key = share_service.authenticate_agent_key(
             db, share, raw_key, required_scope=required_scope
@@ -760,6 +762,7 @@ def _user_from_file_token(db: Session, payload: dict[str, Any]) -> models.User:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User is inactive or missing"
         )
+    deps.validate_user_session(db, payload, user)
     return user
 
 
@@ -791,9 +794,16 @@ def create_file_token(
     which upload-url checks BEFORE trusting the owner-subject's access.
     """
     share = share_service.get_share(db, share_id)
-    auth_method, agent_key = _authorize_share_sync(
-        request, share, db, current_user, required_scope="read"
-    )
+    if share.managed:
+        from app.services import managed_service
+        if request.headers.get("X-Agent-Key"):
+            raise HTTPException(403, "Agent keys do not grant managed file access")
+        managed_service.authorize_entry(db, share, current_user, payload.path)
+        auth_method, agent_key = "user", None
+    else:
+        auth_method, agent_key = _authorize_share_sync(
+            request, share, db, current_user, required_scope="read"
+        )
     path = validate_relative_path(payload.path)
 
     if auth_method == "user":
@@ -804,6 +814,10 @@ def create_file_token(
         key_scopes = agent_key_scopes.parse_scopes(agent_key.scopes)
         agent_write = agent_key_scopes.satisfies(key_scopes, "write")
 
+    session_id = None
+    if share.managed and current_user:
+        original = security.decode_access_token(request.headers["authorization"].split(" ", 1)[1])
+        session_id = original.get("session_id")
     db.close()
     token = security.create_file_token(
         subject=subject,
@@ -814,6 +828,7 @@ def create_file_token(
         content_length=payload.content_length,
         expires_minutes=FILE_TOKEN_EXPIRE_MINUTES,
         agent_write=agent_write,
+        session_id=session_id,
     )
     expires_at = (security.utcnow() + timedelta(minutes=FILE_TOKEN_EXPIRE_MINUTES)).isoformat()
     settings = get_settings()
@@ -833,7 +848,7 @@ def head_share_file(
     token_payload = _decode_file_token(share_id, path, authorization)
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
-    share_service.ensure_read_access(db, share, user)
+    share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
     db.close()
     settings = get_settings()
@@ -879,7 +894,7 @@ def get_file_download_url(
     token_payload = _decode_file_token(share_id, path, authorization)
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
-    share_service.ensure_read_access(db, share, user)
+    share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
     db.close()
     settings = get_settings()
@@ -930,7 +945,7 @@ def get_file_content(
     token_payload = _decode_file_token_value(token, share_id, path)
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
-    share_service.ensure_read_access(db, share, user)
+    share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
     db.close()
     settings = get_settings()
@@ -1004,7 +1019,7 @@ def get_file_upload_url(
         )
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
-    share_service.ensure_write_access(db, share, user)
+    share_service.ensure_write_access(db, share, user, managed_entry_id=path)
 
     settings = get_settings()
     object_name = f"web-assets/{share_id}/{path}"
@@ -1020,6 +1035,9 @@ def get_file_upload_url(
         f"{base}/shares/{share_id}/files/{quote(path, safe='/')}/content"
         f"?token={quote(raw_token, safe='')}"
     )
+
+    if share.managed:
+        return UploadUrlResponse(uploadUrl=url)
 
     now_iso = security.utcnow().isoformat()
     folder_items = list(share.web_folder_items or [])
@@ -1079,7 +1097,7 @@ async def put_file_content(
         )
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
-    share_service.ensure_write_access(db, share, user)
+    share_service.ensure_write_access(db, share, user, managed_entry_id=path)
 
     db.close()
     body = await request.body()
@@ -1331,7 +1349,7 @@ def list_members(
     """List all members of a share. Requires owner/admin or member access."""
     share = share_service.get_share(db, share_id)
     # Allow owner, admin, or current members to view member list
-    share_service.ensure_read_access(db, share, current_user)
+    share_service.ensure_read_access(db, share, current_user, metadata_only=True)
     return share_service.list_members(db, share)
 
 
