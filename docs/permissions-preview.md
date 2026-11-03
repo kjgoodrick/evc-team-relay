@@ -119,7 +119,7 @@ Local results on 2026-11-03:
 - OIDC: real HTTP discovery, signed JWT/JWKS verification, PKCE, nonce and userinfo round trip passed against a disposable provider with Pocket ID's documented endpoint layout. This was **not** a sign-in against a real Pocket ID installation.
 - Rust: 16 document-connection tests passed; the relay built with the existing lockfile.
 - Plugin: 132 suites / 1,367 tests passed (the opt-in real-stack case runs separately). TypeScript, Svelte typechecking, the test-type regression gate, and the production preview bundle build passed. Tests cover persisted conflicts, both decisions, live edits during requests/backup/archive, failed/partial disk operations, new server children, hidden-versus-deleted entries, binary bytes, readable editor buffers, and IndexedDB restart. The test-type gate retains its upstream frozen baseline; it is not a claim that all legacy test files are free of type errors.
-- Desktop: the earlier 0.2.0 preview in Obsidian 1.13.7 loaded the plugin in a disposable vault, signed into the disposable backend, loaded/saved permission rules, and connected a managed folder. A separate Yjs client received the exact text entered in Obsidian; its reply appeared live in the editor. The 0.2.1 conflict dialog has automated DOM interaction coverage; a new native desktop check was blocked by the locked Mac and remains pending.
+- Desktop: the earlier 0.2.0 preview in Obsidian 1.13.7 loaded the plugin in a disposable vault, signed into the disposable backend, loaded/saved permission rules, and connected a managed folder. A separate Yjs client received the exact text entered in Obsidian; its reply appeared live in the editor. The 0.2.1 native recovery check also passed: both conflict choices, persisted conflict after reload, preserved offline edits, local-only archive editing, the settings entry point, and bidirectional collaboration after recovery (details below).
 - PostgreSQL: both new migrations render successfully as PostgreSQL SQL. Runtime tests used SQLite; PostgreSQL contention and migration execution still require a deployment rehearsal.
 - `npm audit --omit=dev`: zero reported runtime advisories at this check. The inherited development dependency graph still has advisories; the preview does not claim a complete dependency/security audit.
 
@@ -140,6 +140,20 @@ uv run python tests/integration/managed_stack.py --plugin ../../../evc-team-rela
 
 The harness uses temporary databases, keys, files and loopback ports, then cleans up its processes. `--serve-seconds 900` holds a disposable stack open for desktop testing and prints the temporary test login. Never expose this fixture server externally. In the plugin checkout, `npm test -- --runInBand` runs the regular suite; the real-stack test is skipped unless the harness supplies its fixture.
 
+## Native desktop recovery check
+
+On 2026-11-03, Obsidian **1.13.7 on macOS** loaded the unchanged plugin build from commit `9181fe8cbba0d3ab20faa8f25157bf2e9ea711c4` (preview 0.2.1) in `/private/tmp/evc-recovery-desktop-20261103`. A temporary loopback control plane and real Rust relay used synthetic accounts and notes. The test interacted with Obsidian's actual editor, folder context menu, conflict dialog, and settings page.
+
+1. A note created by an independent Yjs peer appeared in Obsidian. An editor change reached another fresh peer.
+2. **Relay: disconnect** took the folder offline. The desktop edited and renamed the note while the server API moved the same identity to another path. Reconnection displayed the conflict with both locations.
+3. **Use server layout** completed. Disk inspection verified the offline edit in the backup, archived original, readable editing-state export, and restored server-path note. A fresh relay peer received the same edit.
+4. Typing an additional marker into the still-open archived note changed only its local archive. The live note and fresh peer did not receive the marker; the server inventory contained no recovery paths.
+5. A second offline edit and competing rename produced another conflict. Obsidian's **Reload app without saving** command retained both the local text and pending decision, and displayed the conflict notice again.
+6. **Keep my local layout** completed after reload. The server adopted the local filename, the original identity was retained, and the second recovery bundle contained the offline text.
+7. A new desktop edit reached a fresh Yjs peer, and the peer's reply appeared live in Obsidian. **Settings → Team Relay → Shares → Team → Review file conflicts** opened the empty decision queue successfully.
+
+Both recovery bundles remain in the disposable vault for inspection. The vault window was closed, the original `docs` vault restored, and the temporary server processes stopped. This verifies an ordinary reload with an unresolved conflict, not forced termination during a backup/archive. Physical mobile tests and native filesystem-failure injection are still outstanding. No production service or real Pocket ID configuration was changed.
+
 ## Remaining pilot gates
 
 This is a working preview, not yet a production reliability claim:
@@ -147,7 +161,7 @@ This is a working preview, not yet a production reliability claim:
 1. Test the actual Pocket ID passkey/browser round trip on macOS, iOS and Android, including cancellation, app suspension, timeout and session refresh. Killing the plugin during sign-in requires starting a new flow.
 2. Test real mobile file creation, background/foreground recovery, offline app termination, rename/delete conflicts, and attachments/Canvas. Automated coverage is strongest for Markdown and the authorization boundary; mobile read-only UX is not yet qualified.
 3. Rehearse the migrations and concurrent structural operations on PostgreSQL. Test realistic vault sizes and memory/CPU on the chosen host. Inventory is polled at one-second intervals; document edits use live WebSockets. The gateway currently makes database checks per frame and on an idle timer.
-4. Exercise the new conflict dialog in a disposable Obsidian vault on desktop and mobile, including real filesystem rename failures, open editors, and app termination during an archive. Automated recovery and real-relay tests pass, but these native device checks remain pilot gates.
+4. Extend native recovery testing to physical mobile devices, OS-level filesystem rename failures, and forced app termination during an archive. The desktop happy paths, open archive editor, unresolved-conflict reload, and resumed live editing passed; partial-write and late-edit failures currently have automated coverage.
 5. Validate recovery from backups before putting valuable data in managed shares. Do not mix this pilot with another tool writing the same shared folder.
 
 The fork preserves the upstream Apache-2.0 server and MIT plugin licensing and notices.
