@@ -496,6 +496,29 @@ def sync_user_info(
     return updated, changes
 
 
+def user_profile(db: Session, user: models.User, provider_id: uuid.UUID | None = None) -> dict:
+    """Return display metadata only, from this user's enabled identity provider."""
+    stmt = (
+        select(models.UserOAuthAccount)
+        .join(models.OAuthProvider)
+        .where(
+            models.UserOAuthAccount.user_id == user.id,
+            models.OAuthProvider.enabled.is_(True),
+        )
+    )
+    if provider_id is not None:
+        stmt = stmt.where(models.UserOAuthAccount.provider_id == provider_id)
+    account = db.scalar(
+        stmt.order_by(models.UserOAuthAccount.updated_at.desc(), models.UserOAuthAccount.id).limit(
+            1
+        )
+    )
+    return {
+        "name": account.name if account else None,
+        "picture": account.picture_url if account else None,
+    }
+
+
 def find_user_by_oauth(
     db: Session,
     provider_id: uuid.UUID,

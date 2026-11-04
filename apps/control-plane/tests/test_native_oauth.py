@@ -76,6 +76,8 @@ def test_handoff_bound_to_client_single_use_and_no_tokens_in_browser(client, pro
                 sub="alice",
                 email="alice@example.com",
                 email_verified=True,
+                name="Alice Example",
+                picture="https://id.example.com/api/users/alice/profile-picture.png",
             )
         ),
     )
@@ -95,6 +97,18 @@ def test_handoff_bound_to_client_single_use_and_no_tokens_in_browser(client, pro
     result = client.post("/v1/auth/native/complete", json=claim)
     assert result.status_code == 200, result.text
     assert result.json()["refresh_token"]
+    assert result.json()["user_name"] == "Alice Example"
+    assert (
+        result.json()["user_picture"]
+        == "https://id.example.com/api/users/alice/profile-picture.png"
+    )
+    me = client.get(
+        "/v1/auth/me", headers={"Authorization": "Bearer " + result.json()["access_token"]}
+    )
+    assert me.status_code == 200
+    assert me.json()["name"] == result.json()["user_name"]
+    assert me.json()["picture"] == result.json()["user_picture"]
+    assert set(me.json()) == {"id", "email", "is_active", "is_admin", "name", "picture"}
     assert (
         security.decode_access_token(result.json()["access_token"])["sub"]
         == result.json()["user_id"]
@@ -134,6 +148,52 @@ def test_identity_never_automatically_links_email(provider, test_user, db_sessio
             OAuthUserInfo(sub="attacker", email=test_user.email, email_verified=True),
         )
     assert denied.value.status_code == 409
+
+
+def test_profile_refresh_and_removal_preserve_identity_and_permissions(provider, db_session):
+    identity = OAuthUserInfo(
+        sub="alice",
+        email="alice@example.com",
+        name="Alice",
+        picture="https://id.example.com/old.png",
+    )
+    user = native.resolve_user(db_session, provider, identity)
+    db_session.commit()
+    original_id, original_admin = user.id, user.is_admin
+    updated = native.resolve_user(
+        db_session,
+        provider,
+        identity.model_copy(
+            update={"name": "New Name", "picture": "https://id.example.com/new.png"}
+        ),
+    )
+    db_session.commit()
+    assert updated.id == original_id and updated.is_admin == original_admin
+    assert oauth_service.user_profile(db_session, user) == {
+        "name": "New Name",
+        "picture": "https://id.example.com/new.png",
+    }
+    native.resolve_user(db_session, provider, identity.model_copy(update={"picture": None}))
+    db_session.commit()
+    assert oauth_service.user_profile(db_session, user)["picture"] is None
+
+
+def test_profile_is_scoped_to_its_user_and_enabled_provider(provider, test_user, db_session):
+    alice = native.resolve_user(
+        db_session,
+        provider,
+        OAuthUserInfo(
+            sub="alice",
+            email="alice@example.com",
+            name="Alice",
+            picture="https://id.example.com/a.png",
+        ),
+    )
+    db_session.commit()
+    assert oauth_service.user_profile(db_session, test_user) == {"name": None, "picture": None}
+    provider.enabled = False
+    db_session.commit()
+    assert oauth_service.user_profile(db_session, alice) == {"name": None, "picture": None}
 
 
 @pytest.mark.asyncio

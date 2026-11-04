@@ -32,6 +32,7 @@ class OAuthCallbackResponse(BaseModel):
     user_id: str = Field(..., description="User ID")
     user_email: str = Field(..., description="User email address")
     user_name: str | None = Field(None, description="User display name")
+    user_picture: str | None = Field(None, description="User profile picture URL")
 
 
 class OAuthStateData(BaseModel):

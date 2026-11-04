@@ -22,6 +22,7 @@ from app.services import (
     audit_service,
     auth_service,
     email_service,
+    oauth_service,
     password_service,
     session_service,
     totp_service,
@@ -126,9 +127,15 @@ async def logout(
     return auth_schema.LogoutResponse()
 
 
-@router.get("/me", response_model=user_schema.UserRead)
-def get_me(current_user: models.User = Depends(deps.get_current_user)) -> models.User:
-    return current_user
+@router.get("/me", response_model=auth_schema.MeResponse)
+def get_me(
+    current_user: models.User = Depends(deps.get_current_user),
+    db: Session = Depends(get_db),
+) -> auth_schema.MeResponse:
+    return auth_schema.MeResponse(
+        **user_schema.UserRead.model_validate(current_user).model_dump(),
+        **oauth_service.user_profile(db, current_user),
+    )
 
 
 @router.post("/refresh", response_model=auth_schema.TokenResponse)

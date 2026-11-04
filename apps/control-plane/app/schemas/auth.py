@@ -37,7 +37,8 @@ class LogoutResponse(BaseModel):
 
 
 class MeResponse(UserRead):
-    pass
+    name: str | None = None
+    picture: str | None = None
 
 
 class RefreshTokenRequest(BaseModel):

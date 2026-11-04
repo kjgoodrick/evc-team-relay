@@ -204,6 +204,19 @@ def resolve_user(
         )
     if not user.is_active:
         raise HTTPException(403, "User account is inactive")
+    # Refresh only this verified provider/subject's display metadata, including
+    # removal of a picture. Do not change account links or permission fields.
+    account = db.scalar(
+        select(models.UserOAuthAccount).where(
+            models.UserOAuthAccount.user_id == user.id,
+            models.UserOAuthAccount.provider_id == provider.id,
+            models.UserOAuthAccount.provider_user_id == identity.sub,
+        )
+    )
+    if account:
+        account.name = identity.name
+        account.picture_url = identity.picture
+        db.flush()
     return user
 
 
@@ -337,12 +350,15 @@ def complete(payload: CompleteRequest, request: Request, db: Session = Depends(g
         details={"provider": provider.name, "flow": "native"},
     )
     db.commit()
+    profile = oauth_service.user_profile(db, user, provider.id)
     result = OAuthCallbackResponse(
         access_token=security.create_access_token(str(user.id), session_id=str(session.id)),
         refresh_token=refresh,
         expires_in=settings.access_token_expire_minutes * 60,
         user_id=str(user.id),
         user_email=user.email,
+        user_name=profile["name"],
+        user_picture=profile["picture"],
     )
     return JSONResponse(result.model_dump(), headers=NO_STORE)
 

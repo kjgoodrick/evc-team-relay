@@ -1,5 +1,19 @@
 # Obsidian permissions and Pocket ID preview
 
+Profile-picture support (plugin 0.2.4): native sign-in returns the verified
+provider's display name and `picture` URL. `/v1/auth/me` also includes `name`
+and `picture`, allowing existing plugin sessions to load their saved Pocket ID
+profile without another login. A subsequent native sign-in refreshes or clears
+the matching provider/subject's metadata. Local accounts and disabled providers
+return empty profile fields. This uses the existing OAuth account table and
+requires no migration; it does not change account linking or permissions.
+
+The plugin shares the picture URL through document awareness and displays it in
+the file-title presence stack and active-user list, retaining initials on image
+failure. The URL must be reachable from each device; the plugin does not send
+Relay tokens to the image host. Pocket ID supplies `picture` with its
+[`profile` scope](https://pocket-id.org/docs/guides/scopes-and-claims).
+
 Status: experimental fork, 2026-11-03. Use a disposable vault for the first pilot.
 No paid service is required. Server administration and hosting remain your responsibility.
 
