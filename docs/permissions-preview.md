@@ -106,7 +106,7 @@ npm ci --ignore-scripts
 npm run build:preview
 ```
 
-This generates version `0.2.1` in `dist/`. Copy `main.js`, `manifest.json`, and `styles.css` to a disposable vault's `.obsidian/plugins/team-relay-sync/`. Enable the plugin there. The ID is retained for compatibility, so it replaces the upstream plugin in that vault; the two must not be installed together. Keep automatic upstream updates off for the pilot. New fork installations start with no hosted server presets.
+This generates version `0.2.2` in `dist/`. Copy `main.js`, `manifest.json`, and `styles.css` to a disposable vault's `.obsidian/plugins/team-relay-sync/`. Enable the plugin there. The ID is retained for compatibility, so it replaces the upstream plugin in that vault; the two must not be installed together. Keep automatic upstream updates off for the pilot. New fork installations start with no hosted server presets.
 
 For a Pi deployment in Kyle's services repository, follow the parent `AGENTS.md`: fetch the selected commits directly from GitHub on the Pi, use a clean checkout, keep secrets/runtime data outside it, and record the commit. This implementation has **not** deployed or restarted any production service.
 
@@ -118,7 +118,7 @@ Local results on 2026-11-03:
 - Real-stack integration: passed with actual FastAPI, SQLAlchemy and the compiled Rust relay. Covered filtered metadata, concurrent edits, offline merge, persisted client state, relay restart, competing offline moves, independent-operation progress, a backed-up local-layout decision, text convergence after recovery, read-only rejection, live downgrade, and direct-relay bypass rejection.
 - OIDC: real HTTP discovery, signed JWT/JWKS verification, PKCE, nonce and userinfo round trip passed against a disposable provider with Pocket ID's documented endpoint layout. This was **not** a sign-in against a real Pocket ID installation.
 - Rust: 16 document-connection tests passed; the relay built with the existing lockfile.
-- Plugin: 132 suites / 1,367 tests passed (the opt-in real-stack case runs separately). TypeScript, Svelte typechecking, the test-type regression gate, and the production preview bundle build passed. Tests cover persisted conflicts, both decisions, live edits during requests/backup/archive, failed/partial disk operations, new server children, hidden-versus-deleted entries, binary bytes, readable editor buffers, and IndexedDB restart. The test-type gate retains its upstream frozen baseline; it is not a claim that all legacy test files are free of type errors.
+- Plugin: 133 suites / 1,370 tests passed (the opt-in real-stack case runs separately). TypeScript, Svelte typechecking, the test-type regression gate, and the production preview bundle build passed. Tests cover persisted conflicts, both decisions, live edits during requests/backup/archive, failed/partial disk operations, new server children, hidden-versus-deleted entries, binary bytes, readable editor buffers, and IndexedDB restart. The test-type gate retains its upstream frozen baseline; it is not a claim that all legacy test files are free of type errors.
 - Desktop: the earlier 0.2.0 preview in Obsidian 1.13.7 loaded the plugin in a disposable vault, signed into the disposable backend, loaded/saved permission rules, and connected a managed folder. A separate Yjs client received the exact text entered in Obsidian; its reply appeared live in the editor. The 0.2.1 native recovery check also passed: both conflict choices, persisted conflict after reload, preserved offline edits, local-only archive editing, the settings entry point, and bidirectional collaboration after recovery (details below).
 - PostgreSQL: both new migrations render successfully as PostgreSQL SQL. Runtime tests used SQLite; PostgreSQL contention and migration execution still require a deployment rehearsal.
 - `npm audit --omit=dev`: zero reported runtime advisories at this check. The inherited development dependency graph still has advisories; the preview does not claim a complete dependency/security audit.
@@ -153,6 +153,36 @@ On 2026-11-03, Obsidian **1.13.7 on macOS** loaded the unchanged plugin build fr
 7. A new desktop edit reached a fresh Yjs peer, and the peer's reply appeared live in Obsidian. **Settings → Team Relay → Shares → Team → Review file conflicts** opened the empty decision queue successfully.
 
 Both recovery bundles remain in the disposable vault for inspection. The vault window was closed, the original `docs` vault restored, and the temporary server processes stopped. This verifies an ordinary reload with an unresolved conflict, not forced termination during a backup/archive. Physical mobile tests and native filesystem-failure injection are still outstanding. No production service or real Pocket ID configuration was changed.
+
+## Mobile validation (0.2.2)
+
+On 2026-11-03, preview 0.2.2 passed the documented checks in actual Obsidian
+1.13.7 with mobile emulation at 390×844 and 844×390, and in iPhone 17 Pro
+Simulator Safari on iOS 26.5. The [report, per-orientation results and screenshots](https://github.com/kjgoodrick/evc-team-relay-obsidian/tree/main/tests/mobile/results/2026-11-03)
+and [production-component harness](https://github.com/kjgoodrick/evc-team-relay-obsidian/tree/main/tests/mobile)
+are committed with the plugin.
+
+The run fixed mobile text-link overlap, long-path overflow, cramped recovery
+controls, permission drafts lost when removing another rule, and repeated Yjs
+client-ID rotation during inventory polling. The full plugin suite passed
+1,370 tests, the separate real-stack integration passed, and real WebKit passed
+13 assertions per orientation with zero captured runtime errors.
+
+Actual Obsidian verified settings, saved permissions, note Undo/Redo and relay
+convergence, an unresolved conflict surviving reload, and server-layout recovery
+that retained offline text in real backup/archive files and a fresh relay peer.
+Mobile emulation was restored to false afterward. Simulator taps, typing,
+keyboard dismissal, rotation, save/reload, successful recovery and failed backup
+were exercised. The user confirmed touch scrolling; automated Simulator drags
+could not generate touch moves, so later navigation used labelled harness aids.
+Landscape touch scrolling and horizontal panning remain unverified.
+
+Safari uses a substitute Obsidian host and synthetic network/file boundaries.
+Its landscape keyboard obscured most of the substitute dialog until dismissed.
+Neither approach proves native Obsidian on an iPhone, real Pocket ID passkeys,
+mobile vault access, background/resume or device performance. The existing
+provider unload-listener deprecation also remains. Physical-device pilot gates
+below still apply. No production service was deployed or restarted.
 
 ## Remaining pilot gates
 
