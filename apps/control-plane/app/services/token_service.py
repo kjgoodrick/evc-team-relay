@@ -58,6 +58,7 @@ def issue_relay_token(
     share = share_service.get_share(db, payload.share_id)
     if share.managed:
         from app.services import managed_service
+
         if raw_agent_key:
             raise HTTPException(403, "Agent keys do not grant managed file access")
         try:

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 import jwt
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core import security
@@ -252,23 +252,32 @@ def apply_batch(db: Session, share: models.Share, user: models.User, batch: Batc
         for path, c in changes.items()
         if c.value and str(c.value.id) in by_id and by_id[str(c.value.id)].path != path
     ]
-    all_rules = list(
-        db.scalars(select(models.ManagedRule).where(models.ManagedRule.share_id == share.id))
-    )
-    final_rule_keys = set()
-    for rule in all_rules:
-        matches = [
-            (old, new)
-            for old, new, folder in moves
-            if rule.path == old or (folder and rule.path.startswith(old + "/"))
-        ]
-        if matches:
-            old, new = max(matches, key=lambda pair: len(pair[0]))
-            rule.path = new + rule.path[len(old) :]
-        key = (rule.user_id, rule.path, rule.recursive)
-        if key in final_rule_keys:
-            raise HTTPException(409, "Moving this path would conflict with an access rule")
-        final_rule_keys.add(key)
+    comment_rules_moved = False
+    for rule_model in (models.ManagedRule, models.ManagedCommentRule):
+        all_rules = list(db.scalars(select(rule_model).where(rule_model.share_id == share.id)))
+        final_rule_keys = set()
+        for rule in all_rules:
+            matches = [
+                (old, new)
+                for old, new, folder in moves
+                if rule.path == old or (folder and rule.path.startswith(old + "/"))
+            ]
+            if matches:
+                old, new = max(matches, key=lambda pair: len(pair[0]))
+                rule.path = new + rule.path[len(old) :]
+                comment_rules_moved |= rule_model is models.ManagedCommentRule
+            key = (rule.user_id, rule.path, rule.recursive)
+            if key in final_rule_keys:
+                raise HTTPException(409, "Moving this path would conflict with an access rule")
+            final_rule_keys.add(key)
+    if comment_rules_moved:
+        db.execute(
+            update(models.Share)
+            .where(models.Share.id == share.id)
+            .values(
+                comment_rules_revision=models.Share.comment_rules_revision + 1,
+            )
+        )
     # Remove first, so a validated rename can reuse its destination atomically.
     moved_ids = {str(c.value.id) for c in changes.values() if c.value}
     for path, change in changes.items():

@@ -165,6 +165,11 @@ class Share(Base, TimestampMixin):
     managed: Mapped[bool] = mapped_column(
         default=False, server_default=text("false"), nullable=False
     )
+    # Version of the independent comment rule set, not a cache of effective
+    # file permissions. File ACL/membership must still be checked on every use.
+    comment_rules_revision: Mapped[int] = mapped_column(
+        default=0, server_default=text("0"), nullable=False
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     kind: Mapped[ShareKind] = mapped_column(
@@ -847,6 +852,27 @@ class ManagedRule(Base):
     path: Mapped[str] = mapped_column(String(512), nullable=False)
     recursive: Mapped[bool] = mapped_column(nullable=False)
     permission: Mapped[str] = mapped_column(String(8), nullable=False)
+
+
+class ManagedCommentRule(Base):
+    """Comment capability independent of the legacy none/read/write rule API."""
+
+    __tablename__ = "managed_comment_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "share_id", "user_id", "path", "recursive", name="uq_managed_comment_rule"
+        ),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shares.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    path: Mapped[str] = mapped_column(String(512), nullable=False)
+    recursive: Mapped[bool] = mapped_column(nullable=False)
+    allowed: Mapped[bool] = mapped_column(nullable=False)
 
 
 class NativeLogin(Base):

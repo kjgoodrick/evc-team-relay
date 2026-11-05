@@ -1,3 +1,4 @@
+pub mod anchors;
 pub mod api_types;
 pub mod auth;
 pub mod config;

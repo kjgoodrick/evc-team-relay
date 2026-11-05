@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.db import models
 from app.services import session_service
@@ -314,7 +315,9 @@ class TestRevokeSession:
 class TestRevokeAllSessions:
     """Tests for revoking all sessions."""
 
-    def test_revoke_all_sessions_success(self, client: TestClient, test_user: models.User):
+    def test_revoke_all_sessions_success(
+        self, client: TestClient, test_user: models.User, db_session
+    ):
         """Test that a user can revoke all their sessions."""
         # Create multiple sessions
         tokens = []
@@ -343,12 +346,19 @@ class TestRevokeAllSessions:
         assert revoke_response.status_code == 200
         assert revoke_response.json()["revoked_count"] == 3
 
-        # Verify all sessions are gone
+        # Revocation invalidates this access token too. Inspect storage rather
+        # than expecting a revoked credential to retain session-list access.
         list_response2 = client.get(
             "/v1/auth/sessions",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        assert len(list_response2.json()) == 0
+        assert list_response2.status_code == 401
+        assert (
+            db_session.scalar(
+                select(models.UserSession).where(models.UserSession.user_id == test_user.id)
+            )
+            is None
+        )
 
     def test_revoke_all_sessions_invalidates_refresh_tokens(
         self, client: TestClient, test_user: models.User
@@ -394,10 +404,10 @@ class TestRevokeAllSessions:
         response = client.delete("/v1/auth/sessions")
         assert response.status_code == 401
 
-    def test_revoke_all_sessions_returns_zero_if_no_sessions(
+    def test_revoke_all_sessions_rejects_revoked_token_if_no_sessions(
         self, client: TestClient, test_user: models.User, db_session
     ):
-        """Test that revoking all sessions returns 0 if user has no sessions."""
+        """A JWT tied to a deleted session cannot invoke another authenticated action."""
         # Create a user and manually create a session to get token,
         # then manually delete the session
         login_response = client.post(
@@ -410,14 +420,12 @@ class TestRevokeAllSessions:
         session_service.revoke_all_user_sessions(db_session, test_user.id)
         db_session.commit()
 
-        # Try to revoke all (should return 0)
-        # Note: The access token is still valid (JWT), but sessions are gone
+        # The signature remains valid, but the referenced session is revoked.
         revoke_response = client.delete(
             "/v1/auth/sessions",
             headers={"Authorization": f"Bearer {access_token}"},
         )
-        assert revoke_response.status_code == 200
-        assert revoke_response.json()["revoked_count"] == 0
+        assert revoke_response.status_code == 401
 
 
 class TestSessionAuditLogging:

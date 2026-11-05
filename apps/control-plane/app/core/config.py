@@ -25,6 +25,10 @@ class Settings(BaseSettings):
 
     # Debug mode for detailed error messages (set DEBUG_MODE=true in .env for development)
     debug_mode: bool = Field(default=False)
+    collaboration_policy_enabled: bool = Field(
+        default=False,
+        description="Preview independent comment permissions; does not enable discussions",
+    )
 
     # Logging configuration
     log_level: str = Field(default="INFO", description="Log level (DEBUG, INFO, WARNING, ERROR)")

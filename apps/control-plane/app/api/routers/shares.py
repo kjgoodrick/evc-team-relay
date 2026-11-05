@@ -796,6 +796,7 @@ def create_file_token(
     share = share_service.get_share(db, share_id)
     if share.managed:
         from app.services import managed_service
+
         if request.headers.get("X-Agent-Key"):
             raise HTTPException(403, "Agent keys do not grant managed file access")
         managed_service.authorize_entry(db, share, current_user, payload.path)

@@ -164,7 +164,9 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.include_router(server.router, prefix="/v1")
     app.include_router(auth.router, prefix="/v1")
     app.include_router(oauth.router, prefix="/v1")  # OAuth/OIDC authentication
-    from app.api.routers import managed, native_oauth
+    from app.api.routers import collaboration, managed, native_oauth
+
+    app.include_router(collaboration.router, prefix="/v1")
     app.include_router(native_oauth.router, prefix="/v1")
     app.include_router(managed.router, prefix="/v1")
     app.include_router(users.router, prefix="/v1")
