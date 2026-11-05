@@ -29,6 +29,9 @@ class Settings(BaseSettings):
         default=False,
         description="Preview independent comment permissions; does not enable discussions",
     )
+    collaboration_discussions_enabled: bool = Field(
+        default=False, description="Preview whole-note discussion commands and HTTP catch-up"
+    )
 
     # Logging configuration
     log_level: str = Field(default="INFO", description="Log level (DEBUG, INFO, WARNING, ERROR)")

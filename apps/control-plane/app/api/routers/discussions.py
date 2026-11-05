@@ -1,0 +1,128 @@
+"""Opt-in discussion API; complete collaboration support is not advertised yet."""
+
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from sqlalchemy.orm import Session
+from starlette.requests import Request as StarletteRequest
+
+from app.api import deps
+from app.core.config import get_settings
+from app.db.session import get_db
+from app.schemas.discussions import CommandEnvelope
+from app.services import discussion_service as service
+
+
+class BoundedDiscussionRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def bounded(request: Request):
+            if request.method != "POST":
+                return await handler(request)
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > 65536:
+                    raise HTTPException(413, {"code": "command_too_large"})
+                body.extend(chunk)
+            delivered = False
+
+            async def receive():
+                nonlocal delivered
+                if delivered:
+                    return await request.receive()
+                delivered = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
+
+            try:
+                return await handler(StarletteRequest(request.scope, receive=receive))
+            except RequestValidationError:
+                # The application-wide formatter echoes validation inputs.
+                # Keep comment bodies out of errors, including invalid Unicode.
+                raise HTTPException(422, {"code": "invalid_command"}) from None
+
+        return bounded
+
+
+def require_preview():
+    settings = get_settings()
+    if not (settings.collaboration_policy_enabled and settings.collaboration_discussions_enabled):
+        raise HTTPException(404, {"code": "discussion_preview_disabled"})
+
+
+def credential(token: str | None = Depends(deps.oauth2_scheme)) -> str:
+    if not token:
+        raise HTTPException(401, {"code": "unauthenticated"})
+    return token
+
+
+router = APIRouter(
+    prefix="/collaboration",
+    tags=["discussion preview"],
+    dependencies=[Depends(require_preview)],
+    route_class=BoundedDiscussionRoute,
+)
+
+
+@router.post("/commands")
+def command(
+    payload: CommandEnvelope, token: str = Depends(credential), db: Session = Depends(get_db)
+):
+    return service.apply_command(db, token, payload)
+
+
+@router.get("/shares/{share_id}/entries/{entry_id}/threads")
+def threads(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    after: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.list_threads(db, token, share_id, entry_id, after=after, limit=limit)
+
+
+@router.get("/shares/{share_id}/entries/{entry_id}/threads/{thread_id}")
+def thread(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    after: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.read_thread(db, token, share_id, entry_id, thread_id, after=after, limit=limit)
+
+
+@router.get(
+    "/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/messages/{message_id}/history"
+)
+def message_history(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    after: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.history(
+        db, token, share_id, entry_id, thread_id, message_id, after=after, limit=limit
+    )
+
+
+@router.get("/shares/{share_id}/entries/{entry_id}/changes")
+def changes(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    cursor: str | None = Query(None, max_length=2048),
+    limit: int = Query(100, ge=1, le=100),
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.changes(db, token, share_id, entry_id, cursor=cursor, limit=limit)

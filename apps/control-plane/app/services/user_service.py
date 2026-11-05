@@ -127,6 +127,10 @@ def delete_user(
         details={"email": user.email},
     )
 
+    # Parent first, before ORM cascades acquire share/session/membership locks.
+    # Discussion commands hold a shared user guard through their commit.
+    db.refresh(user, with_for_update=True)
+
     # Revoke every agent key this user created, across ALL shares (TR-03,
     # #ae52ba05). ShareAgentKey.created_by is ON DELETE SET NULL, not
     # cascaded — without this, deleting the user silently orphans their keys

@@ -4,7 +4,19 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy import Enum as PgEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -170,6 +182,10 @@ class Share(Base, TimestampMixin):
     comment_rules_revision: Mapped[int] = mapped_column(
         default=0, server_default=text("0"), nullable=False
     )
+    collaboration_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0"), nullable=False
+    )
+    collaboration_epoch: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     kind: Mapped[ShareKind] = mapped_column(
@@ -912,4 +928,144 @@ class RelayDocBinding(Base):
     share_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class DiscussionScope(Base):
+    __tablename__ = "discussion_scopes"
+    __table_args__ = (UniqueConstraint("share_id", "entry_id", name="uq_discussion_scope_entry"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shares.id", ondelete="CASCADE"), nullable=False
+    )
+    entry_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("managed_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="note")
+
+
+class DiscussionThread(Base):
+    __tablename__ = "discussion_threads"
+    __table_args__ = (
+        CheckConstraint("state IN ('open', 'resolved')", name="ck_discussion_thread_state"),
+        CheckConstraint("state_revision >= 1", name="ck_discussion_state_revision"),
+        Index("ix_discussion_threads_scope_created", "scope_id", "created_sequence"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    scope_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discussion_scopes.id", ondelete="CASCADE"), nullable=False
+    )
+    author_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    state_revision: Mapped[int] = mapped_column(default=1, nullable=False)
+    deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    removal_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    anchor_revision: Mapped[int] = mapped_column(default=1, nullable=False)
+    created_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    activity_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
+class DiscussionAnchorRevision(Base):
+    __tablename__ = "discussion_anchor_revisions"
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_threads.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
+class DiscussionMessage(Base):
+    __tablename__ = "discussion_messages"
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_discussion_message_revision"),
+        Index("ix_discussion_messages_thread_created", "thread_id", "created_sequence"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discussion_threads.id", ondelete="CASCADE"), nullable=False
+    )
+    author_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    revision: Mapped[int] = mapped_column(default=1, nullable=False)
+    deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DiscussionMessageRevision(Base):
+    __tablename__ = "discussion_message_revisions"
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_messages.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(primary_key=True)
+    # None is a deletion tombstone; old bodies remain subject to history authorization.
+    body: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
+class DiscussionReaction(Base):
+    __tablename__ = "discussion_reactions"
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_messages.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    emoji: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+
+class DiscussionReceipt(Base):
+    __tablename__ = "discussion_receipts"
+    # Keep identity after user deletion so an old outbox cannot resurrect work.
+    actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    operation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    scope_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discussion_scopes.id", ondelete="CASCADE"), nullable=False
+    )
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class DiscussionEvent(Base):
+    __tablename__ = "discussion_events"
+    __table_args__ = (Index("ix_discussion_events_scope_sequence", "scope_id", "sequence"),)
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shares.id", ondelete="CASCADE"), primary_key=True
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    scope_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discussion_scopes.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    # References/revisions only: event delivery never includes historic body snippets.
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

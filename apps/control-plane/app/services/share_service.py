@@ -474,6 +474,10 @@ def delete_share(
         details={"kind": share.kind.value, "path": share.path},
     )
 
+    # Acquire the parent before ORM child cascades; discussion readers/writers
+    # hold this guard before membership/message rows. The audit helper commits,
+    # so this lock must be taken after it.
+    db.refresh(share, with_for_update=True)
     db.delete(share)
     db.commit()
 

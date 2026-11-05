@@ -88,6 +88,16 @@ def test_reviewer_comment_grant_does_not_grant_note_write(db_session, team, clie
     assert response.status_code == 403
 
 
+def test_rule_replacement_with_production_autoflush_disabled(db_session, team):
+    share, owner, reviewer, entry = team
+    db_session.autoflush = False
+    result = replace(db_session, share, owner, reviewer, dict(path="", allowed=True))
+    assert result.revision == 1 and len(result.rules) == 1
+    db_session.expire_all()
+    assert policy.get_rules(db_session, share, owner) == result
+    assert policy.entry_capabilities(db_session, share, reviewer, entry.id).comment
+
+
 def test_editor_default_exact_denial_and_path_boundary(db_session, team):
     share, owner, reviewer, entry = team
     rule = db_session.scalar(select(models.ManagedRule))
@@ -231,7 +241,9 @@ def test_preview_disabled_and_no_unimplemented_feature_advertised(client, team, 
     share, owner, reviewer, entry = team
     url = f"/v1/collaboration/capabilities?share_id={share.id}"
     features = client.get(url, headers=auth(reviewer)).json()["features"]
-    assert features == dict(comment_permissions=True, comments=False, bases=False)
+    assert features == dict(
+        comment_permissions=True, comments=False, bases=False, discussion_commands=False
+    )
     monkeypatch.setattr(get_settings(), "collaboration_policy_enabled", False)
     assert (
         client.get(url, headers=auth(reviewer)).json()["features"]["comment_permissions"] is False

@@ -142,6 +142,9 @@ def replace_rules(
             details={"change": "comment_rules", "revision": share.comment_rules_revision},
         )
     )
+    # Production sessions disable autoflush. Persist before refreshing the
+    # locked share or the refresh can discard the pending revision increment.
+    db.flush()
     result = get_rules(db, share, user)
     db.commit()
     return result
