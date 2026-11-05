@@ -117,6 +117,24 @@ pub struct SyncKv {
     created_at: Option<u64>,
     write_lease: Arc<Mutex<Option<WriteLease>>>,
     metadata: Arc<RwLock<Option<BTreeMap<String, ciborium::value::Value>>>>,
+    // Background checkpoints and explicit barriers share one ordered writer.
+    persist_lock: tokio::sync::Mutex<()>,
+}
+
+/// Clearing `dirty` reserves a snapshot; only a completed store write may
+/// discharge that obligation. Cancellation and every error leave it retryable.
+struct PersistAttempt<'a> {
+    sync_kv: &'a SyncKv,
+    completed: bool,
+}
+
+impl Drop for PersistAttempt<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.sync_kv.dirty.store(true, Ordering::Release);
+            (self.sync_kv.dirty_callback)();
+        }
+    }
 }
 
 impl SyncKv {
@@ -182,6 +200,7 @@ impl SyncKv {
             created_at,
             write_lease: Arc::new(Mutex::new(write_lease)),
             metadata: Arc::new(RwLock::new(metadata)),
+            persist_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -224,6 +243,7 @@ impl SyncKv {
             created_at,
             write_lease: Arc::new(Mutex::new(None)),
             metadata: Arc::new(RwLock::new(metadata)),
+            persist_lock: tokio::sync::Mutex::new(()),
         };
         Ok((inst, modified_at))
     }
@@ -247,9 +267,16 @@ impl SyncKv {
     }
 
     async fn persist_inner(&self, require_lease: bool) -> Result<(), Box<dyn std::error::Error>> {
+        // Even a clean caller must wait for any in-flight checkpoint. Otherwise
+        // it could acknowledge a barrier before the reserved snapshot is saved.
+        let _writer = self.persist_lock.lock().await;
         if !self.dirty.swap(false, Ordering::Relaxed) {
             return Ok(());
         }
+        let mut attempt = PersistAttempt {
+            sync_kv: self,
+            completed: false,
+        };
 
         if let Some(store) = &self.store {
             let now = current_timestamp_ms();
@@ -294,12 +321,11 @@ impl SyncKv {
                     *self.write_lease.lock().unwrap() = Some(new_lease);
                 }
                 Err(e) => {
-                    // Re-mark as dirty so the next cycle retries.
-                    self.dirty.store(true, Ordering::Relaxed);
                     return Err(e.into());
                 }
             }
         }
+        attempt.completed = true;
         Ok(())
     }
 
@@ -534,6 +560,145 @@ mod test {
         async fn exists(&self, key: &str) -> Result<bool> {
             Ok(self.data.contains_key(key))
         }
+    }
+
+    struct PausedStore {
+        memory: MemoryStore,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Semaphore,
+        calls: AtomicUsize,
+        fail_first: bool,
+    }
+
+    impl PausedStore {
+        fn new(fail_first: bool) -> Self {
+            Self {
+                memory: MemoryStore::default(),
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Semaphore::new(0),
+                calls: AtomicUsize::new(0),
+                fail_first,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Store for Arc<PausedStore> {
+        async fn init(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            self.memory.get(key).await
+        }
+        async fn set(&self, key: &str, value: Vec<u8>) -> Result<()> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.entered.notify_one();
+                self.release.acquire().await.unwrap().forget();
+                if self.fail_first {
+                    return Err(crate::store::StoreError::ConnectionError(
+                        "injected write failure".into(),
+                    ));
+                }
+            }
+            self.memory.set(key, value).await
+        }
+        async fn remove(&self, key: &str) -> Result<()> {
+            self.memory.remove(key).await
+        }
+        async fn exists(&self, key: &str) -> Result<bool> {
+            self.memory.exists(key).await
+        }
+    }
+
+    #[tokio::test]
+    async fn checkpoints_serialize_and_a_clean_barrier_waits_for_inflight_storage() {
+        let store = Arc::new(PausedStore::new(false));
+        let kv = Arc::new(
+            SyncKv::new(Some(Arc::new(Box::new(store.clone()))), "ordered", || ())
+                .await
+                .unwrap(),
+        );
+        kv.set(b"content", b"old");
+        let first = {
+            let kv = kv.clone();
+            tokio::spawn(async move { kv.persist().await.map_err(|e| e.to_string()) })
+        };
+        store.entered.notified().await;
+        // No intervening mutation: dirty is false, but storage has not completed.
+        let mut barrier = {
+            let kv = kv.clone();
+            tokio::spawn(async move { kv.persist().await.map_err(|e| e.to_string()) })
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut barrier)
+                .await
+                .is_err()
+        );
+        // A newer snapshot must not write around the older checkpoint either.
+        kv.set(b"content", b"new");
+        assert_eq!(store.calls.load(Ordering::SeqCst), 1);
+        store.release.add_permits(1);
+        first.await.unwrap().unwrap();
+        barrier.await.unwrap().unwrap();
+        let loaded = SyncKv::new(Some(Arc::new(Box::new(store.clone()))), "ordered", || ())
+            .await
+            .unwrap();
+        assert_eq!(loaded.get(b"content"), Some(b"new".to_vec()));
+        assert_eq!(store.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_checkpoint_remains_dirty_and_retries_without_another_edit() {
+        let store = Arc::new(PausedStore::new(false));
+        let counter = CallbackCounter::default();
+        let kv = Arc::new(
+            SyncKv::new(
+                Some(Arc::new(Box::new(store.clone()))),
+                "cancelled",
+                counter.callback(),
+            )
+            .await
+            .unwrap(),
+        );
+        kv.set(b"content", b"retained");
+        let task = {
+            let kv = kv.clone();
+            tokio::spawn(async move { kv.persist().await.map_err(|e| e.to_string()) })
+        };
+        store.entered.notified().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(kv.dirty.load(Ordering::Acquire));
+        assert_eq!(counter.count(), 2); // initial edit, then cancellation wakeup
+        kv.persist().await.unwrap();
+        let loaded = SyncKv::new(Some(Arc::new(Box::new(store.clone()))), "cancelled", || ())
+            .await
+            .unwrap();
+        assert_eq!(loaded.get(b"content"), Some(b"retained".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn failed_checkpoint_preserves_edits_that_arrive_while_storage_is_waiting() {
+        let store = Arc::new(PausedStore::new(true));
+        let kv = Arc::new(
+            SyncKv::new(Some(Arc::new(Box::new(store.clone()))), "failed", || ())
+                .await
+                .unwrap(),
+        );
+        kv.set(b"content", b"old");
+        let task = {
+            let kv = kv.clone();
+            tokio::spawn(async move { kv.persist().await.map_err(|e| e.to_string()) })
+        };
+        store.entered.notified().await;
+        kv.set(b"content", b"latest");
+        store.release.add_permits(1);
+        assert!(task.await.unwrap().is_err());
+        kv.persist().await.unwrap();
+        let loaded = SyncKv::new(Some(Arc::new(Box::new(store.clone()))), "failed", || ())
+            .await
+            .unwrap();
+        assert_eq!(loaded.get(b"content"), Some(b"latest".to_vec()));
     }
 
     #[derive(Default, Clone)]

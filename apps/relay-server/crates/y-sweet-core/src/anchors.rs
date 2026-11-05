@@ -2,11 +2,11 @@
 //!
 //! This is not an authorization or durable-sync receipt endpoint. Its caller
 //! must check managed document identity/generation/access and establish storage
-//! durability. A bounded full-update reader proves Yjs/Yrs compatibility before
-//! integrating a cached, batched resolver into the live relay.
+//! durability. The bounded full-update helper and live batched resolver share
+//! the same Yjs/Yrs interpretation and golden vectors.
 
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, OffsetKind, Options, ReadTxn, Snapshot, StickyIndex, Text, Transact, Update};
 
@@ -17,6 +17,71 @@ pub enum AnchorPlacement {
     WaitingForSync,
     Unanchored,
     Invalid,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextAnchorInput {
+    pub dependency: Vec<u8>,
+    pub start: Vec<u8>,
+    pub end: Vec<u8>,
+    pub selected_length: u32,
+}
+
+/// Resolve a bounded batch against one existing UTF-16 document/read transaction.
+/// Captures dependency state once; never exports or reparses the full document.
+/// The caller still owns authorization, generation and checkpoint coordination.
+pub fn resolve_on_doc(doc: &Doc, anchors: &[TextAnchorInput]) -> Result<Vec<AnchorPlacement>> {
+    if doc.offset_kind() != OffsetKind::Utf16 {
+        bail!("anchor resolution requires UTF-16 offsets");
+    }
+    if anchors.is_empty() || anchors.len() > 32 {
+        bail!("anchor batch exceeds protocol limit");
+    }
+    let mut size = 0;
+    for anchor in anchors {
+        if anchor.dependency.len() > 64 * 1024 || anchor.start.len() > 256 || anchor.end.len() > 256
+        {
+            bail!("anchor input exceeds protocol limit");
+        }
+        size += anchor.dependency.len() + anchor.start.len() + anchor.end.len();
+    }
+    if size > 256 * 1024 {
+        bail!("anchor batch exceeds protocol limit");
+    }
+    // Empty Y.Text roots have no encoded items; materialize the known root
+    // handle without inserting content so an empty-note caret remains valid.
+    let text = doc.get_or_insert_text("contents");
+    let txn = doc.transact();
+    let current = txn.snapshot();
+    anchors
+        .iter()
+        .map(|anchor| {
+            let dependency =
+                Snapshot::decode_v1(&anchor.dependency).context("invalid anchor dependency")?;
+            let start = StickyIndex::decode_v1(&anchor.start).context("invalid start position")?;
+            let end = StickyIndex::decode_v1(&anchor.end).context("invalid end position")?;
+            if !contains_snapshot(&current, &dependency) {
+                return Ok(AnchorPlacement::WaitingForSync);
+            }
+            let (Some(from), Some(to)) = (start.get_offset(&txn), end.get_offset(&txn)) else {
+                return Ok(AnchorPlacement::Unanchored);
+            };
+            if !std::ptr::eq(from.branch.as_ref(), text.as_ref())
+                || !std::ptr::eq(to.branch.as_ref(), text.as_ref())
+                || to.index > text.len(&txn)
+            {
+                return Ok(AnchorPlacement::Invalid);
+            }
+            if from.index > to.index || (anchor.selected_length > 0 && from.index == to.index) {
+                return Ok(AnchorPlacement::Unanchored);
+            }
+            Ok(AnchorPlacement::Attached {
+                from: from.index,
+                to: to.index,
+            })
+        })
+        .collect()
 }
 
 /// Include deletion ranges: a delete-only update leaves the state vector unchanged.
@@ -52,32 +117,18 @@ pub fn resolve_from_update(
         offset_kind: OffsetKind::Utf16,
         ..Options::default()
     });
-    let text = doc.get_or_insert_text("contents");
     doc.transact_mut()
         .apply_update(Update::decode_v1(update).context("invalid document update")?)?;
-    let dependency = Snapshot::decode_v1(dependency).context("invalid anchor dependency")?;
-    let start = StickyIndex::decode_v1(start).context("invalid start position")?;
-    let end = StickyIndex::decode_v1(end).context("invalid end position")?;
-    let txn = doc.transact();
-    if !contains_snapshot(&txn.snapshot(), &dependency) {
-        return Ok(AnchorPlacement::WaitingForSync);
-    }
-    let (Some(from), Some(to)) = (start.get_offset(&txn), end.get_offset(&txn)) else {
-        return Ok(AnchorPlacement::Unanchored);
-    };
-    if !std::ptr::eq(from.branch.as_ref(), text.as_ref())
-        || !std::ptr::eq(to.branch.as_ref(), text.as_ref())
-        || to.index > text.len(&txn)
-    {
-        return Ok(AnchorPlacement::Invalid);
-    }
-    if from.index > to.index || (selected_length > 0 && from.index == to.index) {
-        return Ok(AnchorPlacement::Unanchored);
-    }
-    Ok(AnchorPlacement::Attached {
-        from: from.index,
-        to: to.index,
-    })
+    let mut result = resolve_on_doc(
+        &doc,
+        &[TextAnchorInput {
+            dependency: dependency.to_vec(),
+            start: start.to_vec(),
+            end: end.to_vec(),
+            selected_length,
+        }],
+    )?;
+    Ok(result.remove(0))
 }
 
 #[cfg(test)]
@@ -99,10 +150,9 @@ mod tests {
 
     #[test]
     fn yjs_generated_anchor_vectors() {
-        let value: serde_json::Value = serde_json::from_str(include_str!(
-            "../tests/fixtures/yjs-text-anchors-v1.json"
-        ))
-        .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/yjs-text-anchors-v1.json"))
+                .unwrap();
         assert_eq!(value["version"], 1);
         let fixtures: Vec<Fixture> = serde_json::from_value(value["fixtures"].clone()).unwrap();
         assert!(fixtures.len() >= 8);
@@ -115,7 +165,12 @@ mod tests {
                 f.selected_length,
             )
             .unwrap_or_else(|e| panic!("{}: {}", f.name, e));
-            assert_eq!(serde_json::to_value(result).unwrap(), f.expected, "{}", f.name);
+            assert_eq!(
+                serde_json::to_value(result).unwrap(),
+                f.expected,
+                "{}",
+                f.name
+            );
         }
     }
 
@@ -124,5 +179,26 @@ mod tests {
         assert!(resolve_from_update(&[], &[], &[], &[], 0).is_err());
         assert!(resolve_from_update(&[], &[], &vec![0; 257], &[], 0).is_err());
         assert!(resolve_from_update(&[], &vec![0; 65537], &[], &[], 0).is_err());
+    }
+
+    #[test]
+    fn cached_resolver_refuses_byte_offsets_and_oversized_batches() {
+        assert!(resolve_on_doc(&Doc::new(), &[]).is_err());
+        let doc = Doc::with_options(Options {
+            offset_kind: OffsetKind::Utf16,
+            ..Options::default()
+        });
+        let anchor = TextAnchorInput {
+            dependency: vec![],
+            start: vec![],
+            end: vec![],
+            selected_length: 0,
+        };
+        assert!(resolve_on_doc(&doc, &vec![anchor.clone(); 33]).is_err());
+        let oversized = TextAnchorInput {
+            dependency: vec![0; 64 * 1024],
+            ..anchor
+        };
+        assert!(resolve_on_doc(&doc, &vec![oversized; 5]).is_err());
     }
 }

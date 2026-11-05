@@ -5,8 +5,8 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use std::sync::{Arc, RwLock};
 use yrs::{
-    updates::decoder::Decode, updates::encoder::Encode, Array, Doc, Map, Out, ReadTxn, StateVector,
-    Subscription, Transact, Update,
+    updates::decoder::Decode, updates::encoder::Encode, Array, Doc, Map, OffsetKind, Options, Out,
+    ReadTxn, StateVector, Subscription, Transact, Update,
 };
 use yrs_kvstore::DocOps;
 
@@ -40,7 +40,10 @@ impl DocWithSyncKv {
             .context("Failed to create SyncKv")?;
 
         let sync_kv = Arc::new(sync_kv);
-        let doc = Doc::new();
+        let doc = Doc::with_options(Options {
+            offset_kind: OffsetKind::Utf16,
+            ..Options::default()
+        });
 
         {
             let mut txn = doc.transact_mut();
@@ -92,6 +95,16 @@ impl DocWithSyncKv {
         let txn = doc.transact();
 
         txn.encode_state_as_update_v1(&StateVector::default())
+    }
+
+    /// Placement against the live document, without a full-state round trip.
+    /// This alone is not an authorization check or durable storage receipt.
+    pub fn resolve_text_anchors(
+        &self,
+        anchors: &[crate::anchors::TextAnchorInput],
+    ) -> Result<Vec<crate::anchors::AnchorPlacement>> {
+        let awareness = self.awareness.read().unwrap();
+        crate::anchors::resolve_on_doc(&awareness.doc, anchors)
     }
 
     pub fn apply_update(&self, update: &[u8]) -> Result<()> {
@@ -346,6 +359,54 @@ mod tests {
         }
         async fn exists(&self, key: &str) -> crate::store::Result<bool> {
             Ok(self.data.contains_key(key))
+        }
+    }
+
+    #[tokio::test]
+    async fn live_anchor_batches_match_yjs_before_and_after_checkpoint_reload() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/yjs-text-anchors-v1.json"))
+                .unwrap();
+        for fixture in value["fixtures"].as_array().unwrap() {
+            let store = MemoryStore::default();
+            let doc = DocWithSyncKv::new(
+                "anchor",
+                Some(Arc::new(Box::new(store.clone()))),
+                || (),
+                None,
+            )
+            .await
+            .unwrap();
+            let update: Vec<u8> = serde_json::from_value(fixture["update"].clone()).unwrap();
+            doc.apply_update(&update).unwrap();
+            let anchor = crate::anchors::TextAnchorInput {
+                dependency: serde_json::from_value(fixture["dependency"].clone()).unwrap(),
+                start: serde_json::from_value(fixture["start"].clone()).unwrap(),
+                end: serde_json::from_value(fixture["end"].clone()).unwrap(),
+                selected_length: fixture["selectedLength"].as_u64().unwrap() as u32,
+            };
+            let anchors = vec![anchor; 3];
+            for placement in doc.resolve_text_anchors(&anchors).unwrap() {
+                assert_eq!(
+                    serde_json::to_value(placement).unwrap(),
+                    fixture["expected"],
+                    "{}",
+                    fixture["name"]
+                );
+            }
+            doc.sync_kv().persist().await.unwrap();
+            drop(doc);
+            let loaded = DocWithSyncKv::new("anchor", Some(Arc::new(Box::new(store))), || (), None)
+                .await
+                .unwrap();
+            for placement in loaded.resolve_text_anchors(&anchors).unwrap() {
+                assert_eq!(
+                    serde_json::to_value(placement).unwrap(),
+                    fixture["expected"],
+                    "{} after reload",
+                    fixture["name"]
+                );
+            }
         }
     }
 

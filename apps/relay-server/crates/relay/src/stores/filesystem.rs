@@ -1,10 +1,62 @@
 use async_trait::async_trait;
 use std::{
-    fs::{create_dir_all, read_dir, remove_file},
-    path::PathBuf,
+    fs::{create_dir_all, read_dir, remove_file, File},
+    io::{self, Write},
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 use y_sweet_core::store::{FileInfo, Result, Store, StoreError};
+
+const CHECKPOINT_TEMP_PREFIX: &str = ".relay-checkpoint-";
+
+fn sync_directory(path: &Path) -> io::Result<()> {
+    // The relay's Linux/macOS filesystem backend can synchronize directory
+    // entries. Other targets must not advertise a durable-anchor capability
+    // without a platform-specific implementation and restore tests.
+    #[cfg(unix)]
+    File::open(path)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn parent_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+fn create_directory_tree(path: &Path) -> io::Result<()> {
+    let mut missing = Vec::new();
+    let mut current = path;
+    while !current.exists() {
+        missing.push(current.to_path_buf());
+        let parent = parent_directory(current);
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    create_dir_all(path)?;
+    // Persist newly created ancestor links, not only the eventual file's
+    // immediate directory. Existing trees pay no ancestor fsync cost.
+    for created in missing.iter().rev() {
+        sync_directory(parent_directory(created))?;
+    }
+    Ok(())
+}
+
+fn atomic_write(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
+    let parent = parent_directory(path);
+    create_directory_tree(parent)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(CHECKPOINT_TEMP_PREFIX)
+        .tempfile_in(parent)?;
+    write(temporary.as_file_mut())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    sync_directory(parent)
+}
 
 fn extract_doc_id_from_key(key: &str) -> Result<String> {
     if let Some(parts) = key.strip_prefix("files/") {
@@ -38,7 +90,7 @@ pub struct FileSystemStore {
 
 impl FileSystemStore {
     pub fn new(base_path: PathBuf) -> std::result::Result<Self, std::io::Error> {
-        create_dir_all(base_path.clone())?;
+        create_directory_tree(&base_path)?;
         Ok(Self { base_path })
     }
 }
@@ -61,10 +113,9 @@ impl Store for FileSystemStore {
 
     async fn set(&self, key: &str, value: Vec<u8>) -> Result<()> {
         let path = self.base_path.join(key);
-        create_dir_all(path.parent().expect("Bad parent"))
-            .map_err(|_| StoreError::NotAuthorized("Error creating directories".to_string()))?;
-        std::fs::write(path, value)
-            .map_err(|_| StoreError::NotAuthorized("Error writing file.".to_string()))?;
+        atomic_write(&path, |file| file.write_all(&value)).map_err(|error| {
+            StoreError::ConnectionError(format!("Error checkpointing file: {}", error))
+        })?;
         Ok(())
     }
 
@@ -98,6 +149,13 @@ impl Store for FileSystemStore {
 
             for entry in entries.flatten() {
                 let path = entry.path();
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(CHECKPOINT_TEMP_PREFIX)
+                {
+                    continue;
+                }
                 if path.is_dir() {
                     stack.push(path);
                     continue;
@@ -163,6 +221,56 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn interrupted_write_keeps_the_previous_complete_snapshot() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("doc/data.ysweet");
+        atomic_write(&path, |file| file.write_all(b"old complete snapshot")).unwrap();
+        let result = atomic_write(&path, |file| {
+            file.write_all(b"partial new snapshot")?;
+            assert_eq!(std::fs::read(&path).unwrap(), b"old complete snapshot");
+            Err(io::Error::other("injected write failure"))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old complete snapshot");
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
+        atomic_write(&path, |file| {
+            file.write_all(b"new")?;
+            assert_eq!(std::fs::read(&path).unwrap(), b"old complete snapshot");
+            file.write_all(b" complete snapshot")
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new complete snapshot");
+    }
+
+    #[tokio::test]
+    async fn checkpoint_files_reload_and_temporary_files_are_not_listed() {
+        let directory = TempDir::new().unwrap();
+        let store = FileSystemStore::new(directory.path().join("new/tree")).unwrap();
+        store
+            .set("doc/data.ysweet", b"snapshot".to_vec())
+            .await
+            .unwrap();
+        let reloaded = FileSystemStore::new(directory.path().join("new/tree")).unwrap();
+        assert_eq!(
+            reloaded.get("doc/data.ysweet").await.unwrap(),
+            Some(b"snapshot".to_vec())
+        );
+        std::fs::write(
+            directory
+                .path()
+                .join("new/tree/doc/.relay-checkpoint-crash"),
+            b"incomplete",
+        )
+        .unwrap();
+        let listed = reloaded.list("doc/").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].key, "doc/data.ysweet");
+    }
 
     #[tokio::test]
     async fn test_list_files() {
