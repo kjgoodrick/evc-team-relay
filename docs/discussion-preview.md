@@ -173,6 +173,14 @@ sends/edits, SQL row-lock conflicts, post-revocation replay, and account/share
 deletion against disposable PostgreSQL 16. The script refuses nonloopback or
 non-`collaboration_test` database targets. Do not run it against service data.
 
+`python tests/integration/discussions_client.py --plugin ../../../evc-team-relay-obsidian`
+runs the plugin's actual outbox/transport against a disposable loopback FastAPI
+server and temporary SQLite database. It covers an accepted response lost before
+local acknowledgment, identical retry, dependent replies, edits/history,
+reactions, policy revocation and retained local drafts. It requires the plugin's
+locked npm dependencies and Node on PATH, and stops/removes its fixture afterward.
+It does not replace the PostgreSQL concurrency proof or native mobile checks.
+
 Remaining before a complete feature: plugin/network/UI integration, durable
 live text-anchor barrier, reading/image mapping, Bases identity/adapters,
 Time & Line bridge, image uploads, inbox, notifications, authenticated presence,
