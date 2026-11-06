@@ -4,6 +4,7 @@ Run discussions_postgres.py first on an empty localhost collaboration_test DB.
 Only synthetic accounts and a new random bucket are used; finally removes both.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -17,6 +18,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from minio import Minio
@@ -24,14 +27,154 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
+from app.api.routers import base_content as content_router
 from app.api.routers import bases
 from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
 from app.db.session import get_db
+from app.schemas.base_content import PublishBaseContent
 from app.schemas.bases import InspectBase, ReconcileBase
+from app.services import base_content, managed_service, session_service
 from app.services import bases_registry as service
-from app.services import session_service
+
+
+def prove_content(engine, url, client, share_id, entry_id, tokens, minio, key):
+    settings = get_settings()
+    settings.managed_bases_sync_enabled = True
+    route = f"/v1/managed/shares/{share_id}/entries/{entry_id}/base-content"
+    auth = {"Authorization": "Bearer " + tokens["owner"]}
+    before = client.get(route, headers=auth)
+    assert before.status_code == 200, before.text
+    assert base64.b64decode(before.json()["content_base64"])
+
+    def payload(state, raw):
+        return PublishBaseContent.model_validate(
+            dict(
+                operation_id=str(uuid.uuid4()),
+                expected=state,
+                content_base64=base64.b64encode(raw).decode(),
+            )
+        )
+
+    barrier = threading.Barrier(2)
+
+    def publish(p):
+        with Session(engine, autoflush=False) as db:
+            barrier.wait(timeout=10)
+            try:
+                return 200, base_content.publish(
+                    db, tokens["owner"], share_id, uuid.UUID(entry_id), p
+                )
+            except HTTPException as exc:
+                return exc.status_code, exc.detail
+
+    bodies = [
+        payload(before.json()["state"], raw)
+        for raw in (b"views: []\n", b"views: []\n# competing edit\n")
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(publish, bodies))
+    assert sorted(code for code, _ in outcomes) == [200, 409], outcomes
+    winner = outcomes[0][1] if outcomes[0][0] == 200 else outcomes[1][1]
+    winner_body = bodies[0] if outcomes[0][0] == 200 else bodies[1]
+    stored = client.get(route, headers=auth).json()
+    assert stored["state"] == winner["state"]
+    assert stored["content_base64"] == winner_body.content_base64
+    assert (
+        client.put(route, headers=auth, json=winner_body.model_dump(mode="json")).json() == winner
+    )
+    # Late legacy writes cannot replace guarded content, even if already in flight
+    # when the first publication selected PostgreSQL as its authoritative source.
+    minio.put_object(settings.minio_bucket, key, BytesIO(b"late legacy upload"), 18)
+    assert client.get(route, headers=auth).json() == stored
+    print(
+        "PASS: competing Bases publications have one winner; content/index commit together; "
+        "late legacy bytes cannot replace it"
+    )
+
+    duplicate = payload(stored["state"], b"views: []\n# identical request\n")
+    barrier = threading.Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(publish, [duplicate, duplicate]))
+    assert outcomes[0] == outcomes[1] and outcomes[0][0] == 200, outcomes
+    with Session(engine) as db:
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(m.ManagedBaseReceipt)
+                .where(m.ManagedBaseReceipt.entry_id == entry_id)
+            )
+            == 2
+        )
+    current = outcomes[0][1]["state"]
+    print("PASS: concurrent duplicate publication returns one receipt and one content version")
+
+    # Publication and structural rename share the same serialization boundary.
+    edit = payload(current, b"views: []\n# edit versus rename\n")
+    barrier = threading.Barrier(2)
+
+    def rename():
+        with Session(engine, autoflush=False) as db:
+            share = db.get(m.Share, share_id)
+            owner = db.get(m.User, share.owner_user_id)
+            # Deliberately cache an entry before the competing publication.
+            cached_entry = db.get(m.ManagedEntry, entry_id)
+            assert cached_entry is not None
+            barrier.wait(timeout=10)
+            try:
+                managed_service.apply_batch(
+                    db,
+                    share,
+                    owner,
+                    managed_service.Batch.model_validate(
+                        {
+                            "changes": [
+                                {
+                                    "path": current["path"],
+                                    "previous": current["record"],
+                                    "value": None,
+                                },
+                                {
+                                    "path": "Renamed.base",
+                                    "previous": None,
+                                    "value": current["record"],
+                                },
+                            ]
+                        }
+                    ),
+                )
+                return 200
+            except HTTPException as exc:
+                db.rollback()
+                return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = pool.submit(publish, edit), pool.submit(rename)
+        codes = [a.result()[0], b.result()]
+    assert sorted(codes) == [200, 409], codes
+    current = client.get(route, headers=auth).json()
+    with Session(engine) as db:
+        entry = db.get(m.ManagedEntry, entry_id)
+        content = db.get(m.ManagedBaseContent, entry_id)
+        assert entry.record["hash"] == hashlib.sha256(content.data).hexdigest()
+        assert current["state"]["record"] == entry.record
+    print(
+        "PASS: concurrent rename versus publication cannot apply stale inventory "
+        "over guarded content"
+    )
+
+    settings.database_url = url.render_as_string(hide_password=False)
+    try:
+        command.downgrade(Config("alembic.ini"), "202611060003")
+    except RuntimeError as exc:
+        assert "Export/migrate" in str(exc)
+    else:
+        raise AssertionError("Nonempty guarded content must prevent destructive downgrade")
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060004"
+    assert client.get(route, headers=auth).json() == current
+    print("PASS: nonempty downgrade is refused and leaves the version and bytes intact")
 
 
 def main():
@@ -46,7 +189,7 @@ def main():
         url, connect_args={"connect_timeout": 5, "options": "-c statement_timeout=10000"}
     )
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060003"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060004"
     settings = get_settings()
     settings.collaboration_policy_enabled = settings.collaboration_bases_registry_enabled = True
     settings.minio_endpoint = endpoint
@@ -124,7 +267,12 @@ def main():
                 settings.minio_bucket, key, BytesIO(raw), len(raw), content_type="application/yaml"
             )
             with Session(engine) as db:
-                db.get(m.ManagedEntry, entry_id).record = {"type": "file", "hash": sha256}
+                db.get(m.ManagedEntry, entry_id).record = {
+                    "id": entry_id,
+                    "version": 0,
+                    "type": "file",
+                    "hash": sha256,
+                }
                 db.commit()
             return sha256
 
@@ -185,6 +333,7 @@ def main():
             storage.concurrent = False
             app = FastAPI()
             app.include_router(bases.router, prefix="/v1")
+            app.include_router(content_router.router, prefix="/v1")
 
             def database():
                 with Session(engine, autoflush=False) as db:
@@ -271,6 +420,7 @@ def main():
                     "PASS: revocation during actual object read prevents "
                     "registry publication and later history access"
                 )
+                prove_content(engine, url, client, share_id, entry_id, tokens, minio, key)
     finally:
         with Session(engine) as db:
             if share_id:
@@ -285,6 +435,8 @@ def main():
             assert db.scalar(select(func.count()).select_from(m.BaseDefinition)) == 0
             assert db.scalar(select(func.count()).select_from(m.BaseView)) == 0
             assert db.scalar(select(func.count()).select_from(m.BaseRegistryRevision)) == 0
+            assert db.scalar(select(func.count()).select_from(m.ManagedBaseContent)) == 0
+            assert db.scalar(select(func.count()).select_from(m.ManagedBaseReceipt)) == 0
         for obj in minio.list_objects(settings.minio_bucket, recursive=True):
             minio.remove_object(settings.minio_bucket, obj.object_name)
         minio.remove_bucket(settings.minio_bucket)

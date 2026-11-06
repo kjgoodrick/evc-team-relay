@@ -51,6 +51,10 @@ class Settings(BaseSettings):
         default=False,
         description="Preview verified Bases view identities; does not enable Bases comments",
     )
+    managed_bases_sync_enabled: bool = Field(
+        default=False,
+        description="Preview conditional Bases file publication; requires upgraded clients",
+    )
     collaboration_pictures_bucket: str = Field(
         default="relay-discussion-pictures",
         description="Separately provisioned private bucket for comment pictures; no public policy",

@@ -132,6 +132,8 @@ def manifest(db: Session, share: models.Share, user: models.User) -> dict:
         )
     )
     visible = [e for e in entries if permission(share, user, e.path, rules) != "none"]
+    from app.services.base_content import manifest_versions
+
     removed = list(
         db.scalars(
             select(models.ManagedEntry).where(
@@ -145,6 +147,7 @@ def manifest(db: Session, share: models.Share, user: models.User) -> dict:
         "permissions": {e.path: permission(share, user, e.path, rules) for e in visible},
         "activity": {e.id: e.activity for e in visible if e.activity},
         "owner": user.is_admin or share.owner_user_id == user.id,
+        "base_content": manifest_versions(db, share.id, visible),
         "deleted": {
             path: [e.id for e in removed if e.last_path == path]
             for path in {e.last_path for e in removed if e.last_path}
@@ -160,10 +163,12 @@ def apply_batch(db: Session, share: models.Share, user: models.User, batch: Batc
     rules = rules_for(db, share, user)
     entries = list(
         db.scalars(
-            select(models.ManagedEntry).where(
+            select(models.ManagedEntry)
+            .where(
                 models.ManagedEntry.share_id == share.id,
                 models.ManagedEntry.deleted.is_(False),
             )
+            .execution_options(populate_existing=True)
         )
     )
     by_path = {e.path: e for e in entries}
@@ -245,6 +250,9 @@ def apply_batch(db: Session, share: models.Share, user: models.User, batch: Batc
             historic = db.get(models.ManagedEntry, value["id"])
             if historic and historic.deleted:
                 raise HTTPException(409, "A deleted file identity cannot be reused")
+    from app.services.base_content import guard_inventory
+
+    guard_inventory(db, by_id, changes)
     # Explicit file/folder exceptions travel with a renamed object. Otherwise
     # moving Budget.md under a broadly readable parent would silently unhide it.
     moves = [

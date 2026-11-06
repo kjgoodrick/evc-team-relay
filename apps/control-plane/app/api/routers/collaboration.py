@@ -42,6 +42,7 @@ def capabilities(
             "comments": False,
             "bases": False,
             "bases_registry": bases_registry.enabled(),
+            "bases_sync": get_settings().managed_bases_sync_enabled,
             "discussion_text_anchors": anchor_service.enabled(),
             "discussion_block_anchors": anchor_service.enabled(),
             "discussion_image_occurrences": anchor_service.enabled()

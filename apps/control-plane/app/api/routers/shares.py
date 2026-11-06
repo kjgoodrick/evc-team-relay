@@ -851,7 +851,14 @@ def head_share_file(
     share = share_service.get_share(db, share_id)
     share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
+    from app.services import base_content
+
+    guarded_bytes = base_content.compatible_bytes(
+        db, share, path, token_payload, metadata_only=True
+    )
     db.close()
+    if guarded_bytes is not None:
+        return Response(status_code=status.HTTP_200_OK)
     settings = get_settings()
     object_name = f"web-assets/{share_id}/{path}"
     minio_client = _get_minio_client()
@@ -897,6 +904,11 @@ def get_file_download_url(
     share = share_service.get_share(db, share_id)
     share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
+    from app.services import base_content
+
+    guarded_bytes = base_content.compatible_bytes(
+        db, share, path, token_payload, metadata_only=True
+    )
     db.close()
     settings = get_settings()
     object_name = f"web-assets/{share_id}/{path}"
@@ -905,7 +917,8 @@ def get_file_download_url(
         # Confirm the object exists before minting the URL — GET .../content
         # 404ing from OUR api is easier to diagnose than an opaque MinIO 403.
         with storage_client.storage_errors("attachment_stat"):
-            minio_client.stat_object(settings.minio_bucket, object_name)
+            if guarded_bytes is None:
+                minio_client.stat_object(settings.minio_bucket, object_name)
     except S3Error as e:
         if e.code in ("NoSuchKey", "NoSuchObject"):
             raise HTTPException(
@@ -948,7 +961,16 @@ def get_file_content(
     share = share_service.get_share(db, share_id)
     share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
+    from app.services import base_content
+
+    guarded_bytes = base_content.compatible_bytes(db, share, path, token_payload)
     db.close()
+    if guarded_bytes is not None:
+        return Response(
+            content=guarded_bytes,
+            media_type="application/yaml",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
     settings = get_settings()
     object_name = f"web-assets/{share_id}/{path}"
     minio_client = _get_minio_client()
@@ -1022,6 +1044,9 @@ def get_file_upload_url(
     share = share_service.get_share(db, share_id)
     share_service.ensure_write_access(db, share, user, managed_entry_id=path)
 
+    from app.services import base_content
+
+    base_content.reject_legacy_write(db, share, path)
     settings = get_settings()
     object_name = f"web-assets/{share_id}/{path}"
     content_type = token_payload.get("content_type") or "application/octet-stream"
@@ -1100,6 +1125,9 @@ async def put_file_content(
     share = share_service.get_share(db, share_id)
     share_service.ensure_write_access(db, share, user, managed_entry_id=path)
 
+    from app.services import base_content
+
+    base_content.reject_legacy_write(db, share, path)
     db.close()
     body = await request.body()
     if len(body) > MAX_SYNC_WRITE_SIZE:

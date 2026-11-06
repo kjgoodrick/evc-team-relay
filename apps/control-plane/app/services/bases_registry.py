@@ -18,8 +18,8 @@ from app.clients import storage_client
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas.bases import ReconcileBase
+from app.services import base_content, discussion_service, managed_service
 from app.services import bases_definition as codec
-from app.services import discussion_service, managed_service
 
 error = discussion_service.error
 _read_slots = threading.BoundedSemaphore(2)
@@ -110,21 +110,24 @@ def snapshot(db, definition):
     }
 
 
-def verified_definition(share_id, entry_id, sha256):
+def verified_definition(share_id, entry_id, sha256, stored=None):
     if not _read_slots.acquire(blocking=False):
         error(429, "base_inspection_busy")
     try:
         settings = get_settings()
         try:
             with storage_client.storage_errors("bases_inspect"):
-                response = storage_client.get_minio_client().get_object(
-                    settings.minio_bucket, f"web-assets/{share_id}/{entry_id}"
-                )
-                try:
-                    raw = response.read(codec.MAX_BYTES + 1)
-                finally:
-                    response.close()
-                    response.release_conn()
+                if stored is not None:
+                    raw = stored
+                else:
+                    response = storage_client.get_minio_client().get_object(
+                        settings.minio_bucket, f"web-assets/{share_id}/{entry_id}"
+                    )
+                    try:
+                        raw = response.read(codec.MAX_BYTES + 1)
+                    finally:
+                        response.close()
+                        response.release_conn()
         except S3Error as exc:
             error(
                 409 if exc.code in {"NoSuchKey", "NoSuchObject"} else 503,
@@ -189,8 +192,10 @@ def synchronize(db, token, share_id, entry_id, payload):
             db.commit()
             return result
         generation = ctx.entry.collaboration_generation
+        content = base_content.stored_content(db, ctx.entry)
+        stored = bytes(content.data) if content else None
         db.commit()  # No SQL connection/row lock during storage or YAML parsing.
-        verified = verified_definition(share_id, entry_id, expected_hash)
+        verified = verified_definition(share_id, entry_id, expected_hash, stored)
         ctx = context(db, token, share_id, entry_id, write=True, edit=manual)
         if (
             ctx.entry.record.get("hash") != expected_hash

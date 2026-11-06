@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -856,6 +857,33 @@ class ManagedEntry(Base):
         UUID(as_uuid=True), nullable=True, default=uuid.uuid4
     )
     deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+
+class ManagedBaseContent(Base):
+    __tablename__ = "managed_base_content"
+    entry_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("managed_entries.id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    generation: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, deferred=True)
+
+
+class ManagedBaseReceipt(Base):
+    __tablename__ = "managed_base_receipts"
+    actor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    operation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    entry_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("managed_entries.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
 
 class BaseDefinition(Base):

@@ -7,6 +7,11 @@ false. `features.bases_registry` advertises this narrower protocol only when
 both `COLLABORATION_POLICY_ENABLED` and
 `COLLABORATION_BASES_REGISTRY_ENABLED` are enabled. The latter defaults false.
 
+The subsequent [conditional content protocol](base-content-preview.md) supplies
+verified PostgreSQL bytes after a file's first guarded save. Legacy definitions
+still use the verified MinIO read described below. Neither server protocol is a
+completed native Bases feature.
+
 The registry never writes identities or comments into a vault file. A managed
 entry's UUID identifies the standalone base; its collaboration generation guards
 restore lineage. Server-generated view UUIDs are independent of array position,
@@ -144,15 +149,15 @@ uses actual PostgreSQL and MinIO to verify concurrent initialization, repair
 CAS, HTTP lifecycle, no share lock during storage I/O, mid-read revocation and
 deletion cascades. Existing discussion/picture PostgreSQL/MinIO proofs also pass.
 
-Still required: explicit `.base` sync settings and conditional byte publication,
+Still required: explicit `.base` sync settings and client conditional publication,
 client registry/cache/provisional-ID handling, inline definition lineage,
 native transition hooks and repair UI, view-scoped discussion authorization,
 cell/property/group/formula/summary targets, Time & Line integration, presence,
 and native desktop/mobile acceptance. A dependable server registry alone does
 not establish those features.
 
-In particular, the managed inventory already compares prior records, but the
-generic attachment route writes a mutable object separately. This increment
-verifies the observed hash and refuses a mismatch; it does not make competing
-configuration uploads conflict-safe. Complete that prerequisite before enabling
-Bases collaboration in a live vault.
+The initial registry only detected mutable-object hash mismatches. The new
+guarded content service atomically publishes configuration and inventory in
+PostgreSQL; this registry reads that authoritative copy when present. Client
+baselines, local conflict preservation and native integration remain necessary
+before enabling Bases collaboration in a live vault.
