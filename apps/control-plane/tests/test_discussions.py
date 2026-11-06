@@ -815,6 +815,41 @@ def enable_anchors(monkeypatch):
     )
 
 
+def test_block_structure_does_not_change_legacy_anchor_serialization(world):
+    envelope = CommandEnvelope.model_validate(text_command(world))
+    anchor = envelope.model_dump(mode="json")["command"]["anchor"]
+    assert "structure" not in anchor
+    original = json.loads(envelope.canonical_json())
+    original["command"]["anchor"].pop("structure", None)
+    assert envelope.canonical_json() == json.dumps(
+        original, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+
+
+def test_read_only_commenter_can_create_bounded_block_anchor(client, world, monkeypatch):
+    enable_anchors(monkeypatch)
+    requests = relay_mock(monkeypatch)
+    payload = text_command(world)
+    structure = {
+        "kind": "blocks",
+        "blocks": [{"kind": "paragraph", "explicit_id": "existing"}, {"kind": "table"}],
+    }
+    payload["command"]["anchor"]["structure"] = structure
+    result = send(client, world, payload)
+    assert send(client, world, payload) == result and len(requests) == 2
+    view = client.get(
+        base(world) + "/threads/" + result["thread_id"], headers=headers(world.tokens["reviewer"])
+    )
+    assert view.json()["anchor"]["structure"] == structure
+    assert "structure" not in json.dumps(requests)
+    bad = text_command(world)
+    bad["command"]["anchor"]["structure"] = {"kind": "blocks", "blocks": [{"kind": "table"}] * 33}
+    send(client, world, bad, expected=422)
+    bad["command"]["anchor"]["structure"]["blocks"] = [{"kind": "pixel"}]
+    send(client, world, bad, expected=422)
+    assert len(requests) == 2
+
+
 def relay_mock(monkeypatch, change=None):
     original_client = httpx.Client
     requests = []

@@ -7,7 +7,15 @@ import uuid
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic_core import PydanticSerializationError
 
 
@@ -140,6 +148,27 @@ class AnchorContext(StrictModel):
     truncated: StrictBool
 
 
+class BlockDescriptor(StrictModel):
+    kind: Literal[
+        "paragraph",
+        "heading",
+        "list_item",
+        "quote",
+        "callout",
+        "code",
+        "table",
+        "html",
+        "rule",
+        "frontmatter",
+    ]
+    explicit_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]{1,64}$")
+
+
+class BlockStructure(StrictModel):
+    kind: Literal["blocks"]
+    blocks: list[BlockDescriptor] = Field(min_length=1, max_length=32)
+
+
 class TextAnchor(StrictModel):
     version: Literal[1]
     type: Literal["text"]
@@ -150,6 +179,20 @@ class TextAnchor(StrictModel):
     end: str = Field(max_length=344)
     selected_length: int = Field(ge=0, le=4294967295, strict=True)
     context: AnchorContext
+    structure: BlockStructure | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_serialization(self, handler):
+        value = handler(self)
+        # Existing command hashes/receipts must remain byte-for-byte stable
+        # when the new optional block evidence is absent.
+        if self.structure is None:
+            value.pop("structure", None)
+        else:
+            for block in value["structure"]["blocks"]:
+                if block.get("explicit_id") is None:
+                    block.pop("explicit_id", None)
+        return value
 
     @field_validator("dependency", "start", "end")
     @classmethod

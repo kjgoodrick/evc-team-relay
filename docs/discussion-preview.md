@@ -9,6 +9,11 @@ and the session requirement separately. A separate text-anchor flag advertises
 `discussion_text_anchors` and the `text` target only when configured with private
 relay authority. No deployment is implied by this file.
 
+The November 6 increment also advertises `discussion_block_anchors` with the
+text-anchor capability. Blocks remain text targets with bounded structural
+metadata; this is not a separate document identity or a complete Reading-view
+adapter.
+
 Apply Alembic through `202611050003` in an isolated preview database. The additive
 migration creates discussion scopes, threads, anchor revisions, messages,
 message revisions, reactions, command receipts, and events. It adds a per-share
@@ -132,6 +137,16 @@ it silently in queued work after refresh or restore. A text anchor contains
 `version: 1`, `type: text`, `document_id`, `generation`, canonical base64 `start`,
 `end`, and `dependency`, original UTF-16 `selected_length`, and bounded `context`
 (`quote`, `prefix`, `suffix`, `truncated`). Client-supplied proof fields reject.
+
+Block capture may include `structure: {kind: "blocks", blocks: [...]}` with
+1–32 descriptors. Each descriptor has a supported `kind` (paragraph, heading,
+list item, quote, callout, code, table, HTML, rule, or frontmatter) and optionally
+an existing `explicit_id`. The canonical range and dependency validation are
+unchanged. The server validates the metadata's bounds and shape; it does not
+claim to verify Markdown semantics. Descriptors are not sent to the private
+relay. An absent structure is omitted from canonical serialization, preserving
+existing text-command receipt hashes. Comments do not insert block IDs into
+the note. Native block and Reading-view acceptance remain pending.
 
 Creation obtains a durable observation through the
 [private relay protocol](anchor-barrier-protocol.md), outside database locks,
