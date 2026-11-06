@@ -30,6 +30,8 @@ def main():
             DATABASE_URL="sqlite+pysqlite:///" + str(temp / "test.db"),
             JWT_SECRET=secrets.token_hex(32),
             MANAGED_BASES_SYNC_ENABLED="true",
+            COLLABORATION_POLICY_ENABLED="true",
+            COLLABORATION_BASES_REGISTRY_ENABLED="true",
             LOG_LEVEL="WARNING",
             CONTROL_PLANE_PUBLIC_URL=f"http://127.0.0.1:{number}",
         )
@@ -57,6 +59,7 @@ def main():
             db.add(share)
             db.flush()
             entry_id = str(uuid.uuid4())
+            registry_entry_id = str(uuid.uuid4())
             db.add_all(
                 [
                     m.ManagedEntry(
@@ -65,6 +68,13 @@ def main():
                         path="Planning.base",
                         deleted=False,
                         record={"id": entry_id, "version": 0, "type": "file"},
+                    ),
+                    m.ManagedEntry(
+                        id=registry_entry_id,
+                        share_id=share.id,
+                        path="Registry.base",
+                        deleted=False,
+                        record={"id": registry_entry_id, "version": 0, "type": "file"},
                     ),
                     m.ShareMember(
                         share_id=share.id, user_id=reviewer.id, role=m.ShareMemberRole.VIEWER
@@ -92,6 +102,7 @@ def main():
                 base=f"http://127.0.0.1:{number}",
                 share=str(share.id),
                 entry=entry_id,
+                registryEntry=registry_entry_id,
                 owner=str(owner.id),
                 reviewer=str(reviewer.id),
                 ownerToken=security.create_access_token(
@@ -127,7 +138,14 @@ def main():
                 )
                 ready(number, process)
                 result = subprocess.run(
-                    ["npm", "test", "--", "--runInBand", "__tests__/bases/realBaseContent.test.ts"],
+                    [
+                        "npm",
+                        "test",
+                        "--",
+                        "--runInBand",
+                        "__tests__/bases/realBaseContent.test.ts",
+                        "__tests__/bases/realBaseRegistry.test.ts",
+                    ],
                     cwd=args.plugin.resolve(),
                     env={**os.environ, "EVC_BASE_CONTENT_FIXTURE": str(fixture_path)},
                     timeout=90,
@@ -136,7 +154,7 @@ def main():
                     raise RuntimeError("Bases client HTTP proof failed")
                 print(
                     "PASS: actual Bases client HTTP, offline persistence, exact retry, "
-                    "conflicts and withdrawal"
+                    "conflicts, withdrawal, saved-view identity and repair recovery"
                 )
         finally:
             if process:
