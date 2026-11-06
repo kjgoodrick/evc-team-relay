@@ -32,6 +32,15 @@ pub struct TextAnchorInput {
 /// Captures dependency state once; never exports or reparses the full document.
 /// The caller still owns authorization, generation and checkpoint coordination.
 pub fn resolve_on_doc(doc: &Doc, anchors: &[TextAnchorInput]) -> Result<Vec<AnchorPlacement>> {
+    Ok(resolve_with_snapshot(doc, anchors)?.0)
+}
+
+/// The observation and placements share a transaction. A durable barrier may
+/// hash this snapshot after persisting the monotonic state it observed.
+pub fn resolve_with_snapshot(
+    doc: &Doc,
+    anchors: &[TextAnchorInput],
+) -> Result<(Vec<AnchorPlacement>, Snapshot)> {
     if doc.offset_kind() != OffsetKind::Utf16 {
         bail!("anchor resolution requires UTF-16 offsets");
     }
@@ -44,6 +53,7 @@ pub fn resolve_on_doc(doc: &Doc, anchors: &[TextAnchorInput]) -> Result<Vec<Anch
         {
             bail!("anchor input exceeds protocol limit");
         }
+        preflight_snapshot(&anchor.dependency)?;
         size += anchor.dependency.len() + anchor.start.len() + anchor.end.len();
     }
     if size > 256 * 1024 {
@@ -54,7 +64,7 @@ pub fn resolve_on_doc(doc: &Doc, anchors: &[TextAnchorInput]) -> Result<Vec<Anch
     let text = doc.get_or_insert_text("contents");
     let txn = doc.transact();
     let current = txn.snapshot();
-    anchors
+    let placements = anchors
         .iter()
         .map(|anchor| {
             let dependency =
@@ -81,7 +91,62 @@ pub fn resolve_on_doc(doc: &Doc, anchors: &[TextAnchorInput]) -> Result<Vec<Anch
                 to: to.index,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((placements, current))
+}
+
+/// Yrs v1 decoding reserves state-vector/range capacity from counts in the
+/// payload. A small malicious payload can otherwise request enormous allocation
+/// before truncation is noticed. Check the wire structure without allocating;
+/// every declared entry must fit in the remaining bounded byte slice.
+fn preflight_snapshot(mut bytes: &[u8]) -> Result<()> {
+    fn var(bytes: &mut &[u8], limit: u64) -> Result<u64> {
+        let mut value = 0u64;
+        for shift in (0..=63).step_by(7) {
+            let byte = *bytes.first().context("truncated anchor snapshot")?;
+            *bytes = &bytes[1..];
+            let part = (byte & 127) as u64;
+            if part > u64::MAX >> shift {
+                bail!("invalid anchor integer");
+            }
+            value |= part << shift;
+            if value > limit {
+                bail!("anchor integer exceeds limit");
+            }
+            if byte < 128 {
+                return Ok(value);
+            }
+        }
+        bail!("invalid anchor integer")
+    }
+    fn count(bytes: &mut &[u8]) -> Result<usize> {
+        let n = var(bytes, u32::MAX as u64)? as usize;
+        if n > bytes.len() / 2 {
+            bail!("anchor count exceeds payload");
+        }
+        Ok(n)
+    }
+    let clients = count(&mut bytes)?;
+    for _ in 0..clients {
+        var(&mut bytes, (1u64 << 53) - 1)?;
+        let ranges = count(&mut bytes)?;
+        for _ in 0..ranges {
+            let start = var(&mut bytes, u32::MAX as u64)?;
+            let len = var(&mut bytes, u32::MAX as u64)?;
+            if start + len > u32::MAX as u64 {
+                bail!("anchor delete range overflows");
+            }
+        }
+    }
+    let states = count(&mut bytes)?;
+    for _ in 0..states {
+        var(&mut bytes, (1u64 << 53) - 1)?;
+        var(&mut bytes, u32::MAX as u64)?;
+    }
+    if !bytes.is_empty() {
+        bail!("trailing anchor snapshot bytes");
+    }
+    Ok(())
 }
 
 /// Include deletion ranges: a delete-only update leaves the state vector unchanged.
@@ -135,6 +200,20 @@ pub fn resolve_from_update(
 mod tests {
     use super::*;
     use serde::Deserialize;
+
+    #[test]
+    fn rejects_snapshot_allocation_bombs_truncation_and_range_overflow() {
+        for snapshot in [
+            vec![0, 255, 255, 255, 255, 15], // Four billion vector entries in six bytes.
+            vec![1, 1, 255, 255, 255, 255, 15, 0], // Four billion deletion ranges.
+            vec![1, 1, 1, 255, 255, 255, 255, 15, 1, 0], // Clock + length overflows.
+            vec![1, 1, 1],
+            vec![0, 0, 42],
+        ] {
+            assert!(preflight_snapshot(&snapshot).is_err());
+        }
+        assert!(preflight_snapshot(&[0, 0]).is_ok());
+    }
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]

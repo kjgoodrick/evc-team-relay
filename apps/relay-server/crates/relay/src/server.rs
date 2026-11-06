@@ -59,6 +59,7 @@ use y_sweet_core::{
 };
 
 const RELAY_SERVER_VERSION: &str = env!("GIT_VERSION");
+mod anchor_barrier;
 
 #[derive(Clone, Debug)]
 pub struct AllowedHost {
@@ -236,6 +237,8 @@ pub struct Server {
     /// from the store and clobber each other in `docs`.
     loading_locks: Arc<DashMap<String, Arc<AsyncMutex<()>>>>,
     doc_worker_tracker: TaskTracker,
+    anchor_barriers_enabled: bool,
+    anchor_barrier_slots: Arc<tokio::sync::Semaphore>,
     store: Option<Arc<Box<dyn Store>>>,
     checkpoint_freq: Duration,
     authenticator: Option<Authenticator>,
@@ -302,6 +305,8 @@ impl Server {
             docs: Arc::new(DashMap::new()),
             loading_locks: Arc::new(DashMap::new()),
             doc_worker_tracker: TaskTracker::new(),
+            anchor_barriers_enabled: false,
+            anchor_barrier_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             store: store.map(Arc::new),
             checkpoint_freq,
             authenticator,
@@ -364,10 +369,20 @@ impl Server {
         doc_id: &'a str,
         routing_channel: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.load_doc_with_user(doc_id, routing_channel, None))
+        Box::pin(self.ensure_doc_loaded(doc_id, routing_channel, None))
     }
 
     pub async fn load_doc_with_user(
+        &self,
+        doc_id: &str,
+        routing_channel: Option<String>,
+        user: Option<String>,
+    ) -> Result<()> {
+        self.ensure_doc_loaded(doc_id, routing_channel, user).await
+    }
+
+    // Caller holds this document's loading lock. Never bypass it for reloads.
+    async fn load_doc_unlocked(
         &self,
         doc_id: &str,
         routing_channel: Option<String>,
@@ -499,6 +514,7 @@ impl Server {
                 self.doc_worker_tracker.spawn(
                     Self::doc_gc_worker(
                         self.docs.clone(),
+                        self.loading_locks.clone(),
                         doc_id.clone(),
                         checkpoint_freq,
                         cancellation_token,
@@ -514,6 +530,7 @@ impl Server {
 
     async fn doc_gc_worker(
         docs: Arc<DashMap<String, DocWithSyncKv>>,
+        loading_locks: Arc<DashMap<String, Arc<AsyncMutex<()>>>>,
         doc_id: String,
         checkpoint_freq: Duration,
         cancellation_token: CancellationToken,
@@ -537,24 +554,11 @@ impl Server {
                     }
 
                     if checkpoints_without_refs >= 2 {
-                        tracing::info!("GCing doc");
-                        if let Some(doc) = docs.get(&doc_id) {
-                            // Compact PUD before shutdown: dedup ids, clear ds.
-                            // The mutations create tombstones which yrs GC will
-                            // clean up, and the update observer marks SyncKv
-                            // dirty so the compacted state gets persisted.
-                            let result = doc.compact_user_data();
-                            if !result.is_empty() {
-                                tracing::debug!(
-                                    ids_removed = result.ids_removed,
-                                    ds_removed = result.ds_removed,
-                                    "Compacted PermanentUserData"
-                                );
-                            }
-                            doc.sync_kv().shutdown();
+                        match Self::evict_unused_doc(&docs, &loading_locks, &doc_id).await {
+                            Ok(true) => break,
+                            Ok(false) => checkpoints_without_refs = 0,
+                            Err(_) => tracing::error!("Final checkpoint failed; retaining document"),
                         }
-                        docs.remove(&doc_id);
-                        break;
                     }
                 }
                 _ = cancellation_token.cancelled() => {
@@ -563,6 +567,42 @@ impl Server {
             };
         }
         tracing::info!("Exiting gc_loop");
+    }
+
+    /// Remove eligibility is checked atomically with removal. Hold the loading
+    /// lock until the final write completes, so a fresh copy cannot race an old
+    /// writer. On failure restore the live copy before allowing another load.
+    async fn evict_unused_doc(
+        docs: &DashMap<String, DocWithSyncKv>,
+        loading_locks: &DashMap<String, Arc<AsyncMutex<()>>>,
+        doc_id: &str,
+    ) -> Result<bool> {
+        let lock = loading_locks
+            .entry(doc_id.to_owned())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+        let doc = match docs.entry(doc_id.to_owned()) {
+            dashmap::mapref::entry::Entry::Occupied(entry) => {
+                if Arc::strong_count(&entry.get().awareness()) > 2 {
+                    return Ok(false);
+                }
+                entry.remove()
+            }
+            dashmap::mapref::entry::Entry::Vacant(_) => return Ok(true),
+        };
+        doc.compact_user_data();
+        let persisted = doc
+            .sync_kv()
+            .persist()
+            .await
+            .map_err(|_| anyhow!("Final checkpoint failed"));
+        if let Err(error) = persisted {
+            docs.insert(doc_id.to_owned(), doc);
+            return Err(error);
+        }
+        doc.sync_kv().shutdown();
+        Ok(true)
     }
 
     async fn doc_persistence_worker(
@@ -695,7 +735,7 @@ impl Server {
         }
 
         tracing::info!(doc_id=?doc_id, channel=?routing_channel, user=?user, "Loading doc");
-        self.load_doc_with_user(doc_id, routing_channel, user)
+        self.load_doc_unlocked(doc_id, routing_channel, user)
             .await?;
         Ok(())
     }
@@ -784,6 +824,18 @@ impl Server {
             )
             .route("/webhook/reload", post(reload_webhook_config_endpoint));
 
+        if self.anchor_barriers_enabled {
+            router = router
+                .route(
+                    "/internal/collaboration/register",
+                    post(anchor_barrier::register),
+                )
+                .route(
+                    "/internal/collaboration/validate",
+                    post(anchor_barrier::validate),
+                );
+        }
+
         // Only add file endpoints if a store is configured
         if let Some(store) = &self.store {
             // Add presigned URL endpoints for all stores
@@ -844,7 +896,14 @@ impl Server {
             })
             .await?;
 
-        tracing::info!("HTTP server stopped, shutting down event dispatcher...");
+        self.drain_workers().await;
+        Ok(())
+    }
+
+    /// Called only after HTTP admission stops. Detached barrier tasks are owned
+    /// by the same tracker as persistence and must finish before runtime exit.
+    pub async fn drain_workers(&self) {
+        self.cancellation_token.cancel();
 
         // Explicitly shutdown event dispatcher before waiting on doc workers
         if let Some(event_dispatcher) = &self.event_dispatcher {
@@ -858,8 +917,6 @@ impl Server {
         tracing::info!("Waiting for doc workers to finish...");
         self.doc_worker_tracker.wait().await;
         tracing::info!("All doc workers stopped");
-
-        Ok(())
     }
 
     pub async fn serve(self, listener: TcpListener, redact_errors: bool) -> Result<()> {

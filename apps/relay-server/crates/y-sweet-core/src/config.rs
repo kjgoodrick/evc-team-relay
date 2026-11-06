@@ -299,6 +299,10 @@ pub struct ServerConfig {
 
     #[serde(default = "default_redact_errors")]
     pub redact_errors: bool,
+
+    /// Private collaboration endpoints require server auth and durable storage.
+    #[serde(default)]
+    pub collaboration_anchor_barriers: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -590,6 +594,7 @@ impl Default for ServerConfig {
             checkpoint_freq_seconds: default_checkpoint_freq_seconds(),
             doc_gc: default_doc_gc(),
             redact_errors: default_redact_errors(),
+            collaboration_anchor_barriers: false,
         }
     }
 }

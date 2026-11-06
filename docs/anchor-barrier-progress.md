@@ -1,8 +1,10 @@
-# Text-anchor barrier: relay prerequisites
+# Text-anchor barrier: private relay implementation
 
-Status: November 5, 2026. Live placement and checkpoint prerequisites are
-implemented; **no trusted anchor receipt endpoint is enabled or complete**.
-Whole-note discussion commands remain the only accepted discussion target.
+Status: November 5, 2026. The private relay registration/validation endpoints and
+their storage/lifecycle checks are implemented and **disabled by default**.
+Control-plane generation ownership, receipt consumption, and native selection
+integration remain unfinished. Whole-note discussion commands remain the only
+accepted public discussion target. No live service was restarted or configured.
 
 ## Live placement
 
@@ -48,35 +50,65 @@ write failure and exercise replacement/reload; they do not simulate power loss o
 the Pi's storage. Filesystem I/O remains synchronous, as in the existing backend;
 measure checkpoint latency before enabling the barrier for normal traffic.
 
+## Private endpoint and lifecycle increment
+
+The [private protocol](anchor-barrier-protocol.md) implements authenticated
+generation registration and validation. It requires server credentials even when
+the ordinary relay is configured for anonymous development. Ordinary document
+tokens fail. Enabling it without authentication or a supported durable store fails
+startup. Only Unix filesystem storage currently opts into durability; remote
+backends remain gated pending their own evidence.
+
+Requests bind managed document/share IDs, generation, request ID, expiry, and a
+SHA-256 digest of the exact HTTP body. Registration binds only an existing document
+with matching stored routing channel, and never rotates an existing generation.
+Validation checks the persisted binding, resolves the batch and captures the
+observed snapshot in one transaction, then awaits ordered storage. Missing
+dependencies and malformed positions return distinct failures; valid dependencies
+whose selected text disappeared can return an unanchored placement.
+
+Admission is bounded to four operations, with no waiting queue and a nonblocking
+per-document lock. The body limit is 512 KiB and collection deadline five seconds;
+request lifetime is at most 30 seconds. Existing decoded batch/anchor limits apply
+independently. Snapshot preflight also rejects count-based allocation bombs,
+truncation, overflow and trailing data before Yrs allocates decoded collections.
+
+After admission, work belongs to the server task tracker. HTTP cancellation or
+deadline expiration stops waiting but does not drop an in-flight storage future.
+Permits and document locks remain held until completion; expired work cannot
+return a receipt. Both the library server and executable drain tracked storage
+work during graceful shutdown.
+
+Eviction now takes the same per-document load lock, atomically rechecks references,
+removes the idle document from admission, and finishes its final checkpoint before
+allowing reload. Failed writes restore the live document to the cache. Public load
+helpers use that lock too. This closes the old-copy/new-copy persistence race.
+
 ## Remaining contract before accepting selected-text comments
 
-1. Add a disabled-by-default private relay endpoint with fail-closed server
-   authentication, body/batch/concurrency limits, explicit document generation,
-   request digest and bounded lifetime. Never accept ordinary browser/document
-   credentials as internal barrier authority, or create an unknown managed doc
-   merely because a barrier request names it.
-2. Run checkpoint work under a **server-owned lifetime**, separate from the HTTP
-   request. Canceling an S3/remote-store future does not prove its remote write was
-   canceled; an old request may still finish. The new cancellation guard preserves
-   retryability, but alone cannot make such an uncertain write a durable receipt.
-   Keep writes ordered to completion and let disconnected clients stop waiting.
-3. Establish supported-backend durability, reject memory-only/unsupported stores,
-   then issue a receipt only after the requested state is applied and checkpointed.
-   Return dependency-wait separately from malformed or subsequently removed targets.
-4. Add managed document generations and restore rules, control-plane validation
+1. Add control-plane managed document generations and restore rules, validation
    before the relay call and again at commit, and request/receipt identity binding.
    Do network work outside PostgreSQL authorization locks, then recheck under them.
-5. Align public command and private barrier byte limits. Base64 of a maximum 64 KiB
+   Persist the generation before registering it; consume responses only from the
+   private authenticated call, never from client-supplied proof fields.
+2. Align public command and private barrier byte limits. Base64 of a maximum 64 KiB
    dependency alone exceeds the current 64 KiB whole-note command limit. Do not
    silently enable text anchors under that envelope; choose explicit bounded
    limits or dependency-token staging and add cross-language protocol vectors.
-6. Exercise concurrent edits, compaction, unknown documents, missing deletes,
-   generation changes, checkpoint failure/cancellation, process restart and
-   unauthorized replay through real HTTP and storage. Benchmark batch cost and
-   typing responsiveness. Add native selection/source/Reading mapping separately.
+3. Exercise the complete control-plane/relay/plugin boundary over real HTTP,
+   coherent restore/generation changes and process restart. Current route tests
+   use the Axum service with actual filesystem storage and deterministic pause/
+   failure injection; they do not substitute for that end-to-end acceptance.
+4. Benchmark long-lived documents, concurrent edits/compaction, batch cost, and
+   typing responsiveness. Prove remote-store semantics before opting those
+   backends in. Add native selection/source/Reading mapping and queued note-sync
+   dependencies. Whole-note public capabilities stay unchanged until these gates.
 
-Validation on this Mac: `y-sweet-core --lib` **188 passed**; `relay --lib`
-**37 passed**, including new checkpoint failure/ordering and filesystem tests.
-Plugin text-anchor suite **8 passed**. Rustfmt was added to the temporary task
-toolchain and passes for the changed Rust files. No source was deployed, no
-running relay was restarted, and no new anchor capability is advertised.
+Validation on this Mac: complete `y-sweet-core --lib` **189 passed** and
+`relay --lib` **43 passed**, followed by **8 private barrier tests passed** after
+adding explicit decoded-boundary and expired-wait cases. The private cases include
+all nine shared anchor vectors through registration, validation and filesystem
+eviction/reload; auth/unknown targets/generation mismatch; failed writes; client
+cancellation and shutdown draining; and reload waiting for final storage.
+Compilation and changed-file formatting pass. The plugin fixture suite's earlier
+**8 passed** remains prior evidence; no plugin code changed in this increment.

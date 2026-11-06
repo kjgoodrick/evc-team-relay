@@ -210,6 +210,11 @@ pub trait Store: 'static {
 #[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Opt in only when successful writes establish the durability required by
+    /// an anchor receipt. Memory/untested remote stores must fail closed.
+    fn supports_durable_checkpoints(&self) -> bool {
+        false
+    }
     async fn init(&self) -> Result<()>;
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
     async fn set(&self, key: &str, value: Vec<u8>) -> Result<()>;

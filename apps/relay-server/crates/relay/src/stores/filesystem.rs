@@ -97,6 +97,10 @@ impl FileSystemStore {
 
 #[async_trait]
 impl Store for FileSystemStore {
+    fn supports_durable_checkpoints(&self) -> bool {
+        cfg!(unix)
+    }
+
     async fn init(&self) -> Result<()> {
         Ok(())
     }

@@ -103,7 +103,9 @@ impl DocWithSyncKv {
         &self,
         anchors: &[crate::anchors::TextAnchorInput],
     ) -> Result<Vec<crate::anchors::AnchorPlacement>> {
-        let awareness = self.awareness.read().unwrap();
+        // The resolver may materialize the empty contents root. Serialize that
+        // brief transaction against other readers/writers of this live Doc.
+        let awareness = self.awareness.write().unwrap();
         crate::anchors::resolve_on_doc(&awareness.doc, anchors)
     }
 

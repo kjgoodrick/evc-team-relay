@@ -537,7 +537,9 @@ fn get_store_from_config(
                     Some(s3_config.prefix.clone())
                 },
                 path_style: s3_config.path_style,
-                public_endpoint: env::var("S3_PUBLIC_ENDPOINT").ok().filter(|v| !v.is_empty()),
+                public_endpoint: env::var("S3_PUBLIC_ENDPOINT")
+                    .ok()
+                    .filter(|v| !v.is_empty()),
             };
 
             let store = S3Store::new(s3_store_config);
@@ -581,7 +583,9 @@ fn get_store_from_config(
                     Some(s3_config.prefix.clone())
                 },
                 path_style: s3_config.path_style,
-                public_endpoint: env::var("S3_PUBLIC_ENDPOINT").ok().filter(|v| !v.is_empty()),
+                public_endpoint: env::var("S3_PUBLIC_ENDPOINT")
+                    .ok()
+                    .filter(|v| !v.is_empty()),
             };
 
             let store = S3Store::new(s3_store_config);
@@ -930,7 +934,8 @@ async fn main() -> Result<()> {
                 config.server.doc_gc,
                 webhook_configs,
             )
-            .await?;
+            .await?
+            .with_anchor_barriers(config.server.collaboration_anchor_barriers)?;
 
             let redact_errors = config.server.redact_errors;
             let server = Arc::new(server);
@@ -993,6 +998,7 @@ async fn main() -> Result<()> {
             } else {
                 let _ = main_handle.await;
             }
+            server.drain_workers().await;
             tracing::info!("Server shut down.");
         }
         ServSubcommand::GenAuth { json, key_type } => {
