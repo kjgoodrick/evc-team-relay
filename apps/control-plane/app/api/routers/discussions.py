@@ -98,6 +98,29 @@ def thread(
     return service.read_thread(db, token, share_id, entry_id, thread_id, after=after, limit=limit)
 
 
+@router.get("/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/state")
+def thread_state(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.read_thread_state(db, token, share_id, entry_id, thread_id)
+
+
+@router.get("/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/messages/{message_id}")
+def message(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.read_message(db, token, share_id, entry_id, thread_id, message_id)
+
+
 @router.get(
     "/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/messages/{message_id}/history"
 )

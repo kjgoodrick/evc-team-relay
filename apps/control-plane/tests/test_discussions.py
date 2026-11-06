@@ -131,6 +131,101 @@ def count(db, model):
     return db.scalar(select(func.count()).select_from(model))
 
 
+def test_targeted_message_read_tracks_edits_reactions_and_tombstones(client, world):
+    w = world
+    payload = create(w)
+    result = send(client, w, payload)
+    tid, mid = result["thread_id"], result["message_id"]
+    path = base(w) + f"/threads/{tid}/messages/{mid}"
+    send(
+        client,
+        w,
+        envelope(
+            w,
+            {
+                "type": "message.edit",
+                "thread_id": tid,
+                "message_id": mid,
+                "expected_revision": 1,
+                "body": body("Edited"),
+            },
+        ),
+    )
+    send(
+        client,
+        w,
+        envelope(
+            w,
+            {
+                "type": "reaction.set",
+                "thread_id": tid,
+                "message_id": mid,
+                "emoji": "heart",
+                "present": True,
+            },
+        ),
+    )
+    response = client.get(path, headers=headers(w.tokens["reviewer"]))
+    assert response.status_code == 200
+    data = response.json()
+    assert data["thread"]["activity_sequence"] == 3
+    assert data["anchor"] == {"type": "note", "version": 1, "entry_id": w.entry.id}
+    assert data["message"]["revision"] == 2
+    assert data["message"]["body"] == body("Edited")
+    assert data["message"]["reactions"] == [{"emoji": "heart", "count": 1, "mine": True}]
+    reader = client.get(path, headers=headers(w.tokens["reader"]))
+    assert reader.status_code == 200
+    assert reader.json()["message"]["reactions"] == [{"emoji": "heart", "count": 1, "mine": False}]
+    send(
+        client,
+        w,
+        envelope(
+            w,
+            {"type": "message.delete", "thread_id": tid, "message_id": mid, "expected_revision": 2},
+        ),
+    )
+    tombstone = client.get(path, headers=headers(w.tokens["reader"])).json()["message"]
+    assert tombstone["deleted"] and tombstone["body"] is None and tombstone["reactions"] == []
+
+
+def test_targeted_message_read_obeys_entry_thread_and_current_session_access(
+    client, db_session, world
+):
+    w = world
+    one, two = send(client, w, create(w)), send(client, w, create(w))
+    path = base(w) + f"/threads/{one['thread_id']}/messages/{one['message_id']}"
+    mixed = base(w) + f"/threads/{two['thread_id']}/messages/{one['message_id']}"
+    assert client.get(mixed, headers=headers(w.tokens["reader"])).status_code == 404
+    private = base(w, w.other.id) + f"/threads/{one['thread_id']}/messages/{one['message_id']}"
+    assert client.get(private, headers=headers(w.tokens["reader"])).status_code == 404
+    send(
+        client,
+        w,
+        envelope(
+            w,
+            {
+                "type": "thread.remove",
+                "thread_id": one["thread_id"],
+                "expected_state_revision": 1,
+                "reason": "Removed",
+            },
+        ),
+        actor="owner",
+    )
+    assert client.get(path, headers=headers(w.tokens["reader"])).status_code == 404
+    state = client.get(
+        base(w) + f"/threads/{one['thread_id']}/state", headers=headers(w.tokens["reader"])
+    )
+    assert state.status_code == 200
+    assert state.json()["thread"]["removed"] is True
+    assert set(state.json()) == {"thread"}
+    assert client.get(path, headers=headers(w.tokens["owner"])).status_code == 200
+    session = db_session.get(m.UserSession, w.sessions["owner"])
+    db_session.delete(session)
+    db_session.commit()
+    assert client.get(path, headers=headers(w.tokens["owner"])).status_code == 401
+
+
 def test_commenter_can_discuss_without_note_write_and_retries_are_exactly_once(
     client, db_session, world
 ):

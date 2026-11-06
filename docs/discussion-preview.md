@@ -28,7 +28,8 @@ server administrators moderate; any authorized commenter can resolve/reopen.
 Only authors edit their messages. A moderator can delete another author's
 message with a reason, or remove a thread with a reason. Ordinary readers see
 message tombstones, not deleted history. Authors/moderators can inspect deleted
-message history; removed threads are inspectable only by moderators. Account
+message history; removed thread bodies are inspectable only by moderators.
+Authorized readers can fetch removal state metadata without the body or anchor. Account
 deletion nulls author references and retains history; share deletion cascades
 discussion content and receipts. There is no private-thread feature.
 
@@ -124,6 +125,13 @@ All paths below start with
 - `GET /threads?after=0&limit=50`: nonremoved threads, ordered by creation.
 - `GET /threads/{thread_id}?after=0&limit=50`: current thread/anchor and message
   page, including current bodies, revisions, and reaction aggregates.
+- `GET /threads/{thread_id}/state`: current state/anchor without message bodies;
+  removed threads return state metadata only, with no anchor or removal reason.
+  Entry read authorization still applies, including after revocation.
+- `GET /threads/{thread_id}/messages/{message_id}`: one current message/reaction
+  aggregate, plus its thread and anchor. Enforces the same thread visibility and
+  entry/session authorization as a full thread read. This lets clients update
+  old replies without downloading the entire conversation.
 - `GET /threads/{thread_id}/messages/{message_id}/history?after=0&limit=50`:
   immutable revision page, subject to deletion/moderation rules.
 - `GET /changes?cursor=...&limit=100`: ordered event metadata for this entry.

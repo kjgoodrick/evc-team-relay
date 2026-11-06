@@ -414,8 +414,18 @@ def read_thread(db, token, share_id, entry_id, thread_id, *, after=0, limit=50):
         .limit(limit + 1)
     ).all()
     page = bounded_bodies(rows[:limit], lambda row: row[1].body)
+    return {
+        "thread": thread_data(thread),
+        "anchor": anchor.payload,
+        "messages": message_data(db, ctx, page),
+        "has_more": len(rows) > len(page),
+        "next_after": page[-1][0].created_sequence if page else after,
+    }
+
+
+def message_data(db, ctx, rows):
     reactions = {}
-    if page:
+    if rows:
         for message_id, emoji, total, mine in db.execute(
             select(
                 m.DiscussionReaction.message_id,
@@ -423,32 +433,62 @@ def read_thread(db, token, share_id, entry_id, thread_id, *, after=0, limit=50):
                 func.count(),
                 func.sum(case((m.DiscussionReaction.user_id == ctx.user.id, 1), else_=0)),
             )
-            .where(m.DiscussionReaction.message_id.in_([message.id for message, _ in page]))
+            .where(m.DiscussionReaction.message_id.in_([message.id for message, _ in rows]))
             .group_by(m.DiscussionReaction.message_id, m.DiscussionReaction.emoji)
             .order_by(m.DiscussionReaction.emoji)
         ):
             reactions.setdefault(message_id, []).append(
                 {"emoji": emoji, "count": total, "mine": bool(mine)}
             )
+    return [
+        {
+            "id": str(message.id),
+            "author_id": str(message.author_id) if message.author_id else None,
+            "revision": message.revision,
+            "deleted": message.deleted,
+            "body": revision.body,
+            "created_sequence": message.created_sequence,
+            "created_at": message.created_at,
+            "edited_at": message.edited_at,
+            "reactions": [] if message.deleted else reactions.get(message.id, []),
+        }
+        for message, revision in rows
+    ]
+
+
+def read_thread_state(db, token, share_id, entry_id, thread_id):
+    """Removal metadata is readable without exposing removed text or anchor quotes."""
+    ctx = context(db, token, share_id, entry_id)
+    thread = thread_for(db, scope_for(db, ctx), thread_id, include_removed=True)
+    result = {"thread": thread_data(thread)}
+    if not thread.deleted:
+        anchor = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
+        result["anchor"] = anchor.payload
+    return result
+
+
+def read_message(db, token, share_id, entry_id, thread_id, message_id):
+    """Fetch the current authorized revision/reactions without replaying a long thread."""
+    ctx = context(db, token, share_id, entry_id)
+    thread = thread_for(db, scope_for(db, ctx), thread_id, include_removed=ctx.moderate)
+    row = db.execute(
+        select(m.DiscussionMessage, m.DiscussionMessageRevision)
+        .join(
+            m.DiscussionMessageRevision,
+            and_(
+                m.DiscussionMessageRevision.message_id == m.DiscussionMessage.id,
+                m.DiscussionMessageRevision.revision == m.DiscussionMessage.revision,
+            ),
+        )
+        .where(m.DiscussionMessage.thread_id == thread.id, m.DiscussionMessage.id == message_id)
+    ).first()
+    if row is None:
+        error(404, "target_unavailable")
+    anchor = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
     return {
         "thread": thread_data(thread),
         "anchor": anchor.payload,
-        "messages": [
-            {
-                "id": str(message.id),
-                "author_id": str(message.author_id) if message.author_id else None,
-                "revision": message.revision,
-                "deleted": message.deleted,
-                "body": revision.body,
-                "created_sequence": message.created_sequence,
-                "created_at": message.created_at,
-                "edited_at": message.edited_at,
-                "reactions": [] if message.deleted else reactions.get(message.id, []),
-            }
-            for message, revision in page
-        ],
-        "has_more": len(rows) > len(page),
-        "next_after": page[-1][0].created_sequence if page else after,
+        "message": message_data(db, ctx, [row])[0],
     }
 
 
