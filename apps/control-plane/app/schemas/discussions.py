@@ -1,5 +1,7 @@
 """Bounded preview protocol. Unsupported anchors/images are rejected, never guessed."""
 
+import base64
+import binascii
 import json
 import uuid
 from typing import Annotated, Literal
@@ -131,11 +133,53 @@ class NoteAnchor(StrictModel):
     type: Literal["note"]
 
 
+class AnchorContext(StrictModel):
+    quote: str = Field(max_length=512)
+    prefix: str = Field(max_length=64)
+    suffix: str = Field(max_length=64)
+    truncated: StrictBool
+
+
+class TextAnchor(StrictModel):
+    version: Literal[1]
+    type: Literal["text"]
+    document_id: uuid.UUID
+    generation: uuid.UUID
+    dependency: str = Field(max_length=87384)
+    start: str = Field(max_length=344)
+    end: str = Field(max_length=344)
+    selected_length: int = Field(ge=0, le=4294967295, strict=True)
+    context: AnchorContext
+
+    @field_validator("dependency", "start", "end")
+    @classmethod
+    def bounded_encoding(cls, value, info):
+        limit = 65536 if info.field_name == "dependency" else 256
+        try:
+            decoded = base64.b64decode(value, validate=True)
+            if not decoded or len(decoded) > limit or base64.b64encode(decoded).decode() != value:
+                raise ValueError("Invalid anchor encoding")
+        except (ValueError, binascii.Error):
+            raise ValueError("Invalid anchor encoding") from None
+        return value
+
+    @model_validator(mode="after")
+    def valid_unicode(self):
+        try:
+            self.model_dump_json().encode("utf-8")
+        except (UnicodeError, PydanticSerializationError):
+            raise ValueError("Anchor context must contain valid Unicode") from None
+        return self
+
+
+Anchor = Annotated[NoteAnchor | TextAnchor, Field(discriminator="type")]
+
+
 class ThreadCreate(StrictModel):
     type: Literal["thread.create"]
     thread_id: uuid.UUID
     message_id: uuid.UUID
-    anchor: NoteAnchor
+    anchor: Anchor
     body: MessageBody
 
 

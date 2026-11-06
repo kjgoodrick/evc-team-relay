@@ -1,5 +1,6 @@
 """Opt-in discussion API; complete collaboration support is not advertised yet."""
 
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -12,6 +13,7 @@ from app.api import deps
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.schemas.discussions import CommandEnvelope
+from app.services import anchor_service
 from app.services import discussion_service as service
 
 
@@ -23,10 +25,21 @@ class BoundedDiscussionRoute(APIRoute):
             if request.method != "POST":
                 return await handler(request)
             body = bytearray()
+            limit = 256 * 1024 if anchor_service.enabled() else 65536
             async for chunk in request.stream():
-                if len(body) + len(chunk) > 65536:
+                if len(body) + len(chunk) > limit:
                     raise HTTPException(413, {"code": "command_too_large"})
                 body.extend(chunk)
+            if len(body) > 65536:
+                try:
+                    value = json.loads(body)
+                    command = value.get("command") if isinstance(value, dict) else None
+                    anchor = command.get("anchor") if isinstance(command, dict) else None
+                    is_text = isinstance(anchor, dict) and anchor.get("type") == "text"
+                except (ValueError, UnicodeError):
+                    is_text = False
+                if not is_text:
+                    raise HTTPException(413, {"code": "command_too_large"})
             delivered = False
 
             async def receive():
@@ -71,6 +84,16 @@ def command(
     payload: CommandEnvelope, token: str = Depends(credential), db: Session = Depends(get_db)
 ):
     return service.apply_command(db, token, payload)
+
+
+@router.get("/shares/{share_id}/entries/{entry_id}/anchor-context")
+def anchor_context(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.document_context(db, token, share_id, entry_id)
 
 
 @router.get("/shares/{share_id}/entries/{entry_id}/threads")

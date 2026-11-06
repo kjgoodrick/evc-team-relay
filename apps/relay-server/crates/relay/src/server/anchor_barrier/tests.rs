@@ -111,6 +111,48 @@ async fn load(server: &Server, doc: &str, fixture: &Fixture) {
 }
 
 #[tokio::test]
+async fn existing_managed_document_binds_without_changing_its_routing() {
+    let temp = tempfile::tempdir().unwrap();
+    let (server, token, _) = server(
+        Some(Box::new(
+            FileSystemStore::new(temp.path().to_owned()).unwrap(),
+        )),
+        true,
+    )
+    .await;
+    let fixture = &vectors()[0];
+    server.load_doc_with_user(DOC, None, None).await.unwrap();
+    server
+        .docs
+        .get(DOC)
+        .unwrap()
+        .apply_update(&fixture.update)
+        .unwrap();
+    assert_eq!(server.docs.get(DOC).unwrap().get_channel(), None);
+    assert_eq!(
+        call(&server, &token, "register", envelope(DOC, None))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&server, &token, "validate", envelope(DOC, Some(fixture)))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(server.docs.get(DOC).unwrap().get_channel(), None);
+    let mut foreign = envelope(DOC, None);
+    foreign["share_id"] = json!(REQUEST_ID);
+    assert_eq!(
+        call(&server, &token, "register", foreign).await.0,
+        StatusCode::CONFLICT
+    );
+    assert!(!server.docs.contains_key(SHARE_ID));
+    server.drain_workers().await;
+}
+
+#[tokio::test]
 async fn private_routes_are_disabled_by_default_and_require_server_authority() {
     let temp = tempfile::tempdir().unwrap();
     let (disabled, token, _) = server(

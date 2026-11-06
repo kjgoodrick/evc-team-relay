@@ -242,7 +242,11 @@ def test_preview_disabled_and_no_unimplemented_feature_advertised(client, team, 
     url = f"/v1/collaboration/capabilities?share_id={share.id}"
     features = client.get(url, headers=auth(reviewer)).json()["features"]
     assert features == dict(
-        comment_permissions=True, comments=False, bases=False, discussion_commands=False
+        comment_permissions=True,
+        comments=False,
+        bases=False,
+        discussion_commands=False,
+        discussion_text_anchors=False,
     )
     monkeypatch.setattr(get_settings(), "collaboration_policy_enabled", False)
     assert (

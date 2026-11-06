@@ -7,6 +7,7 @@ No existing services, vaults, credentials or containers are used.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import secrets
@@ -53,6 +54,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", type=Path, required=True)
     parser.add_argument(
+        "--text-anchors",
+        action="store_true",
+        help="Run selected-text comments through the private relay barrier",
+    )
+    parser.add_argument(
         "--relay", type=Path, default=ROOT.parent / "relay-server/target/debug/relay"
     )
     parser.add_argument(
@@ -84,6 +90,51 @@ def main():
 
         private, public = security.generate_ed25519_keypair()
         os.environ["RELAY_PRIVATE_KEY"] = private
+        private_auth = ""
+        if args.text_anchors:
+            # A separate, disposable server-only signing key. The application's
+            # normal document key must never authorize the private barrier.
+            import cbor2
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+            barrier_key = Ed25519PrivateKey.generate()
+            barrier_public = base64.b64encode(
+                barrier_key.public_key().public_bytes(
+                    serialization.Encoding.Raw, serialization.PublicFormat.Raw
+                )
+            ).decode()
+            protected = cbor2.dumps({1: -8, 4: b"anchor-fixture"})
+            claims = cbor2.dumps(
+                {
+                    1: "relay-server",
+                    3: f"http://127.0.0.1:{relay_port}",
+                    4: int(time.time()) + 300,
+                    6: int(time.time()),
+                    -80201: "server",
+                }
+            )
+            signature = barrier_key.sign(cbor2.dumps(["Signature1", protected, b"", claims]))
+            token = (
+                base64.urlsafe_b64encode(
+                    cbor2.dumps(
+                        cbor2.CBORTag(61, cbor2.CBORTag(18, [protected, {}, claims, signature]))
+                    )
+                )
+                .decode()
+                .rstrip("=")
+            )
+            os.environ.update(
+                COLLABORATION_POLICY_ENABLED="true",
+                COLLABORATION_DISCUSSIONS_ENABLED="true",
+                COLLABORATION_TEXT_ANCHORS_ENABLED="true",
+                COLLABORATION_ANCHOR_RELAY_TOKEN=token,
+            )
+            private_auth = f'''[[auth]]
+key_id = "anchor-fixture"
+public_key = "{barrier_public}"
+allowed_token_types = ["server"]
+'''
         from app.core.config import get_settings
 
         get_settings.cache_clear()
@@ -119,9 +170,19 @@ def main():
             )
             db.add(
                 models.ManagedRule(
-                    share_id=share.id, user_id=bob.id, path="", recursive=True, permission="write"
+                    share_id=share.id,
+                    user_id=bob.id,
+                    path="",
+                    recursive=True,
+                    permission="read" if args.text_anchors else "write",
                 )
             )
+            if args.text_anchors:
+                db.add(
+                    models.ManagedCommentRule(
+                        share_id=share.id, user_id=bob.id, path="", recursive=True, allowed=True
+                    )
+                )
             db.add(
                 models.ManagedRule(
                     share_id=share.id,
@@ -177,9 +238,11 @@ host = "127.0.0.1"
 url = "http://127.0.0.1:{relay_port}"
 port = {relay_port}
 checkpoint_freq_seconds = 1
+collaboration_anchor_barriers = {str(args.text_anchors).lower()}
 [[auth]]
 key_id = "managed-test"
 public_key = "{public}"
+{private_auth}\
 [store]
 type = "filesystem"
 path = "{temp / "relay-data"}"
@@ -218,9 +281,17 @@ path = "{temp / "relay-data"}"
                             raise RuntimeError("Disposable server exited")
                         time.sleep(0.2)
                     return 0
-                env = {**os.environ, "EVC_MANAGED_FIXTURE": str(fixture_path)}
+                fixture_variable = (
+                    "EVC_TEXT_ANCHOR_FIXTURE" if args.text_anchors else "EVC_MANAGED_FIXTURE"
+                )
+                test_file = (
+                    "__tests__/collaboration/realTextAnchorStack.test.ts"
+                    if args.text_anchors
+                    else "__tests__/managed/realStack.test.ts"
+                )
+                env = {**os.environ, fixture_variable: str(fixture_path)}
                 test = subprocess.Popen(
-                    ["npm", "test", "--", "--runInBand", "__tests__/managed/realStack.test.ts"],
+                    ["npm", "test", "--", "--runInBand", test_file],
                     cwd=args.plugin,
                     env=env,
                 )

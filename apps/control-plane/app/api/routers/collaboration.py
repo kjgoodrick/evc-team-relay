@@ -8,7 +8,13 @@ from app.db import models
 from app.db.session import get_db
 from app.schemas.collaboration import CommentRuleSet, CommentRuleUpdate, EntryCapabilities
 from app.schemas.discussions import REACTION_KEYS
-from app.services import collaboration_auth, collaboration_policy, managed_service, share_service
+from app.services import (
+    anchor_service,
+    collaboration_auth,
+    collaboration_policy,
+    managed_service,
+    share_service,
+)
 
 router = APIRouter(prefix="/collaboration", tags=["collaboration"])
 
@@ -32,16 +38,23 @@ def capabilities(
             "comment_permissions": get_settings().collaboration_policy_enabled,
             "comments": False,
             "bases": False,
+            "discussion_text_anchors": anchor_service.enabled(),
             "discussion_commands": (
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled
             ),
         },
-        "discussion_targets": ["note"],
+        "discussion_targets": ["note", "text"] if anchor_service.enabled() else ["note"],
         "discussion_body_version": 1,
         "discussion_session_required": True,
         "reaction_keys": REACTION_KEYS,
-        "discussion_limits": {"message_bytes": 32768, "command_bytes": 65536, "page_items": 100},
+        "discussion_limits": {
+            "message_bytes": 32768,
+            "command_bytes": 256 * 1024 if anchor_service.enabled() else 65536,
+            "note_command_bytes": 65536,
+            "anchor_dependency_bytes": 65536,
+            "page_items": 100,
+        },
     }
 
 

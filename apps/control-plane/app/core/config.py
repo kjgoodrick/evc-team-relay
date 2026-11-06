@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from urllib.parse import urlsplit
 
-from pydantic import AnyUrl, Field
+from pydantic import AnyUrl, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     )
     collaboration_discussions_enabled: bool = Field(
         default=False, description="Preview whole-note discussion commands and HTTP catch-up"
+    )
+    collaboration_text_anchors_enabled: bool = Field(
+        default=False, description="Preview validated text anchors; requires private relay barriers"
+    )
+    collaboration_anchor_relay_token: SecretStr | None = Field(
+        default=None, description="Internal relay server credential; never issued to clients"
     )
 
     # Logging configuration

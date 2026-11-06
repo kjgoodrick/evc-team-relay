@@ -242,7 +242,15 @@ async fn observe(
             .docs
             .get(&envelope.document_id)
             .ok_or_else(unavailable)?;
-        if doc.get_channel().as_deref() != Some(&envelope.share_id) {
+        // Existing managed notes normally have no routing channel: their
+        // inventory/permissions live in the control plane. That authenticated
+        // authority supplies the initial ownership binding below. Do not invent
+        // a parent channel (and change event routing) just to attach comments.
+        // An explicit, conflicting legacy channel remains a hard mismatch.
+        if doc
+            .get_channel()
+            .is_some_and(|channel| channel != envelope.share_id)
+        {
             return Err(failure(StatusCode::CONFLICT, "share_mismatch"));
         }
         (doc.awareness(), doc.sync_kv())

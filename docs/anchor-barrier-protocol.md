@@ -7,8 +7,9 @@ into durable checkpoints. Currently that is Unix `FileSystemStore`, using its
 file/directory-synchronized atomic replacement. Memory and remote stores fail
 closed. No deployment configuration is changed by implementing this protocol.
 
-The control-plane integration is still pending. Do not advertise selected-text
-comments or accept a client-provided receipt on the strength of this endpoint alone.
+The control-plane and plugin protocol integration is implemented behind an
+additional text-anchor preview flag. Native selection/highlight UI and coherent
+restore remain unfinished. Never accept a client-provided receipt.
 
 ## Transport and admission
 
@@ -36,7 +37,7 @@ Both endpoints require these fields and reject unknown fields:
 | `protocol_version` | Integer `1`. |
 | `request_id` | Lowercase UUID; identifies this private request. |
 | `document_id` | Existing managed entry UUID; also the relay document ID. |
-| `share_id` | Managed share UUID matching the relay's stored routing channel. |
+| `share_id` | Managed share UUID verified by the control plane and bound in relay metadata; any explicit routing channel must agree. |
 | `generation` | Control-plane-owned UUID for this document's CRDT lineage. |
 | `expires_at_ms` | Unix epoch milliseconds, greater than now and at most 30 seconds ahead. |
 | `anchors` | Omitted/empty for registration; 1–32 inputs for validation. |
@@ -54,9 +55,13 @@ is truncated or repaired by the relay.
 
 ## Generation registration
 
-The relay verifies existing storage/cache and the stored share channel before
-binding `collaboration_generation` and `collaboration_share_id` in SyncKv
-metadata. Registration never initializes an unknown document. A missing file is
+The relay verifies existing storage/cache before binding `collaboration_generation`
+and `collaboration_share_id` in SyncKv metadata. Existing managed notes normally
+have no stored routing channel: their inventory belongs to the control plane.
+The authenticated private caller establishes the first ownership binding after
+checking that inventory. An explicit conflicting channel rejects. Registration
+does not add a channel, create a parent document, or change event delivery.
+Registration never initializes an unknown document. A missing file is
 404; a storage outage is 503. An existing identical binding is idempotent; a
 different generation or partial/mismatched binding is 409.
 

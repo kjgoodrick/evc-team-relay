@@ -1,9 +1,10 @@
 """Transactional whole-note discussion preview; no network calls while locks are held.
 
 Lock order: actor user (SHARE), actor session (SHARE), share (UPDATE for
-commands/SHARE for reads), membership (SHARE), then thread/message. Existing
-managed rule/inventory writers lock the share. User/session/membership changes
-conflict with the corresponding row lock. A receipt never bypasses current auth.
+commands/SHARE for reads), membership (SHARE), entry (UPDATE for commands), then
+thread/message. Existing managed rule/inventory writers lock the share.
+User/session/membership changes conflict with the corresponding row lock.
+A receipt never bypasses current auth.
 """
 
 import base64
@@ -23,7 +24,7 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas import discussions as s
-from app.services import collaboration_auth, collaboration_policy, managed_service
+from app.services import anchor_service, collaboration_auth, collaboration_policy, managed_service
 
 
 def error(status: int, code: str):
@@ -71,7 +72,7 @@ def context(
             error(404, "target_unavailable")
     # Recheck expiration after any lock wait; user/session rows remain guarded.
     deps._get_user_from_token(db, token)
-    entry = db.scalar(
+    entry_query = (
         select(m.ManagedEntry)
         .where(
             m.ManagedEntry.id == str(entry_id),
@@ -80,6 +81,7 @@ def context(
         )
         .execution_options(populate_existing=True)
     )
+    entry = db.scalar(entry_query.with_for_update() if write else entry_query)
     if not entry or entry.record.get("type") != "markdown":
         error(404, "target_unavailable")
     permission = managed_service.permission(
@@ -178,11 +180,79 @@ def state_precondition(thread, expected):
         error(409, "stale_thread_revision")
 
 
+def document_context(db, token, share_id, entry_id):
+    """Read permission is sufficient to discover server-owned lineage."""
+    require_clean_session(db)
+    try:
+        ctx = context(db, token, share_id, entry_id)
+        if not anchor_service.enabled():
+            error(404, "text_anchors_disabled")
+        entry = db.scalar(
+            select(m.ManagedEntry)
+            .where(m.ManagedEntry.id == ctx.entry.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if entry.collaboration_generation is None:
+            entry.collaboration_generation = uuid.uuid4()
+        result = {
+            "protocol_version": 1,
+            "entry_id": entry.id,
+            "generation": str(entry.collaboration_generation),
+        }
+        db.commit()
+        return result
+    except Exception:
+        db.rollback()
+        raise
+
+
+def existing_receipt(db, ctx, envelope, request_hash):
+    receipt = db.get(m.DiscussionReceipt, (ctx.user.id, envelope.operation_id))
+    if receipt is None:
+        return None
+    scope = scope_for(db, ctx)
+    if receipt.request_hash != request_hash or not scope or receipt.scope_id != scope.id:
+        error(409, "operation_id_conflict")
+    result = dict(receipt.result)
+    db.commit()
+    return result
+
+
+def prepare_text_anchor(db, token, envelope):
+    ctx = context(db, token, envelope.share_id, envelope.entry_id, write=True)
+    prior = existing_receipt(db, ctx, envelope, anchor_service.command_hash(envelope))
+    if prior is not None:
+        return prior
+    if not anchor_service.enabled():
+        error(409, "text_anchors_disabled")
+    anchor = envelope.command.anchor
+    if anchor.document_id != envelope.entry_id:
+        error(422, "invalid_anchor")
+    if anchor.generation != ctx.entry.collaboration_generation:
+        error(409, "anchor_generation_mismatch")
+    validate_mentions(db, ctx, envelope.command.body)
+    # Release every authorization/identity lock before any private network I/O.
+    # The final command transaction reacquires and rechecks all of them.
+    db.commit()
+    return anchor_service.validate(envelope)
+
+
 def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
     # Do not roll back or expire a caller's unrelated pending changes.
     require_clean_session(db)
+    envelope = envelope.model_copy(deep=True)
     try:
-        return _apply_command(db, token, envelope)
+        text = isinstance(envelope.command, s.ThreadCreate) and isinstance(
+            envelope.command.anchor, s.TextAnchor
+        )
+        limit = 256 * 1024 if text else 65536
+        if len(envelope.canonical_json().encode("utf-8")) > limit:
+            error(413, "command_too_large")
+        proof = prepare_text_anchor(db, token, envelope) if text else None
+        if isinstance(proof, dict):
+            return proof
+        return _apply_command(db, token, envelope, proof)
     except IntegrityError:
         db.rollback()
         error(409, "identifier_unavailable")
@@ -199,18 +269,20 @@ def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
         raise
 
 
-def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
+def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=None) -> dict:
     request_hash = hashlib.sha256(envelope.canonical_json().encode("utf-8")).hexdigest()
     ctx = context(db, token, envelope.share_id, envelope.entry_id, write=True)
     scope = scope_for(db, ctx)
-    receipt = db.get(m.DiscussionReceipt, (ctx.user.id, envelope.operation_id))
-    if receipt:
-        if receipt.request_hash != request_hash or not scope or receipt.scope_id != scope.id:
-            error(409, "operation_id_conflict")
-        result = dict(receipt.result)
-        db.commit()
-        return result
+    prior = existing_receipt(db, ctx, envelope, request_hash)
+    if prior is not None:
+        return prior
     command = envelope.command
+    if isinstance(command, s.ThreadCreate) and isinstance(command.anchor, s.TextAnchor):
+        if not anchor_service.enabled():
+            error(409, "text_anchors_disabled")
+        if not isinstance(proof, anchor_service.AnchorProof):
+            error(503, "anchor_validation_unavailable")
+        proof.check(envelope, ctx.entry.collaboration_generation)
     if hasattr(command, "body"):
         validate_mentions(db, ctx, command.body)
     if isinstance(command, s.ThreadCreate):
@@ -244,7 +316,7 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict
                 thread_id=thread.id,
                 revision=1,
                 actor_id=ctx.user.id,
-                payload={**command.anchor.model_dump(), "entry_id": ctx.entry.id},
+                payload={**command.anchor.model_dump(mode="json"), "entry_id": ctx.entry.id},
             )
         )
     if isinstance(command, (s.ThreadCreate, s.ReplyCreate)):
@@ -365,6 +437,8 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict
         )
     )
     db.flush()
+    if proof is not None:
+        proof.check(envelope, ctx.entry.collaboration_generation)
     db.commit()
     return result
 
@@ -383,12 +457,12 @@ def thread_data(thread):
     }
 
 
-def bounded_bodies(rows, body_of):
+def bounded_bodies(rows, body_of, budget=384 * 1024):
     """Leave room for metadata while bounding long message/history responses."""
     page, size = [], 0
     for row in rows:
         body_size = len(json.dumps(body_of(row), ensure_ascii=False).encode("utf-8"))
-        if size + body_size > 384 * 1024:
+        if size + body_size > budget:
             if not page:
                 error(500, "invalid_stored_body")
             break
@@ -444,7 +518,11 @@ def read_thread(db, token, share_id, entry_id, thread_id, *, after=0, limit=50):
         .order_by(m.DiscussionMessage.created_sequence)
         .limit(limit + 1)
     ).all()
-    page = bounded_bodies(rows[:limit], lambda row: row[1].body)
+    page = bounded_bodies(
+        rows[:limit],
+        lambda row: row[1].body,
+        384 * 1024 - len(json.dumps(anchor.payload, ensure_ascii=False).encode("utf-8")),
+    )
     return {
         "thread": thread_data(thread),
         "anchor": anchor.payload,

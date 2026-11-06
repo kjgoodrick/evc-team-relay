@@ -1,16 +1,19 @@
-# Whole-note discussion protocol preview
+# Note and selected-text discussion protocol preview
 
 Status: implementation slice, 2026-11-05. This is not the complete comments
 feature. Both `COLLABORATION_POLICY_ENABLED` and
 `COLLABORATION_DISCUSSIONS_ENABLED` default to false. The capabilities endpoint
 continues to report `comments: false` and `bases: false`; it advertises
 `discussion_commands`, the `note` target, body version, reaction keys, limits,
-and the session requirement separately. No deployment is implied by this file.
+and the session requirement separately. A separate text-anchor flag advertises
+`discussion_text_anchors` and the `text` target only when configured with private
+relay authority. No deployment is implied by this file.
 
-Apply Alembic through `202611050002` in an isolated preview database. The additive
+Apply Alembic through `202611050003` in an isolated preview database. The additive
 migration creates discussion scopes, threads, anchor revisions, messages,
 message revisions, reactions, command receipts, and events. It adds a per-share
-commit counter and epoch. It does not write comments into Markdown or Yjs.
+commit counter/epoch and server-owned managed-entry generation. It does not write
+comments into Markdown or Yjs.
 Downgrading deletes discussion data and is not a populated-database rollback.
 
 ## Authentication and authorization
@@ -112,10 +115,32 @@ recipient permissions. Rendering must create text/DOM nodes, never trust HTML.
 Bodies are nonblank and at most 32 KiB UTF-8. The entire streamed POST body is
 limited to 64 KiB before parsing, including chunked requests. Unknown fields,
 HTML, unsupported anchors, and images reject; they are not silently stripped.
+When text anchors are enabled, only text-create envelopes may exceed 64 KiB, up
+to 256 KiB; their decoded dependency remains limited to 64 KiB. Read-body budgets
+also reserve space for anchor bytes.
 Page size is at most 100. Message/history pages also limit aggregate serialized
 body bytes to 384 KiB and leave room for metadata. Reaction responses aggregate
 counts and `mine` rather than returning unbounded user arrays. Validators and
 storage errors do not echo message bodies in API error responses.
+
+## Selected-text preview
+
+`GET /shares/{share_id}/entries/{entry_id}/anchor-context` under the collaboration
+prefix returns protocol version, entry ID and generation to authorized note
+readers. Persist that generation with captured relative positions; never replace
+it silently in queued work after refresh or restore. A text anchor contains
+`version: 1`, `type: text`, `document_id`, `generation`, canonical base64 `start`,
+`end`, and `dependency`, original UTF-16 `selected_length`, and bounded `context`
+(`quote`, `prefix`, `suffix`, `truncated`). Client-supplied proof fields reject.
+
+Creation obtains a durable observation through the
+[private relay protocol](anchor-barrier-protocol.md), outside database locks,
+then rechecks current authorization and generation before commit. Missing note
+dependencies return 409 `anchor_dependency_not_ready` with `Retry-After`; retain
+the identical command for retry after note sync. Generation mismatches and invalid
+positions need review. Valid deleted selections may become unanchored discussions.
+Ordinary replies do not repeat anchor validation. See
+[integration evidence and remaining gates](anchor-barrier-progress.md).
 
 ## Reading and replay
 
@@ -193,8 +218,8 @@ reactions, policy revocation and retained local drafts. It requires the plugin's
 locked npm dependencies and Node on PATH, and stops/removes its fixture afterward.
 It does not replace the PostgreSQL concurrency proof or native mobile checks.
 
-Remaining before a complete feature: plugin/network/UI integration, durable
-live text-anchor barrier, reading/image mapping, Bases identity/adapters,
+Remaining before a complete feature: native selection/highlight UI, block and
+reading/image mapping, Bases identity/adapters,
 Time & Line bridge, image uploads, inbox, notifications, authenticated presence,
 event WebSockets/snapshots/retention, coherent backups, and native mobile and
 performance acceptance. These routes alone do not advertise those capabilities.

@@ -850,6 +850,9 @@ class ManagedEntry(Base):
     last_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     record: Mapped[dict] = mapped_column(JSON, nullable=False)
     activity: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    collaboration_generation: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, default=uuid.uuid4
+    )
     deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
 
 

@@ -2,9 +2,11 @@
 
 Status: November 5, 2026. The private relay registration/validation endpoints and
 their storage/lifecycle checks are implemented and **disabled by default**.
-Control-plane generation ownership, receipt consumption, and native selection
-integration remain unfinished. Whole-note discussion commands remain the only
-accepted public discussion target. No live service was restarted or configured.
+Control-plane generation ownership and receipt consumption now have a gated
+public text-command integration and a real plugin/control-plane/relay proof.
+Native selection/highlights, coherent restore, and performance acceptance remain
+unfinished. Whole-note commands remain the default preview. No live service was
+restarted or configured.
 
 ## Live placement
 
@@ -61,7 +63,9 @@ backends remain gated pending their own evidence.
 
 Requests bind managed document/share IDs, generation, request ID, expiry, and a
 SHA-256 digest of the exact HTTP body. Registration binds only an existing document
-with matching stored routing channel, and never rotates an existing generation.
+and rejects any conflicting explicit routing channel. Existing managed notes
+without a channel bind through the authenticated control-plane authority, without
+changing their routing. Registration never rotates an existing generation.
 Validation checks the persisted binding, resolves the batch and captures the
 observed snapshot in one transaction, then awaits ordered storage. Missing
 dependencies and malformed positions return distinct failures; valid dependencies
@@ -84,25 +88,55 @@ removes the idle document from admission, and finishes its final checkpoint befo
 allowing reload. Failed writes restore the live document to the cache. Public load
 helpers use that lock too. This closes the old-copy/new-copy persistence race.
 
-## Remaining contract before accepting selected-text comments
+## Control-plane and client integration
 
-1. Add control-plane managed document generations and restore rules, validation
-   before the relay call and again at commit, and request/receipt identity binding.
-   Do network work outside PostgreSQL authorization locks, then recheck under them.
-   Persist the generation before registering it; consume responses only from the
-   private authenticated call, never from client-supplied proof fields.
-2. Align public command and private barrier byte limits. Base64 of a maximum 64 KiB
-   dependency alone exceeds the current 64 KiB whole-note command limit. Do not
-   silently enable text anchors under that envelope; choose explicit bounded
-   limits or dependency-token staging and add cross-language protocol vectors.
-3. Exercise the complete control-plane/relay/plugin boundary over real HTTP,
-   coherent restore/generation changes and process restart. Current route tests
-   use the Axum service with actual filesystem storage and deterministic pause/
-   failure injection; they do not substitute for that end-to-end acceptance.
-4. Benchmark long-lived documents, concurrent edits/compaction, batch cost, and
+Migration `202611050003` adds a server-owned managed-entry generation. New entries
+receive one; legacy entries receive one lazily under a row lock through the
+authorized `anchor-context` endpoint. Inventory records cannot supply it. The
+private HTTP client registers and validates outside SQL locks, bounds admission
+and responses, disables environment proxies/redirects, and verifies every binding,
+the exact request digest, checkpoint time and expiry. Public commands cannot
+supply proofs. Final authorization reacquires user/session/share/member/entry
+guards and checks generation and expiry again before commit. Accepted duplicate
+requests still reauthorize but return the original receipt without another RPC.
+
+`COLLABORATION_TEXT_ANCHORS_ENABLED` defaults false and also requires the existing
+policy/discussion flags plus a separate `COLLABORATION_ANCHOR_RELAY_TOKEN` secret.
+The relay verifier must allow that credential's key to issue server tokens; the
+normal document key need not acquire that authority. Transport uses the origin
+from `MANAGED_RELAY_URL`, converting WS schemes to HTTP schemes. Full `comments`
+and `bases` capabilities remain false. Text commands have a 256 KiB public bound,
+whole-note commands retain 64 KiB, and dependency evidence retains its 64 KiB
+decoded bound. Thread-read body budgets include the stored anchor bytes.
+
+The plugin negotiates text capability, caches authorized document generations for
+offline capture, validates wire targets and treats missing note dependencies as
+retryable queued work. Refresh never rewrites an existing queued anchor's
+generation. Revocation clears remote generation context while retaining authored
+local work. Context clipping preserves valid Unicode without shifting UTF-16
+selection offsets. Native selection capture and highlight wiring are still next.
+
+Validation: 60 focused control-plane tests; nine Rust private-barrier tests;
+1,540 plugin regression tests (three opt-in suites skipped); type/build/lint gates.
+The separate real-connection fixture passes read-only selected-text comments,
+document-token rejection on private routes, deletion-only dependency waits,
+lost-response/identical retry, filesystem restart, restored placement, and a new
+validation after restart. Disposable PostgreSQL passes migration/schema parity,
+empty-table downgrade/upgrade, lock release during the private hop, and rejection
+after concurrent generation change or comment revocation. No production data or
+service was used; the PostgreSQL fixture was removed after testing.
+
+## Remaining release gates
+
+1. Add native selection/source/Reading mapping, block targets, decorations,
+   navigation, persistent target-aware drafts, and explicit reattachment/recovery.
+2. Implement coherent backup/restore and deliberate generation rotation across
+   SQL and relay storage. The current endpoint refuses rotation; a process restart
+   preserving both stores is tested, but is not a cross-store restore protocol.
+3. Benchmark long-lived documents, concurrent edits/compaction, batch cost, and
    typing responsiveness. Prove remote-store semantics before opting those
-   backends in. Add native selection/source/Reading mapping and queued note-sync
-   dependencies. Whole-note public capabilities stay unchanged until these gates.
+   backends in. Preserve all drafts if a normal workload exceeds evidence limits;
+   revisit limits/staging using measurements before enabling normal traffic.
 
 Validation on this Mac: complete `y-sweet-core --lib` **189 passed** and
 `relay --lib` **43 passed**, followed by **8 private barrier tests passed** after

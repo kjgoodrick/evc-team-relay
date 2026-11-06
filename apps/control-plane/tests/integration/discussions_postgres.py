@@ -8,9 +8,11 @@ COLLABORATION_TEST_DATABASE_URL=postgresql+psycopg://.../collaboration_test \
 import os
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -19,6 +21,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from fastapi import HTTPException
+from pydantic import SecretStr
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
@@ -28,8 +31,8 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas.discussions import CommandEnvelope
+from app.services import anchor_service, session_service, share_service, user_service
 from app.services import discussion_service as service
-from app.services import session_service, share_service, user_service
 
 
 def main():
@@ -48,7 +51,7 @@ def main():
     config = Config("alembic.ini")
     command.upgrade(config, "head")
     with engine.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "202611050002"
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "202611050003"
         diffs = compare_metadata(MigrationContext.configure(conn), m.Base.metadata)
 
         def relevant(diff):
@@ -58,6 +61,7 @@ def main():
                 "discussion_" in str(diff)
                 or "collaboration_sequence" in str(diff)
                 or "collaboration_epoch" in str(diff)
+                or "collaboration_generation" in str(diff)
             )
 
         assert not [d for d in diffs if relevant(d)], diffs
@@ -196,6 +200,7 @@ def main():
         select(m.UserSession).where(m.UserSession.id == session_id),
         select(m.Share).where(m.Share.id == share_id),
         select(m.ShareMember).where(m.ShareMember.id == member_id),
+        select(m.ManagedEntry).where(m.ManagedEntry.id == str(entry_id)),
     ]
     for query in guards:
         with Session(engine, autoflush=False) as holding, Session(engine) as revoker:
@@ -210,6 +215,98 @@ def main():
             holding.rollback()
             assert revoker.scalar(query.with_for_update(nowait=True)) is not None
     print("PASS: user/session/share/membership guards exclude concurrent revocation until commit")
+
+    # Anchor validation is a network hop between two independent authorized SQL
+    # transactions. Prove that *real* row locks are released during that hop,
+    # and that a committed revocation/generation change defeats the later commit.
+    settings = get_settings()
+    settings.collaboration_policy_enabled = True
+    settings.collaboration_discussions_enabled = True
+    settings.collaboration_text_anchors_enabled = True
+    settings.collaboration_anchor_relay_token = SecretStr("disposable-mocked-private-hop")
+    for change, expected in [("generation", 409), ("permission", 403)]:
+        with Session(engine) as db:
+            generation = db.get(m.ManagedEntry, str(entry_id)).collaboration_generation
+        selected = envelope(
+            dict(
+                type="thread.create",
+                thread_id=uuid.uuid4(),
+                message_id=uuid.uuid4(),
+                anchor=dict(
+                    version=1,
+                    type="text",
+                    document_id=entry_id,
+                    generation=generation,
+                    dependency="AAA=",
+                    start="AA==",
+                    end="AA==",
+                    selected_length=0,
+                    context=dict(quote="", prefix="", suffix="", truncated=False),
+                ),
+                body=body,
+            )
+        )
+        validating, continue_validation = threading.Event(), threading.Event()
+
+        def private_hop(value):
+            validating.set()
+            assert continue_validation.wait(5), "SQL locks were not released before validation"
+            return anchor_service.AnchorProof(
+                anchor_service.command_hash(value),
+                entry_id,
+                share_id,
+                generation,
+                anchor_service.now_ms() + 15000,
+                time.monotonic() + 12,
+                "a" * 64,
+                "attached",
+            )
+
+        def send_selected():
+            with Session(engine, autoflush=False) as db:
+                try:
+                    return 200, service.apply_command(db, token, selected)
+                except HTTPException as exc:
+                    return exc.status_code, exc.detail
+
+        with (
+            patch.object(anchor_service, "validate", side_effect=private_hop),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            pending = pool.submit(send_selected)
+            try:
+                assert validating.wait(5), "Private validation did not start"
+                with Session(engine) as revoker:
+                    for query in guards:
+                        assert revoker.scalar(query.with_for_update(nowait=True)) is not None
+                    if change == "generation":
+                        revoker.get(
+                            m.ManagedEntry, str(entry_id)
+                        ).collaboration_generation = uuid.uuid4()
+                    else:
+                        rule = revoker.scalar(
+                            select(m.ManagedCommentRule).where(
+                                m.ManagedCommentRule.share_id == share_id
+                            )
+                        )
+                        rule.allowed = False
+                    revoker.commit()
+            finally:
+                continue_validation.set()
+            assert pending.result(timeout=5)[0] == expected
+        with Session(engine) as db:
+            assert db.get(m.DiscussionThread, selected.command.thread_id) is None
+            assert db.get(m.DiscussionReceipt, (reviewer_id, selected.operation_id)) is None
+            assert db.get(m.Share, share_id).collaboration_sequence == 2
+            if change == "permission":
+                db.scalar(
+                    select(m.ManagedCommentRule).where(m.ManagedCommentRule.share_id == share_id)
+                ).allowed = True
+                db.commit()
+    print(
+        "PASS: private validation releases SQL locks; "
+        "generation changes and revocation prevent commit"
+    )
 
     # A stale ORM identity must not resurrect permissions after a committed revoke.
     with Session(engine, autoflush=False) as stale, Session(engine) as revoker:

@@ -1,15 +1,22 @@
+import base64
 import copy
+import hashlib
+import json
+import time
 import uuid
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from fastapi import HTTPException
+from pydantic import SecretStr
 from sqlalchemy import func, select
 
 from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas.discussions import CommandEnvelope
-from app.services import discussion_service, session_service
+from app.services import anchor_service, discussion_service, session_service
 
 
 def body(text="First comment"):
@@ -783,3 +790,278 @@ def test_entry_point_does_not_discard_unrelated_pending_writes(db_session, world
         discussion_service.apply_command(db_session, world.tokens["reviewer"], payload)
     assert world.reviewer.email == "pending@fixture.test"
     assert world.reviewer in db_session.dirty
+
+
+def text_command(w):
+    payload = create(w)
+    payload["command"]["anchor"] = {
+        "version": 1,
+        "type": "text",
+        "document_id": w.entry.id,
+        "generation": str(w.entry.collaboration_generation),
+        "dependency": "AAEqEA==",
+        "start": "ACoGAA==",
+        "end": "ACoJQQ==",
+        "selected_length": 4,
+        "context": {"quote": "beta", "prefix": "alpha ", "suffix": " gamma", "truncated": False},
+    }
+    return payload
+
+
+def enable_anchors(monkeypatch):
+    monkeypatch.setattr(get_settings(), "collaboration_text_anchors_enabled", True)
+    monkeypatch.setattr(
+        get_settings(), "collaboration_anchor_relay_token", SecretStr("private-fixture-token")
+    )
+
+
+def relay_mock(monkeypatch, change=None):
+    original_client = httpx.Client
+    requests = []
+
+    def handle(request):
+        assert str(request.url).startswith("http://relay-server:8080/internal/collaboration/")
+        assert request.headers["authorization"] == "Bearer private-fixture-token"
+        value = json.loads(request.content)
+        requests.append(value)
+        result = {
+            key: value[key]
+            for key in (
+                "protocol_version",
+                "request_id",
+                "document_id",
+                "share_id",
+                "generation",
+                "expires_at_ms",
+            )
+        }
+        result.update(
+            request_sha256=hashlib.sha256(request.content).hexdigest(),
+            checkpointed_at_ms=anchor_service.now_ms(),
+        )
+        if "anchors" in value:
+            result.update(
+                placements=[{"status": "attached", "from": 6, "to": 10}],
+                observed_snapshot_sha256="a" * 64,
+            )
+        status = 200
+        if change:
+            status, result = change(value, result)
+        return httpx.Response(status, stream=httpx.ByteStream(json.dumps(result).encode()))
+
+    def factory(**options):
+        assert options == {"follow_redirects": False, "trust_env": False}
+        return original_client(transport=httpx.MockTransport(handle), **options)
+
+    monkeypatch.setattr(anchor_service.httpx, "Client", factory)
+    return requests
+
+
+def proof(envelope, **changes):
+    return anchor_service.AnchorProof(
+        **{
+            "command_sha256": anchor_service.command_hash(envelope),
+            "entry_id": envelope.entry_id,
+            "share_id": envelope.share_id,
+            "generation": envelope.command.anchor.generation,
+            "expires_at_ms": anchor_service.now_ms() + 15000,
+            "deadline": time.monotonic() + 12,
+            "observed_snapshot_sha256": "a" * 64,
+            "placement": "attached",
+            **changes,
+        }
+    )
+
+
+def test_text_anchor_context_is_server_owned_stable_and_read_authorized(
+    client, db_session, world, monkeypatch
+):
+    w = world
+    enable_anchors(monkeypatch)
+    w.entry.collaboration_generation = None
+    db_session.commit()
+    url = base(w) + "/anchor-context"
+    first = client.get(url, headers=headers(w.tokens["reviewer"]))
+    assert first.status_code == 200
+    generation = first.json()["generation"]
+    assert client.get(url, headers=headers(w.tokens["reader"])).json()["generation"] == generation
+    assert (
+        client.get(
+            base(w, w.other.id) + "/anchor-context", headers=headers(w.tokens["reviewer"])
+        ).status_code
+        == 404
+    )
+    db_session.expire_all()
+    assert str(w.entry.collaboration_generation) == generation
+    monkeypatch.setattr(get_settings(), "collaboration_text_anchors_enabled", False)
+    assert client.get(url, headers=headers(w.tokens["reviewer"])).status_code == 404
+
+
+def test_comment_only_text_anchor_uses_private_proof_and_duplicate_needs_no_relay(
+    client, db_session, world, monkeypatch
+):
+    enable_anchors(monkeypatch)
+    requests = relay_mock(monkeypatch)
+    payload = text_command(world)
+    result = send(client, world, payload)
+    assert len(requests) == 2 and "anchors" not in requests[0]
+    assert set(requests[1]["anchors"][0]) == {"dependency", "start", "end", "selected_length"}
+    assert "First comment" not in json.dumps(requests) and "beta" not in json.dumps(requests)
+    assert send(client, world, payload) == result and len(requests) == 2
+    view = client.get(
+        base(world) + "/threads/" + result["thread_id"], headers=headers(world.tokens["reviewer"])
+    )
+    assert view.status_code == 200
+    assert view.json()["anchor"] == {**payload["command"]["anchor"], "entry_id": world.entry.id}
+    assert "private-fixture-token" not in view.text
+    bad = copy.deepcopy(payload)
+    bad["operation_id"] = str(uuid.uuid4())
+    bad["command"]["anchor"]["receipt"] = {"status": "attached"}
+    send(client, world, bad, expected=422)
+    assert len(requests) == 2
+    # A reader without the separate comment grant cannot trigger the private hop.
+    send(client, world, text_command(world), actor="reader", expected=403)
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("change", ["permission", "session", "generation", "entry"])
+def test_text_anchor_rechecks_authority_after_releasing_sql_for_network(
+    db_session, world, monkeypatch, change
+):
+    enable_anchors(monkeypatch)
+    payload = CommandEnvelope.model_validate(text_command(world))
+    token, user_id, session_id = (
+        world.tokens["reviewer"],
+        world.reviewer.id,
+        world.sessions["reviewer"],
+    )
+    share_id, entry_id = world.share.id, world.entry.id
+
+    def validate(envelope):
+        assert not db_session.in_transaction(), "Network work must not hold an ORM transaction"
+        result = proof(envelope)
+        if change == "permission":
+            rule = db_session.scalar(
+                select(m.ManagedCommentRule).where(
+                    m.ManagedCommentRule.share_id == share_id,
+                    m.ManagedCommentRule.user_id == user_id,
+                )
+            )
+            rule.allowed = False
+        elif change == "session":
+            db_session.delete(db_session.get(m.UserSession, session_id))
+        elif change == "generation":
+            db_session.get(m.ManagedEntry, entry_id).collaboration_generation = uuid.uuid4()
+        else:
+            db_session.get(m.ManagedEntry, entry_id).deleted = True
+        db_session.commit()
+        return result
+
+    monkeypatch.setattr(anchor_service, "validate", validate)
+    with pytest.raises(HTTPException) as error:
+        discussion_service.apply_command(db_session, token, payload)
+    assert (
+        error.value.status_code
+        == {"permission": 403, "session": 401, "generation": 409, "entry": 404}[change]
+    )
+    assert count(db_session, m.DiscussionThread) == 0
+    assert count(db_session, m.DiscussionReceipt) == 0
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"request_sha256": "b" * 64},
+        {"generation": str(uuid.uuid4())},
+        {"expires_at_ms": 0},
+        {"observed_snapshot_sha256": "wrong"},
+        {"placements": [{"status": "attached", "from": 10, "to": 6}]},
+    ],
+)
+def test_text_anchor_rejects_unbound_or_invalid_relay_responses(
+    client, db_session, world, monkeypatch, patch
+):
+    enable_anchors(monkeypatch)
+    relay_mock(
+        monkeypatch,
+        lambda request, response: (
+            (200, {**response, **patch}) if "anchors" in request else (200, response)
+        ),
+    )
+    send(client, world, text_command(world), expected=503)
+    assert count(db_session, m.DiscussionThread) == count(db_session, m.DiscussionReceipt) == 0
+
+
+def test_text_anchor_dependency_wait_retries_and_deleted_selection_is_preserved(
+    client, db_session, world, monkeypatch
+):
+    enable_anchors(monkeypatch)
+    state = {"waiting": True}
+
+    def change(request, response):
+        if "anchors" not in request:
+            return 200, response
+        if state["waiting"]:
+            return 409, {"code": "dependency_not_ready"}
+        return 200, {**response, "placements": [{"status": "unanchored"}]}
+
+    relay_mock(monkeypatch, change)
+    payload = text_command(world)
+    failure = send(client, world, payload, expected=409)
+    assert failure["error"]["message"]["code"] == "anchor_dependency_not_ready"
+    assert count(db_session, m.DiscussionReceipt) == 0
+    state["waiting"] = False
+    result = send(client, world, payload)
+    assert result["operation_id"] == payload["operation_id"]
+    assert count(db_session, m.DiscussionThread) == 1
+
+
+def test_text_anchor_expired_before_commit_rolls_back_all_discussion_state(
+    db_session, world, monkeypatch
+):
+    enable_anchors(monkeypatch)
+    payload = CommandEnvelope.model_validate(text_command(world))
+    calls = []
+    original = anchor_service.AnchorProof.check
+
+    def check(self, envelope, generation):
+        calls.append(True)
+        if len(calls) == 2:
+            anchor_service.fail(503, "anchor_validation_expired")
+        original(self, envelope, generation)
+
+    monkeypatch.setattr(anchor_service, "validate", proof)
+    monkeypatch.setattr(anchor_service.AnchorProof, "check", check)
+    with pytest.raises(HTTPException):
+        discussion_service.apply_command(db_session, world.tokens["reviewer"], payload)
+    assert len(calls) == 2
+    assert (
+        count(db_session, m.DiscussionThread)
+        == count(db_session, m.DiscussionEvent)
+        == count(db_session, m.DiscussionReceipt)
+        == 0
+    )
+
+
+def test_text_anchor_envelope_limits_are_separate_and_disabled_by_default(
+    client, db_session, world, monkeypatch
+):
+    payload = text_command(world)
+    send(client, world, payload, expected=409)
+    enable_anchors(monkeypatch)
+    relay_mock(monkeypatch)
+    payload["command"]["anchor"]["dependency"] = base64.b64encode(bytes(65536)).decode()
+    assert len(json.dumps(payload).encode()) > 65536
+    send(client, world, payload)
+    payload["operation_id"] = str(uuid.uuid4())
+    payload["command"]["anchor"]["dependency"] = base64.b64encode(bytes(65537)).decode()
+    send(client, world, payload, expected=422)
+    oversized_note = json.dumps(create(world)) + " " * 65536
+    assert (
+        client.post(
+            "/v1/collaboration/commands",
+            headers=headers(world.tokens["reviewer"]),
+            content=oversized_note,
+        ).status_code
+        == 413
+    )
