@@ -54,6 +54,19 @@ class Settings(BaseSettings):
         max_length=63,
         pattern=r"^[a-z0-9][a-z0-9.-]*[a-z0-9]$",
     )
+    collaboration_picture_cleanup_enabled: bool = Field(
+        default=False,
+        description="Reconcile private comment pictures; keep disabled during backup/restore",
+    )
+    collaboration_picture_cleanup_batch_size: int = Field(default=100, ge=1, le=1000)
+    collaboration_picture_cleanup_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    collaboration_picture_cleanup_cycle_seconds: int = Field(default=3600, ge=60, le=86400)
+    collaboration_picture_orphan_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description="Hold unreferenced/missing picture namespaces from first observation",
+    )
     collaboration_anchor_relay_token: SecretStr | None = Field(
         default=None, description="Internal relay server credential; never issued to clients"
     )

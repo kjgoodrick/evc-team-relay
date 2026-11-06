@@ -34,6 +34,10 @@ STAGING_QUOTA = 100 * 1024 * 1024
 STAGING_COUNT = 100
 
 
+def namespace(share_id, scope_id, picture_id):
+    return f"discussion-pictures/{share_id}/{scope_id}/{picture_id}/"
+
+
 def enabled():
     settings = get_settings()
     return (
@@ -137,6 +141,7 @@ def stage(db, token, share_id, entry_id, payload):
             m.DiscussionScope.share_id == ctx.share.id,
             m.DiscussionPicture.owner_id == ctx.user.id,
             m.DiscussionPicture.state.in_(["staged", "verified"]),
+            m.DiscussionPicture.expires_at > security.utcnow(),
         )
     ).one()
     if count >= STAGING_COUNT or size + payload.size > STAGING_QUOTA:
@@ -149,6 +154,16 @@ def stage(db, token, share_id, entry_id, payload):
         )
         db.add(scope)
         db.flush()
+    retired = db.get(
+        m.DiscussionPictureRetirement,
+        (
+            get_settings().collaboration_pictures_bucket,
+            namespace(ctx.share.id, scope.id, payload.picture_id),
+        ),
+    )
+    if retired is not None and retired.retired_at is not None:
+        # Cleanup commits this guard under the same Share lock before object I/O.
+        discussions.error(409, "identifier_unavailable")
     now = security.utcnow()
     picture = m.DiscussionPicture(
         id=payload.picture_id,
@@ -233,7 +248,7 @@ def upload(db, token, share_id, entry_id, ticket, data):
         return result
     db.commit()  # No authorization locks or database transaction during I/O.
     verified = codec.verify(data)
-    prefix = f"discussion-pictures/{share_id}/{ticket.scope_id}/{ticket.picture_id}/v1"
+    prefix = namespace(share_id, ticket.scope_id, ticket.picture_id) + "v1"
     renditions = {
         name: put_rendition(prefix, getattr(verified, name)) for name in ("content", "thumbnail")
     }

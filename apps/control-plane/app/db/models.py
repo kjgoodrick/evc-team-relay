@@ -1080,6 +1080,42 @@ class DiscussionPictureReference(Base):
     revision: Mapped[int] = mapped_column(primary_key=True)
 
 
+class DiscussionPictureSweep(Base):
+    """One leased, resumable inventory per private bucket, independent of shares."""
+
+    __tablename__ = "discussion_picture_sweeps"
+    bucket: Mapped[str] = mapped_column(String(63), primary_key=True)
+    cursor: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    cycle_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class DiscussionPictureRetirement(Base):
+    """Conservative orphan age and permanent identity guard, surviving cascades.
+
+    A retired prefix cannot be staged again, even after its picture row is gone.
+    This fences creation against object deletion without holding SQL locks in I/O.
+    """
+
+    __tablename__ = "discussion_picture_retirements"
+    __table_args__ = (
+        Index("ix_discussion_picture_retirements_seen", "bucket", "retired_at", "last_seen_at"),
+    )
+    bucket: Mapped[str] = mapped_column(String(63), primary_key=True)
+    prefix: Mapped[str] = mapped_column(String(192), primary_key=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class DiscussionReaction(Base):
     __tablename__ = "discussion_reactions"
     message_id: Mapped[uuid.UUID] = mapped_column(

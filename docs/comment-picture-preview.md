@@ -5,7 +5,7 @@ are implemented; this is **not a finished release**. The plugin includes durable
 offline blobs/upload dependencies, picker/paste controls, authorized image display
 and cache, basic picture-preserving editing and Send and reopen. Native desktop
 picker/reload/send/edit/history/offline viewing have evidence. Native clipboard,
-mobile, expired-work repair, object cleanup and complete operational acceptance
+mobile, expired-work repair, complete storage accounting and operational acceptance
 remain. Keep `COLLABORATION_PICTURES_ENABLED=false` outside disposable development
 fixtures until those parts and compatible clients are ready.
 
@@ -102,23 +102,69 @@ that retain the previous revision's pictures, but blocks new attachments.
   Cancellation waits for an executing worker before releasing its slot/Session.
 - Unattached staging has a 24-hour expiry, a 100-picture count ceiling and a
   100 MiB source-byte quota per uploader/share. These are staging limits, not
-  complete vault storage accounting. **Automatic reclamation and repair UI are
-  not implemented yet:** expired reservations still count until cleanup exists.
+  complete vault storage accounting. Timestamp-expired staging reservations stop
+  consuming this allowance immediately, even before maintenance runs. Expired
+  IDs cannot be reused; client-side replacement/recovery is still unfinished.
 
 The decoder follows Pillow's distinction between verification and pixel loading,
 and its orientation API; it adds a stricter explicit pixel limit before decoding.
 See [Pillow Image verification/loading](https://pillow.readthedocs.io/en/stable/reference/Image.html#PIL.Image.Image.verify)
 and [EXIF transpose](https://pillow.readthedocs.io/en/stable/reference/ImageOps.html#PIL.ImageOps.exif_transpose).
 
-Storage failures do not create an accepted message. A partial upload or revoke
-can leave unreachable objects in the private namespace; the forthcoming cleanup
-worker must reconcile them, recheck historical references transactionally, and
-handle writes completing after an expiry sweep. It must not assume that one
-prefix deletion proves that no late upload can arrive.
+## Expiry and private-object cleanup
+
+`COLLABORATION_PICTURE_CLEANUP_ENABLED` is a separate, default-off switch. It can
+continue reclaiming staging after picture creation is disabled. The worker starts
+only when this flag is enabled at service startup; configuration changes still
+require the normal authorized service lifecycle. No production flag was enabled
+as part of development.
+
+The worker marks expired, unreferenced staging identities before deleting bytes.
+It inventories only canonical version-1 picture keys in the separate private
+bucket. A 120-second database lease and persisted cursor coordinate processes
+and resume interrupted batches. Defaults are 100 objects and 100 expiry candidates
+per batch, a 30-second work budget between bounded storage calls, a 60-second
+poll interval, and an hour between completed inventories. The MinIO SDK may fetch
+a page of up to 1,000 entries; the worker processes only its configured batch.
+Unknown keys/versions are counted and left untouched.
+
+Every immutable history reference protects the picture, including deleted
+messages and moderated threads. Old unused encoder renditions can be removed
+after 24 hours when valid attached metadata establishes the canonical keys.
+Missing picture rows and attached pictures with no remaining references receive
+a **30-day hold from first observation**, rather than from object creation.
+Those hold settings are maintenance safeguards, not a message-history purge
+policy. This worker does not delete discussion history.
+
+Before deleting an orphan, cleanup commits a permanent namespace-retirement
+record under the same Share lock used by uploads. Staging checks that record,
+so a deleted picture row cannot be recreated while its old objects are being
+removed. The record survives scope/share cascades and is never pruned. Later full
+inventories remove writes that finish after an earlier sweep. Partial deletion
+failures preserve the cursor for retry; stale lease owners cannot overwrite a
+successor's progress. Busy shares and lease rows are skipped instead of blocking
+foreground transactions.
+
+No database transaction spans object-store I/O. Shutdown signals the running
+thread and waits for it to exit; repeated cancellation does not abandon a live
+deleter. Logs contain counts and error classes, without private keys or exception
+messages. The worker refuses the general attachment bucket and any bucket whose
+versioning is enabled **or suspended**: delete markers would not reclaim old
+versions. Provision a separate private bucket that has never enabled versioning.
+
+Maintenance tuning uses `COLLABORATION_PICTURE_CLEANUP_BATCH_SIZE` (1–1,000),
+`COLLABORATION_PICTURE_CLEANUP_INTERVAL_SECONDS` (10–3,600),
+`COLLABORATION_PICTURE_CLEANUP_CYCLE_SECONDS` (60–86,400), and
+`COLLABORATION_PICTURE_ORPHAN_RETENTION_DAYS` (1–3,650). Backups/restores must disable
+and fully drain this worker alongside other mutations, include the retirement
+table and private bucket, and reset incomplete inventory progress before resuming.
+The coherent backup/restore implementation and rehearsal remain separate work;
+do not restore rows into a live cleanup run.
 
 ## Evidence and remaining acceptance
 
-Final checks: **126 focused server tests passed**, including **28 picture tests**.
+Latest checks: **146 focused server tests passed**, including **28 picture tests**
+and **20 cleanup tests**, plus existing retention coverage.
 Changed-file Ruff lint/format and whitespace checks passed. The PostgreSQL and
 PostgreSQL/MinIO proofs described below passed separately. Existing dependency
 deprecation/test-key warnings remain; they are not picture-test failures.
@@ -131,7 +177,7 @@ quota, corrupt content and creation-switch rollback behavior. The migration is
 also exercised through upgrade/downgrade and its composite history reference.
 
 `tests/integration/discussions_postgres.py` now applies the full migration chain
-through `202611060001`, checks model/schema parity, downgrades/upgrades, and retains
+through `202611060002`, checks model/schema parity, downgrades/upgrades, and retains
 the actual PostgreSQL transaction/concurrency/authorization proofs.
 
 `tests/integration/discussion_pictures_stack.py` exercises the HTTP routes through
@@ -139,12 +185,16 @@ FastAPI's ASGI test client with actual PostgreSQL and MinIO. It checks sanitized
 content, thumbnails, anonymous object-store rejection, private publication,
 idempotent upload retries, concurrent message/reference acceptance, absence of
 share locks during storage, and a committed revoke before download delivery.
+The cleanup extension pauses an actual PUT after its first rendition, expires and
+reclaims it, then verifies the late second rendition is removed on the next pass.
+It also proves retained references, nonblocking foreground locks, retired-ID
+rejection during physical deletion, and exactly one lease among competing workers.
 It requires the disposable `127.0.0.1` database named `collaboration_test` after
 the PostgreSQL fixture above, and a disposable MinIO endpoint with the synthetic
 credentials named in the script. It creates and removes its own random bucket.
 
 The server checks alone do not establish native Obsidian/mobile behavior,
-cleanup, restoration, real-device memory/battery performance or production
+complete storage accounting, restoration, real-device memory/battery performance or production
 readiness. The plugin now has separate desktop UI evidence; mobile and complete
 operational acceptance remain. No production deployment or live vault
 installation is part of this increment.

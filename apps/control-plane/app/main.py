@@ -43,7 +43,7 @@ from app.middleware import errors, logging
 from app.middleware.metrics import PrometheusMiddleware
 from app.services import auth_service
 from app.services.billing_service import LimitExceededError, VisibilityNotAllowedError
-from app.workers import metrics_worker, retention_worker
+from app.workers import discussion_picture_worker, metrics_worker, retention_worker
 
 # Rate limiter configuration
 limiter = Limiter(key_func=rate_limit_key)
@@ -343,6 +343,25 @@ Get a token by calling `POST /auth/login` with valid credentials.
         task = getattr(app.state, "retention_task", None)
         if task is not None:
             task.cancel()
+
+    @app.on_event("startup")
+    async def _start_picture_cleanup() -> None:
+        if get_settings().collaboration_picture_cleanup_enabled:
+            app.state.picture_cleanup_task = asyncio.create_task(
+                discussion_picture_worker.run_picture_cleanup()
+            )
+
+    @app.on_event("shutdown")
+    async def _stop_picture_cleanup() -> None:
+        task = getattr(app.state, "picture_cleanup_task", None)
+        if task is not None:
+            task.cancel()
+            # Shield/drain an active storage thread before app resources close.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    pass
 
     return app
 

@@ -9,8 +9,10 @@ bucket or vault is used; a new random test bucket is removed in finally.
 import hashlib
 import os
 import sys
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -18,13 +20,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from minio import Minio
 from PIL import Image, PngImagePlugin
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.routers import discussion_pictures, discussions
 from app.core import security
@@ -32,6 +34,7 @@ from app.core.config import get_settings
 from app.db import models as m
 from app.db.session import get_db
 from app.schemas.discussions import CommandEnvelope
+from app.services import discussion_picture_cleanup as cleanup
 from app.services import discussion_pictures as pictures
 from app.services import discussion_service, session_service
 
@@ -48,7 +51,7 @@ def main():
         url, connect_args={"connect_timeout": 5, "options": "-c statement_timeout=10000"}
     )
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060001"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060002"
     settings = get_settings()
     settings.collaboration_policy_enabled = True
     settings.collaboration_discussions_enabled = True
@@ -283,6 +286,209 @@ def exercise(engine, minio, settings):
             "PASS: actual object-store operations hold no share lock; "
             "a committed PostgreSQL revoke during download prevents delivery"
         )
+        check_cleanup(
+            engine, minio, client, base, headers, tokens, share_id, entry_id, original, pid
+        )
+
+
+def check_cleanup(
+    engine, minio, client, base, headers, tokens, share_id, entry_id, original, live_pid
+):
+    settings = get_settings()
+    bucket = settings.collaboration_pictures_bucket
+    settings.collaboration_picture_cleanup_enabled = True
+    factory = sessionmaker(engine, autoflush=False)
+
+    def wake():
+        with factory.begin() as db:
+            row = db.get(m.DiscussionPictureSweep, bucket)
+            if row:
+                row.next_run_at = security.utcnow() - timedelta(seconds=1)
+
+    def stage():
+        pid = uuid.uuid4()
+        response = client.post(
+            base + "/pictures",
+            headers=headers["reviewer"],
+            json=dict(
+                picture_id=str(pid),
+                sha256=hashlib.sha256(original).hexdigest(),
+                size=len(original),
+            ),
+        )
+        assert response.status_code == 200, response.text
+        return pid
+
+    def expire(pid):
+        with factory.begin() as db:
+            db.get(m.DiscussionPicture, pid).expires_at = security.utcnow() - timedelta(seconds=1)
+
+    class CheckedCleanupStore:
+        after_put = None
+        before_delete = None
+
+        def unlocked(self):
+            # Both the authorization lock and maintenance lease must be free
+            # throughout storage I/O, on independent PostgreSQL connections.
+            with factory.begin() as guard:
+                assert (
+                    guard.scalar(
+                        select(m.Share)
+                        .where(
+                            m.Share.id == share_id,
+                        )
+                        .with_for_update(nowait=True)
+                    )
+                    is not None
+                )
+                guard.scalar(
+                    select(m.DiscussionPictureSweep)
+                    .where(
+                        m.DiscussionPictureSweep.bucket == bucket,
+                    )
+                    .with_for_update(nowait=True)
+                )
+
+        def get_bucket_versioning(self, *args, **kwargs):
+            self.unlocked()
+            return minio.get_bucket_versioning(*args, **kwargs)
+
+        def list_objects(self, *args, **kwargs):
+            self.unlocked()
+            for obj in minio.list_objects(*args, **kwargs):
+                self.unlocked()
+                yield obj
+
+        def remove_object(self, *args, **kwargs):
+            self.unlocked()
+            if self.before_delete:
+                self.before_delete(*args)
+            return minio.remove_object(*args, **kwargs)
+
+        def put_object(self, *args, **kwargs):
+            self.unlocked()
+            result = minio.put_object(*args, **kwargs)
+            if self.after_put:
+                callback, self.after_put = self.after_put, None
+                callback()
+            return result
+
+    store = CheckedCleanupStore()
+    with patch.object(pictures.storage_client, "get_minio_client", return_value=store):
+        # An actual upload remains in-flight while maintenance expires it and
+        # removes the first rendition. The second PUT arrives after that sweep.
+        pid = stage()
+        first_written, resume = threading.Event(), threading.Event()
+
+        def pause():
+            first_written.set()
+            assert resume.wait(10), "cleanup proof timed out"
+
+        def upload():
+            with factory() as db:
+                ticket = pictures.prepare_upload(db, tokens["reviewer"], share_id, entry_id, pid)
+                return pictures.upload(db, tokens["reviewer"], share_id, entry_id, ticket, original)
+
+        store.after_put = pause
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(upload)
+            try:
+                assert first_written.wait(5)
+                expire(pid)
+                counts = cleanup.Sweep(factory).run()
+                assert counts.expired == 1 and counts.deleted == 1 and counts.completed
+            finally:
+                resume.set()
+            try:
+                future.result(timeout=5)
+                raise AssertionError("Expired upload finalized")
+            except HTTPException as error:
+                assert error.status_code == 410
+        wake()
+        assert cleanup.Sweep(factory).run().deleted == 1
+        with factory() as db:
+            live = db.get(m.DiscussionPicture, uuid.UUID(live_pid))
+            live_keys = {r["key"] for r in live.renditions.values()}
+        assert {o.object_name for o in minio.list_objects(bucket, recursive=True)} == live_keys
+
+        # A foreground writer must not be blocked by cleanup and must not be
+        # mistaken for a missing share when SKIP LOCKED returns no row.
+        wake()
+        sweep = cleanup.Sweep(factory)
+        assert sweep.claim()
+        with factory.begin() as competing:
+            competing.scalar(
+                select(m.DiscussionPictureSweep)
+                .where(
+                    m.DiscussionPictureSweep.bucket == bucket,
+                )
+                .with_for_update()
+            )
+            try:
+                sweep.heartbeat()
+                raise AssertionError("Maintenance waited on or bypassed a busy lease")
+            except cleanup.Stopped:
+                pass
+        obj = next(iter(minio.list_objects(bucket, recursive=True)))
+        with factory.begin() as foreground:
+            foreground.scalar(select(m.Share).where(m.Share.id == share_id).with_for_update())
+            assert not sweep.classify(obj, cleanup.identify(obj.object_name))
+            assert sweep.counts.deferred == 1
+        sweep.release()
+
+        # Once a missing identity is retired, stage cannot recreate it even
+        # while the old objects are being physically deleted without SQL locks.
+        abandoned = stage()
+        with factory.begin() as db:
+            picture = db.get(m.DiscussionPicture, abandoned)
+            prefix = pictures.namespace(share_id, picture.scope_id, abandoned)
+            db.delete(picture)
+        key = prefix + "v1/" + "1" * 64 + ".png"
+        minio.put_object(bucket, key, BytesIO(original), len(original))
+        wake()
+        assert cleanup.Sweep(factory).run().deleted == 0
+        with factory.begin() as db:
+            retirement = db.get(m.DiscussionPictureRetirement, (bucket, prefix))
+            retirement.first_seen_at = security.utcnow() - timedelta(days=31)
+
+        def reuse(_bucket, _key):
+            response = client.post(
+                base + "/pictures",
+                headers=headers["reviewer"],
+                json=dict(
+                    picture_id=str(abandoned),
+                    sha256=hashlib.sha256(original).hexdigest(),
+                    size=len(original),
+                ),
+            )
+            assert response.status_code == 409, response.text
+            assert response.json()["detail"]["code"] == "identifier_unavailable"
+
+        store.before_delete = reuse
+        wake()
+        assert cleanup.Sweep(factory).run().deleted == 1
+        store.before_delete = None
+
+        # Competing workers agree on exactly one durable lease.
+        wake()
+        barrier = threading.Barrier(2)
+        sweeps = [cleanup.Sweep(factory), cleanup.Sweep(factory)]
+
+        def claim(sweep):
+            barrier.wait(timeout=5)
+            return sweep.claim()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claimed = list(pool.map(claim, sweeps))
+        assert sorted(claimed) == [False, True]
+        for sweep, owns in zip(sweeps, claimed):
+            if owns:
+                sweep.release()
+        assert {o.object_name for o in minio.list_objects(bucket, recursive=True)} == live_keys
+    print(
+        "PASS: actual PostgreSQL/MinIO expiry before deletion, late PUT reconciliation, "
+        "live history protection, nonblocking share locks, retired-ID fencing and competing leases"
+    )
 
 
 if __name__ == "__main__":
