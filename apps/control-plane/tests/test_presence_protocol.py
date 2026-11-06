@@ -75,6 +75,19 @@ def test_binding_cannot_be_switched_or_claimed_with_a_tombstone():
             connection.transform(frame(state, client=8), IDENTITY)
 
 
+@pytest.mark.parametrize("surface", ["editor", "reading"])
+def test_surface_is_bounded_and_cannot_carry_a_private_path(surface):
+    state = decoded(PresenceConnection().transform(frame({"surface": surface}), IDENTITY))[2]
+    assert state["surface"] == surface
+    assert state["cursor"] is None
+
+
+@pytest.mark.parametrize("surface", ["Secret/Note.md", {}, [], True, 0, "canvas"])
+def test_unknown_surface_rejects(surface):
+    with pytest.raises(InvalidPresence):
+        PresenceConnection().transform(frame({"surface": surface}), IDENTITY)
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -85,6 +98,7 @@ def test_binding_cannot_be_switched_or_claimed_with_a_tombstone():
         b"\x01" + buffer(b"\x02"),
         frame({}) + b"\x03",
         frame({"cursor": []}),
+        frame({"surface": "reading", "cursor": {"anchor": POSITION, "head": POSITION}}),
         frame({"cursor": {"anchor": POSITION}}),
         frame({"cursor": {"anchor": {**POSITION, "tname": "secret"}, "head": POSITION}}),
         frame(

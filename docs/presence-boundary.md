@@ -2,8 +2,8 @@
 
 The managed WebSocket gateway now authenticates and bounds Yjs awareness in
 addition to checking document permissions. This is a foundation for the planned
-presence feature; it does not implement the active-surface controller, jump,
-follow, image pointers or Bases adapters.
+presence feature. The plugin now has a foreground-note controller and privacy/
+status/retry controls; jump, follow, image pointers and Bases adapters remain.
 
 `apps/control-plane/app/services/presence_protocol.py` validates one complete
 protocol frame, permits one awareness client ID per socket, validates relative
@@ -12,12 +12,14 @@ fields. Names and picture URLs come from the current account's most recently
 updated linked OAuth profile; accounts without a profile use the email local
 part as a display name. Unsupported avatar URL schemes and credential-bearing
 URLs are removed. No full email, login session UUID, token, path or arbitrary
-client state is forwarded as presence metadata.
+client state is forwarded as presence metadata. The optional `surface` field
+accepts only `editor` or `reading`; Reading rejects a non-null editor cursor.
+Payloads without a surface retain their previous trusted shape.
 
 `sessionId` is a stable HMAC-derived public identifier for an authenticated login
 session. Sessionless legacy credentials receive a per-connection random identity;
-they do not establish cross-note session continuity. The next presence controller
-must account for that distinction. Cursor state is not stored in SQL or the Yjs
+they do not establish cross-note session continuity. Future grouped rosters and
+follow must account for that distinction. Cursor state is not stored in SQL or the Yjs
 document. Authentication and entry authorization still run on every incoming and
 outgoing frame, with the existing periodic revocation check.
 
@@ -57,7 +59,12 @@ normal note sync while withholding awareness, then retries presence after
 30/60/120 seconds (capped at 120 seconds). Invalid presence or exhausted collision
 recovery suspends publication until explicit retry. Queries, warm-up retries and
 heartbeats respect suspension. The provider exposes availability and an explicit
-retry API; the user-facing controller/status/retry UI is still pending.
+retry API, now used by the plugin's native presence controls. Background note
+providers start silent. Only the active, authorized, foreground Markdown view
+publishes, with an exact document/view binding. Reading publishes no editor
+caret. Privacy immediately removes local presence without disconnecting sync.
+The client also suppresses stale account/session grants until refreshed; the
+gateway remains the authority for authentication and access.
 
 The complete version/rollout UX remains required before release. Do not advertise
 the complete presence feature from this checkpoint.
@@ -73,6 +80,10 @@ actual FastAPI/Rust/Yjs connections. Run the disposable presence fixture from
 The fixture verifies authenticated OAuth display data, read-only cursor updates,
 spoofing rejection, socket ID switching/collision rejection, bounded payloads,
 automatic collision recovery without changing document identity/content,
-disconnect/reconnect and live permission revocation. Existing managed-sync and
+disconnect/reconnect, editor/Reading transitions, privacy disappearance with
+note sync still connected, and live permission revocation. Existing managed-sync and
 text/block-comment fixtures also pass with the new boundary. Native desktop and
-mobile presence acceptance is still pending.
+mobile two-client presence acceptance is still pending. A disposable desktop
+Obsidian instance plus a protocol observer has verified foreground-note
+publication, privacy persistence, Reading transitions and popout transfer; this
+does not establish two-native-client rendering or mobile acceptance.

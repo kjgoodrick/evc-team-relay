@@ -218,12 +218,17 @@ class PresenceConnection:
             if not isinstance(state, dict):
                 raise InvalidPresence("Invalid awareness state")
             cursor = state.get("cursor")
+            surface = state.get("surface")
+            if surface is not None and surface not in ("editor", "reading"):
+                raise InvalidPresence("Invalid presence surface")
             if cursor is not None and (
                 not isinstance(cursor, dict)
                 or set(cursor) != {"anchor", "head"}
                 or not all(relative_position(cursor[key]) for key in ("anchor", "head"))
             ):
                 raise InvalidPresence("Invalid cursor")
+            if surface == "reading" and cursor is not None:
+                raise InvalidPresence("Reading presence cannot publish an editor cursor")
             # Ignore all caller-supplied identity, colors, URLs and unknown state.
             # Each future surface extends this explicit schema, not arbitrary JSON.
             trusted = {
@@ -231,6 +236,8 @@ class PresenceConnection:
                 "sessionId": identity.session_id or self.fallback_session,
                 "cursor": cursor,
             }
+            if surface is not None:
+                trusted["surface"] = surface
             encoded = json.dumps(trusted, separators=(",", ":"), ensure_ascii=False).encode()
             if len(encoded) > MAX_AWARENESS:
                 raise InvalidPresence("Presence profile too large")
