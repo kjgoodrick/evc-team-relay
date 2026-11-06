@@ -109,7 +109,7 @@ def main():
                 {
                     1: "relay-server",
                     3: f"http://127.0.0.1:{relay_port}",
-                    4: int(time.time()) + 300,
+                    4: int(time.time()) + max(300, args.serve_seconds + 300),
                     6: int(time.time()),
                     -80201: "server",
                 }
