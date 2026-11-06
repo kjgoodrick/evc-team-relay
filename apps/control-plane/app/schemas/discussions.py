@@ -371,6 +371,11 @@ class BaseSummaryTarget(BaseDefinedTarget):
         return BaseProperty.valid_name(value)
 
 
+class BaseFormulaCellTarget(BaseDefinedTarget, BaseItemTarget):
+    type: Literal["formula_cell"]
+    property: BaseFormulaProperty
+
+
 class BaseAnchor(StrictModel):
     version: Literal[1]
     type: Literal["base"]
@@ -384,7 +389,8 @@ class BaseAnchor(StrictModel):
         | BaseCellTarget
         | BasePropertyTarget
         | BaseFormulaTarget
-        | BaseSummaryTarget,
+        | BaseSummaryTarget
+        | BaseFormulaCellTarget,
         Field(discriminator="type"),
     ]
 

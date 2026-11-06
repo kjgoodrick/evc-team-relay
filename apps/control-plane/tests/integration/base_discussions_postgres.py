@@ -342,6 +342,21 @@ def main():
         )
 
         settings.collaboration_bases_definition_targets_enabled = True
+        settings.collaboration_bases_formula_cells_enabled = True
+        # Return the record to the comment-only reviewer's authorized folder.
+        with Session(engine, autoflush=False) as db:
+            record = db.get(m.ManagedEntry, str(record_id))
+            managed_service.apply_batch(
+                db,
+                db.get(m.Share, share_id),
+                db.get(m.User, owner_id),
+                managed_service.Batch(
+                    changes=[
+                        {"path": record.path, "previous": record.record, "value": None},
+                        {"path": "Notes/Record.md", "previous": None, "value": record.record},
+                    ]
+                ),
+            )
 
         def publish_definitions(expression):
             raw = json.dumps(
@@ -386,7 +401,11 @@ def main():
         definitions = publish_definitions("price * 2")
 
         def defined_command(kind):
-            target = next(item for item in definitions["targets"] if item["kind"] == kind)
+            target = next(
+                item
+                for item in definitions["targets"]
+                if item["kind"] == ("formula" if kind == "formula_cell" else kind)
+            )
             value = envelope().model_dump(mode="json")
             value["command"]["anchor"] = {
                 "version": 1,
@@ -401,12 +420,21 @@ def main():
                     "definition_revision": target["revision"],
                     "property": target["property"],
                     **({"summary": target["summary"]} if kind == "summary" else {}),
+                    **(
+                        {
+                            "record_id": str(record_id),
+                            "record_generation": captured["record_generation"],
+                        }
+                        if kind == "formula_cell"
+                        else {}
+                    ),
                 },
             }
             return CommandEnvelope.model_validate(value)
 
         created = []
-        for kind in ("formula", "summary"):
+        kinds = ("formula", "summary", "formula_cell")
+        for kind in kinds:
             payload = defined_command(kind)
             barrier = threading.Barrier(2)
 
@@ -428,7 +456,7 @@ def main():
             ]
             stale.commit()
             publish_definitions("price * 3")
-            for kind, (payload, accepted) in zip(("formula", "summary"), created):
+            for kind, (payload, accepted) in zip(kinds, created):
                 try:
                     discussions.apply_command(stale, tokens["reviewer"], defined_command(kind))
                 except HTTPException as exc:
@@ -445,10 +473,10 @@ def main():
                     )["anchor"]["target"]["definition_revision"]
                     == 2
                 )
-            assert stale.scalar(select(func.count()).select_from(m.DiscussionThread)) == 4
+            assert stale.scalar(select(func.count()).select_from(m.DiscussionThread)) == 5
         print(
-            "PASS: formula/summary retries serialize once; definition edits reject stale ORM "
-            "capture without changing historical access or accepted receipts"
+            "PASS: formula/summary/formula-cell retries serialize once; definition edits reject "
+            "stale ORM capture without changing historical access or accepted receipts"
         )
     finally:
         with Session(engine) as db:

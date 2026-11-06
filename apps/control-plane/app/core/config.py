@@ -59,6 +59,10 @@ class Settings(BaseSettings):
         default=False,
         description="Preview Bases formula/summary definition discussions; upgrade clients first",
     )
+    collaboration_bases_formula_cells_enabled: bool = Field(
+        default=False,
+        description="Preview Bases formula cell discussions; requires upgraded clients",
+    )
     managed_bases_sync_enabled: bool = Field(
         default=False,
         description="Preview conditional Bases file publication; requires upgraded clients",

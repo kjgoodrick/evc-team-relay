@@ -7,10 +7,11 @@ target picker. Contextual native table/cards/list controls now connect capture,
 markers and exact navigation; integrated table behavior has desktop evidence.
 The server also maintains a definition catalogue for formulas, summaries and
 grouping rules. Formula and summary **definition discussions** now have server
-targets and a sidebar picker with offline drafts. Formula cells, computed-result
-dependencies, group/lane values, inline definitions, Time & Line targets and
-presence remain required work. The new definition controls have automated and
-actual-service evidence; native Obsidian/mobile acceptance remains.
+targets and a sidebar picker with offline drafts. Formula cells now combine
+record and formula lineage, with native table/cards/list adapters. Desktop table
+capture and offline persistence have native evidence; integrated cards/list,
+reviewer and mobile acceptance remain. Computed-result dependencies, group/lane
+values, inline definitions, Time & Line targets and presence remain required work.
 
 Creation requires `COLLABORATION_BASES_DISCUSSIONS_ENABLED=true` together with
 the existing policy, discussions and registry flags. All remain opt-in. The
@@ -22,6 +23,10 @@ flags. Upgrade every discussion client before enabling the new kinds. Disabling
 a creation flag preserves reads,
 replies and recovery for existing discussions while the discussion API remains
 available.
+
+`COLLABORATION_BASES_FORMULA_CELLS_ENABLED=true` additionally advertises
+`formula_cell`; it requires definition targets and the preceding flags. It is a
+separate opt-in because older clients cannot decode the additional target kind.
 
 ## Supported file records
 
@@ -90,7 +95,55 @@ Other targets are `{type: "view"}`, an `item` with the same record fields, or
 and `file` namespaces, with bounded valid Unicode names. They identify the
 property, not a captured cell value. Client-claimed dependency arrays, computed
 results and unknown target kinds are rejected. Formula/summary definition targets
-use the separate schema below; group/lane values and formula cells remain open.
+use the separate schema below; group/lane values remain open.
+
+## Formula cells and native formula headers
+
+A `formula_cell` target contains `record_id`, `record_generation`,
+`definition_id`, `definition_revision`, and `property: {source: "formula", name}`.
+The enclosing anchor still identifies the `.base` definition, saved view,
+generation and observed registry revision. Creation requires comment permission
+on both the base and record, current record lineage, and the exact active formula
+definition. Read/history/receipt/picture/mention paths retain the same record
+intersection as ordinary cells. A changed formula rejects new stale capture;
+existing threads/replies and accepted retries retain their original target,
+subject to current access. Record removal, revocation or generation replacement
+hides the discussion rather than attaching it to another file.
+
+This is a discussion of the formula cell at a particular record, without
+automatically quoting its calculated result. Neither the API nor the native
+adapter evaluates formulas or copies displayed output into the anchor. Formula
+inputs may refer to other files; this target grants no access to those files or
+their values. Automatically quoted output and aggregate/group dependencies remain
+separate required work. This follows the plan's prohibition on automatic excerpts
+whose inputs cannot be authorized, and Obsidian's documented
+[file and link functions](https://obsidian.md/help/bases/functions).
+
+The fallback picker requires both a managed record and a verified formula.
+Offline capture requires previously verified record/comment authority plus the
+complete matching definition catalogue. Drafts/outbox retain both identities;
+schema version 12 fences workers that cannot parse formula cells. Capture rejects
+changed catalogue choices without rewriting existing drafts.
+
+The version-gated native adapter preserves the `formula` namespace on cells and
+headers. A formula header captures the existing `formula` definition target.
+Markers and navigation require matching catalogue identity/revision and current
+view/record proof. A changed or missing formula keeps its discussion in the
+sidebar with status, without displaying a marker on a replacement definition.
+Hidden columns use record markers while retaining the exact cell target.
+Native scroll/repaint work reads no computed values and triggers no network read;
+binding/capture/navigation perform the explicit verification. Unchanged toolbar
+buttons survive polling/scroll refreshes; new handles and permission changes
+replace their actions.
+
+Desktop Obsidian 1.13.7 sent formula-cell, formula-header and summary-definition
+comments against disposable services, then restored the formula-cell draft and
+offline queued work through full app reloads. Automated tests cover all supported
+record types, revoked read/comment access, history/events/mentions, forged
+lineage, formula edits/removal, capability disablement and offline restart. Actual
+HTTP verifies comment-only creation and stale rejection; PostgreSQL verifies
+concurrent retries and stale ORM state. Integrated cards/list, mobile and the
+broader native reviewer/resource matrix remain required.
 
 ## Formula and summary definition discussions
 
@@ -121,18 +174,20 @@ create these discussions; readers can inspect without gaining comment authority.
 
 Thread cards report whether the definition still matches, changed or cannot be
 verified. Registry changes refresh that status while preserving the active
-draft. **Definition details** performs another check; native definition placement
-is not implemented yet. Rejected work keeps its original target and body and
-explains changed/missing definitions or disabled creation. Cache version 11 uses
-the existing stores and fences older workers that cannot decode these targets.
+draft. **Definition details** performs another check for summaries; formulas now
+have native header navigation as described above. Native summary placement is
+unfinished. Rejected work keeps its original target and body and explains
+changed/missing definitions or disabled creation. Cache version 12 uses the
+existing stores and fences older workers that cannot decode the full target set.
 
 Automated checks cover typed codecs, bounded pagination, stale responses,
 offline restart, readers, permission/generation boundaries, picker lifecycle,
 status refresh and draft preservation. Actual plugin/HTTP checks exercise a
 comment-only user, capture, offline restart, view rename, exact retry, changed
 definitions and historical replies. PostgreSQL verifies duplicate delivery and
-stale ORM definitions after an edit. Native capture/send/reload, mobile, inline
-markers/navigation and computed/group targets remain required acceptance/work.
+stale ORM definitions after an edit. The native checks above add desktop
+capture/send/reload evidence. Mobile, native summary markers/navigation and
+computed/group targets remain required acceptance/work.
 
 ## Formula, summary and grouping definition catalogue
 
@@ -183,8 +238,8 @@ aliases are omitted instead of choosing one assignment. Unavailable identities
 remain stored for future target review/repair. Downgrade refuses to discard a
 nonempty identity table; export/migration is required first.
 
-Remaining work includes group values and computed-output authorization; formula
-cells and group-specific summaries; native adapters, markers/navigation and the
+Remaining work includes group values and computed-output authorization;
+group-specific summaries; remaining native adapters, markers/navigation and the
 complete offline recovery/acceptance matrix. Definition discussions above use
 the catalogue without claiming that broader support. The full feature scope
 remains in the repository's implementation plan.

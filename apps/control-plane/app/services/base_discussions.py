@@ -39,6 +39,10 @@ def definitions_enabled():
     return enabled() and get_settings().collaboration_bases_definition_targets_enabled
 
 
+def formula_cells_enabled():
+    return definitions_enabled() and get_settings().collaboration_bases_formula_cells_enabled
+
+
 def definition_for(db, ctx):
     definition = db.scalar(
         select(m.BaseDefinition).where(m.BaseDefinition.entry_id == ctx.entry.id)
@@ -121,10 +125,15 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
 
             if not definitions_enabled():
                 error(409, "base_definition_targets_disabled")
+            if isinstance(anchor.target, s.BaseFormulaCellTarget) and not formula_cells_enabled():
+                error(409, "base_formula_cells_disabled")
             if not base_target_definitions.synchronize(db, definition):
                 error(409, "base_definition_targets_limit")
         target = db.get(m.BaseTargetDefinition, anchor.target.definition_id)
-        if not target or target.view_id != anchor.view_id or target.kind != anchor.target.type:
+        kind = (
+            "formula" if isinstance(anchor.target, s.BaseFormulaCellTarget) else anchor.target.type
+        )
+        if not target or target.view_id != anchor.view_id or target.kind != kind:
             error(
                 409 if creation else 404,
                 "base_target_definition_unavailable" if creation else "target_unavailable",
@@ -144,7 +153,9 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
                 error(422, "invalid_anchor")
         # Existing discussions retain their captured definition after edits,
         # removal or disablement. They contain no evaluated result or record
-        # values, so their authority remains the definition/view's read access.
+        # values. Definition-only authority is the view; formula cells also
+        # require the record authority and lineage checked above. Neither target
+        # grants access to the formula's evaluated output or external inputs.
 
 
 def stored_anchor(payload):

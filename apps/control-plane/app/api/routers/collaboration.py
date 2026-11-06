@@ -82,6 +82,7 @@ def capabilities(
         + (["base"] if base_discussions.enabled() else []),
         "discussion_base_targets": ["view", "item", "cell", "property"]
         + (["formula", "summary"] if base_discussions.definitions_enabled() else [])
+        + (["formula_cell"] if base_discussions.formula_cells_enabled() else [])
         if base_discussions.enabled()
         else [],
         "discussion_base_record_types": list(base_discussions.RECORD_TYPES)

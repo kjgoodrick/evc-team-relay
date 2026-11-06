@@ -35,6 +35,7 @@ def main():
             COLLABORATION_DISCUSSIONS_ENABLED="true",
             COLLABORATION_BASES_DISCUSSIONS_ENABLED="true",
             COLLABORATION_BASES_DEFINITION_TARGETS_ENABLED="true",
+            COLLABORATION_BASES_FORMULA_CELLS_ENABLED="true",
             LOG_LEVEL="WARNING",
             CONTROL_PLANE_PUBLIC_URL=f"http://127.0.0.1:{number}",
         )
