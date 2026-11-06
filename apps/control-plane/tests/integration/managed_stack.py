@@ -55,6 +55,9 @@ def main():
     parser.add_argument("--plugin", type=Path, required=True)
     parser.add_argument("--presence", action="store_true", help="Run authenticated awareness tests")
     parser.add_argument(
+        "--presence-locations", action="store_true", help="Run cross-note location transport tests"
+    )
+    parser.add_argument(
         "--text-anchors",
         action="store_true",
         help="Run selected-text comments through the private relay barrier",
@@ -138,6 +141,9 @@ allowed_token_types = ["server"]
 '''
         from app.core.config import get_settings
 
+        if args.presence_locations:
+            os.environ["COLLABORATION_PRESENCE_ENABLED"] = "true"
+
         get_settings.cache_clear()
         from app.db import models, session
         from app.services import managed_service, session_service
@@ -215,7 +221,10 @@ allowed_token_types = ["server"]
             db.commit()
             import uuid
 
-            note, secret = str(uuid.uuid4()), str(uuid.uuid4())
+            note, secret, second = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+            entries = [("Note.md", note), ("Budget.md", secret)]
+            if args.presence_locations:
+                entries.append(("Second.md", second))
             managed_service.apply_batch(
                 db,
                 share,
@@ -227,7 +236,7 @@ allowed_token_types = ["server"]
                             previous=None,
                             value=managed_service.Record(id=id, type="markdown"),
                         )
-                        for path, id in [("Note.md", note), ("Budget.md", secret)]
+                        for path, id in entries
                     ]
                 ),
             )
@@ -240,6 +249,7 @@ allowed_token_types = ["server"]
                 "share": str(share.id),
                 "note": note,
                 "secret": secret,
+                "second": second if args.presence_locations else None,
                 "bobId": str(bob.id),
                 "ownerId": str(owner.id),
                 "ownerToken": security.create_access_token(
@@ -303,14 +313,18 @@ path = "{temp / "relay-data"}"
                         time.sleep(0.2)
                     return 0
                 fixture_variable = (
-                    "EVC_PRESENCE_FIXTURE"
+                    "EVC_LOCATION_FIXTURE"
+                    if args.presence_locations
+                    else "EVC_PRESENCE_FIXTURE"
                     if args.presence
                     else "EVC_TEXT_ANCHOR_FIXTURE"
                     if args.text_anchors
                     else "EVC_MANAGED_FIXTURE"
                 )
                 test_file = (
-                    "__tests__/presence/realPresenceStack.test.ts"
+                    "__tests__/presence/realLocationStack.test.ts"
+                    if args.presence_locations
+                    else "__tests__/presence/realPresenceStack.test.ts"
                     if args.presence
                     else "__tests__/collaboration/realTextAnchorStack.test.ts"
                     if args.text_anchors

@@ -1,9 +1,9 @@
 # Authorized location channel preview
 
 The control plane now provides an opt-in, ephemeral channel for following an
-already visible participant between authorized Markdown notes. This is a server
-foundation: the Obsidian client transport and cross-note navigation are still
-unfinished. Current-note Jump/Follow continues to use managed Yjs awareness.
+already visible participant between authorized Markdown notes. The Obsidian
+preview now connects to this channel and follows participants across notes;
+precise positions and current-note Jump/Follow still use managed Yjs awareness.
 No production service or live vault has been changed by this work.
 
 Enable locally with `COLLABORATION_PRESENCE_ENABLED=true`. The share capability
@@ -107,10 +107,27 @@ tests cover concurrent destination replacement and slow-consumer coalescing.
 The test database is disposable file-backed SQLite; these tests are not a
 production PostgreSQL load benchmark or native Obsidian acceptance.
 
-Still required: the client transport, capability negotiation, background and
-account lifecycle, credential refresh/backoff, cross-note binding/navigation,
-ordering across awareness departure and location arrival, reconnect UX,
-real-network/native/mobile evidence, and measured resource budgets. In particular,
-the current-note controller must not stop an explicitly active cross-note follow
-merely because the publisher leaves its previous Yjs room; manual navigation,
-privacy changes and lost authorization must still stop it promptly.
+The plugin transport negotiates this capability, uses fresh session credentials,
+renews tickets on the same socket, bounds retries and pending sends, and withdraws
+on foreground/account changes. A viewer may hide their own presence while still
+following. The controller tolerates departure from the previous note's awareness
+room while waiting for the authorized destination, with an eight-second deadline.
+It opens only a unique authorized local entry and preserves the viewer's editing
+or Reading mode. Manual navigation/interaction, backgrounding, unavailable
+destinations and connection loss stop Follow. Reconnecting republishes current
+presence but requires the user to start Follow again; it does not replay the old
+subscription.
+
+Run the actual Python/Rust/plugin transport fixture from `apps/control-plane`:
+
+```sh
+python tests/integration/managed_stack.py --presence-locations --plugin ../../../evc-team-relay-obsidian
+```
+
+It exercises authenticated note discovery, a second shared note, same-socket
+credential refresh, inaccessible destinations and idle permission revocation.
+The native desktop run also verified cross-note Follow in Source, Live Preview
+and Reading, interruption, hidden-peer removal and reload, using a disposable
+vault and a protocol peer. Two-native-client/mobile acceptance, reconnect UX
+polish, image/Bases adapters and measured resource budgets remain unfinished.
+The single-process deployment constraint above remains in force.
