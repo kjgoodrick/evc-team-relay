@@ -63,6 +63,7 @@ def main():
             entry_id = str(uuid.uuid4())
             registry_entry_id = str(uuid.uuid4())
             discussion_entry_id, record_id = str(uuid.uuid4()), str(uuid.uuid4())
+            session_entry_id = str(uuid.uuid4())
             db.add_all(
                 [
                     m.ManagedEntry(
@@ -100,6 +101,7 @@ def main():
             )
             for identity, path, kind in [
                 (discussion_entry_id, "Discussions.base", "file"),
+                (session_entry_id, "Sessions.base", "file"),
                 (record_id, "Record.md", "markdown"),
             ]:
                 db.add(
@@ -120,6 +122,7 @@ def main():
                 entry=entry_id,
                 registryEntry=registry_entry_id,
                 discussionEntry=discussion_entry_id,
+                sessionEntry=session_entry_id,
                 record=record_id,
                 owner=str(owner.id),
                 reviewer=str(reviewer.id),

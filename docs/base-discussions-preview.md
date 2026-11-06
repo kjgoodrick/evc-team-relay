@@ -2,8 +2,9 @@
 
 This increment implements standalone Bases discussion targets for saved views,
 records/items, cells and note/file property headers. It includes server
-authorization and client wire/offline-queue support. **Native Bases commenting
-is not connected yet.** Groups, formula/summary dependencies, inline definitions,
+authorization, client sessions/offline queues and an explicit native sidebar
+target picker. **Inline layout adapters are not connected yet.** Groups,
+formula/summary dependencies, non-Markdown records, inline definitions,
 Time & Line targets and presence remain required work.
 
 Creation requires `COLLABORATION_BASES_DISCUSSIONS_ENABLED=true` together with
@@ -122,8 +123,19 @@ and response entry identity. Empty filtered pages are accepted only with explici
 matching Bases evidence. The ordinary note/image validators remain strict.
 `base_definition_not_synced` retries with bounded backoff; disabled creation
 pauses delivery; an unavailable saved view requires review. Pending work retains
-its original anchor and operation ID. The native note/image session explicitly
-refuses Base creation until a Bases surface is connected.
+its original anchor and operation ID. Native Bases sessions use the local scope
+`base:<entry UUID>:<view UUID>` for separate drafts, queues, caches and cursors.
+The transport extracts the managed entry for HTTP and validates the view. Schema
+version 9 preserves older local work while preventing old workers from opening
+the new queues. This requires no server migration.
+
+The sidebar explicitly selects a saved discussion view independently of the
+native layout. Its fallback picker captures view, managed Markdown record, cell
+and note/file property-header targets. It searches local shared notes, including
+records outside the current view filters; it does not infer a record from the
+rendered row's text or order. Offline capture uses verified cached context and
+record grants, while delivery rechecks the server. Native markers/navigation,
+query-aware capture and the remaining target kinds still require adapters.
 
 ## Validation and remaining work
 
@@ -147,8 +159,22 @@ database named `collaboration_test`**. The client fixture is
 its own temporary loopback HTTP/SQLite service. Neither fixture uses a native
 vault or existing service.
 
-Remaining: native saved-view selection, per-view remote caches/workers, durable
-context capture and dependency preparation, target-aware mention choices and
-permission UI, every Bases rendering adapter, all other agreed target kinds,
-inline/provisional identities, image/Bases presence, mobile and resource checks.
-This evidence establishes a protocol increment, not release readiness.
+The subsequent client increment passed **1,906 plugin tests** (twelve opt-in
+tests skipped), the three actual HTTP suites/four tests, preview build, lint and
+the existing type gates. Added session coverage verifies offline restart/replay,
+per-view local entities/cursors and cache refresh after record revocation and
+regrant. Desktop Obsidian 1.13.7 accepted all four target kinds, preserved a cell
+draft through reload and kept views separate without changing source bytes.
+Cached comments and queued offline work also survived a native reload.
+The final offline test exposed missing cached authority after a snapshot reset.
+The strengthened actual HTTP fixture reproduced that failure; the session now
+reauthorizes before replay, preserving the verified read grant/generation for
+offline startup. This last fix still needs the broader native reset/regrant
+acceptance run. Offline saved-view choice can use the existing registry cache
+when a same-account discussion session retains read access and no inventory
+provider exists; known inventory denial is never overridden.
+
+Remaining: target-aware mention choices and permission UI, every Bases inline
+rendering/navigation adapter, all other agreed target kinds, non-Markdown
+records, inline/provisional identities, image/Bases presence, mobile and resource
+checks. This evidence establishes a sidebar preview, not release readiness.
