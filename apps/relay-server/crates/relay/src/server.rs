@@ -1338,6 +1338,13 @@ async fn handle_socket_stream<S>(
                         })));
                         break;
                     }
+                    Err(e) if matches!(e.downcast_ref::<y_sweet_core::sync::Error>(), Some(y_sweet_core::sync::Error::AwarenessCapacity)) => {
+                        let _ = send.try_send(Message::Close(Some(CloseFrame {
+                            code: 4429,
+                            reason: "Awareness room is full".into(),
+                        })));
+                        break;
+                    }
                     Err(e) if e.to_string().contains("Token expired") => {
                         metrics.record_http_auth_error(
                             "expired",

@@ -482,6 +482,9 @@ pub enum Error {
     #[error("awareness client ID unavailable")]
     AwarenessConflict,
 
+    #[error("awareness room is full")]
+    AwarenessCapacity,
+
     /// Thrown whenever an unknown message tag has been sent.
     #[error("unsupported message tag identifier: {0}")]
     Unsupported(u8),

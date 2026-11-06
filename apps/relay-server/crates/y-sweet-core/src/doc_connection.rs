@@ -449,9 +449,16 @@ impl DocConnection {
                             reason: "Unowned awareness disconnect".into(),
                         });
                     }
-                    if !awareness.claim_client(client_id) {
-                        return Err(sync::Error::AwarenessConflict);
-                    }
+                    awareness
+                        .claim_client(client_id)
+                        .map_err(|error| match error {
+                            sync::awareness::ClientClaimError::Conflict => {
+                                sync::Error::AwarenessConflict
+                            }
+                            sync::awareness::ClientClaimError::Capacity => {
+                                sync::Error::AwarenessCapacity
+                            }
+                        })?;
                     let _ = self.client_id.set(client_id);
                 }
                 protocol.handle_awareness_update(&mut awareness, update)
@@ -786,6 +793,40 @@ mod tests {
                 })
                 .collect(),
         })
+    }
+
+    #[test]
+    fn awareness_capacity_is_distinct_from_collision_and_releases_on_disconnect() {
+        let awareness = Arc::new(RwLock::new(Awareness::new(yrs::Doc::with_client_id(9999))));
+        let mut owners = Vec::new();
+        for id in 1..=sync::awareness::MAX_AWARENESS_CLIENTS as u64 {
+            let owner = DocConnection::new(awareness.clone(), Authorization::ReadOnly, |_| {});
+            owner
+                .handle_msg(&DefaultProtocol, presence_message(&[(id, 1, "{}")]))
+                .unwrap();
+            owners.push(owner);
+        }
+        let waiting = DocConnection::new(awareness.clone(), Authorization::Full, |_| {});
+        assert!(matches!(
+            waiting.handle_msg(&DefaultProtocol, presence_message(&[(1, 2, "{}")])),
+            Err(sync::Error::AwarenessConflict)
+        ));
+        assert!(matches!(
+            waiting.handle_msg(&DefaultProtocol, presence_message(&[(1000, 1, "{}")])),
+            Err(sync::Error::AwarenessCapacity)
+        ));
+        // Hiding the cursor retains socket ownership, so cannot evade the cap.
+        owners[0]
+            .handle_msg(&DefaultProtocol, presence_message(&[(1, 2, "null")]))
+            .unwrap();
+        assert!(matches!(
+            waiting.handle_msg(&DefaultProtocol, presence_message(&[(1000, 2, "{}")])),
+            Err(sync::Error::AwarenessCapacity)
+        ));
+        drop(owners.pop());
+        waiting
+            .handle_msg(&DefaultProtocol, presence_message(&[(1000, 3, "{}")]))
+            .unwrap();
     }
 
     #[test]

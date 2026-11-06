@@ -33,8 +33,9 @@ Current bounds are 4,096 bytes per awareness payload/state, 128 owned clients pe
 room, JavaScript-safe client IDs and clocks no larger than `2^31 - 1`. Sync frames
 retain the existing 16 MiB bound. Unknown client message types, duplicate JSON
 keys, non-finite values, truncated/overlong integers, extra/trailing messages,
-multi-client updates and invalid cursor shapes reject. These constraints do not
-replace the remaining ingress/coalescing and performance work.
+multi-client updates and invalid cursor shapes reject. The plugin now coalesces ordinary updates at 100 ms with a final trailing
+update; disappearance flushes immediately. Ingress rate limiting, socket
+backpressure and native performance acceptance remain unfinished.
 
 Managed close codes:
 
@@ -42,14 +43,24 @@ Managed close codes:
 | --- | --- |
 | 4400 | Invalid managed protocol or awareness payload. |
 | 4403 | Authorization lost or connection otherwise unavailable. |
-| 4409 | Awareness ID unavailable, including a live collision or room capacity. |
+| 4409 | Awareness ID already owned by another socket or the relay. |
+| 4429 | Awareness room has reached its 128-owner capacity. |
 
 The boundary is mandatory for managed sockets. Upgrade the plugin before the
 gateway: older providers may forward peers' timeout tombstones or answer queries
 with several clients and will be rejected. This work has not been deployed.
-Explicit client collision/capacity recovery and the complete version/rollout UX
-remain required before release; the current provider has its ordinary reconnect
-behavior. Do not advertise the complete presence feature from this checkpoint.
+The plugin changes only its transient awareness ID after a collision, with three
+automatic attempts. It never changes Y.Doc.clientID or document history. It
+ignores incoming state for its own ID, protecting local selection from a colliding
+initial room snapshot. Capacity does not rotate IDs: the client reconnects for
+normal note sync while withholding awareness, then retries presence after
+30/60/120 seconds (capped at 120 seconds). Invalid presence or exhausted collision
+recovery suspends publication until explicit retry. Queries, warm-up retries and
+heartbeats respect suspension. The provider exposes availability and an explicit
+retry API; the user-facing controller/status/retry UI is still pending.
+
+The complete version/rollout UX remains required before release. Do not advertise
+the complete presence feature from this checkpoint.
 
 Validation uses protocol tests, Rust room tests, the plugin regression suite and
 actual FastAPI/Rust/Yjs connections. Run the disposable presence fixture from
@@ -61,6 +72,7 @@ actual FastAPI/Rust/Yjs connections. Run the disposable presence fixture from
 
 The fixture verifies authenticated OAuth display data, read-only cursor updates,
 spoofing rejection, socket ID switching/collision rejection, bounded payloads,
+automatic collision recovery without changing document identity/content,
 disconnect/reconnect and live permission revocation. Existing managed-sync and
 text/block-comment fixtures also pass with the new boundary. Native desktop and
 mobile presence acceptance is still pending.

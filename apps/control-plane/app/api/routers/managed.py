@@ -262,8 +262,8 @@ async def document_socket(websocket: WebSocket, doc_id: str, token: str):
     except InvalidPresence:
         close_code = 4400
     except ConnectionClosed as error:
-        if error.rcvd and error.rcvd.code == 4409:
-            close_code = 4409
+        if error.rcvd and error.rcvd.code in {4409, 4429}:
+            close_code = error.rcvd.code
     except Exception:
         # No exception text: WebSocket library exceptions can contain the
         # upstream URI, which carries a private relay credential.

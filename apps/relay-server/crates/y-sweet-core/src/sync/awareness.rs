@@ -12,6 +12,11 @@ const NULL_STR: &str = "null";
 pub const MAX_AWARENESS_CLIENTS: usize = 128;
 pub const MAX_AWARENESS_STATE_BYTES: usize = 4096;
 
+pub(crate) enum ClientClaimError {
+    Conflict,
+    Capacity,
+}
+
 #[cfg(not(feature = "sync"))]
 type AwarenessObserver = Observer<Arc<dyn Fn(&Awareness, &Event) + 'static>>;
 #[cfg(feature = "sync")]
@@ -52,10 +57,15 @@ impl Awareness {
         }
     }
 
-    pub(crate) fn claim_client(&mut self, client_id: ClientID) -> bool {
-        client_id != self.doc.client_id()
-            && self.owned_clients.len() < MAX_AWARENESS_CLIENTS
-            && self.owned_clients.insert(client_id)
+    pub(crate) fn claim_client(&mut self, client_id: ClientID) -> Result<(), ClientClaimError> {
+        if client_id == self.doc.client_id() || self.owned_clients.contains(&client_id) {
+            return Err(ClientClaimError::Conflict);
+        }
+        if self.owned_clients.len() >= MAX_AWARENESS_CLIENTS {
+            return Err(ClientClaimError::Capacity);
+        }
+        self.owned_clients.insert(client_id);
+        Ok(())
     }
 
     pub(crate) fn release_client(&mut self, client_id: ClientID) {
