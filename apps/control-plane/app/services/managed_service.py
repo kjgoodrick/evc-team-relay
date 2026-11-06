@@ -328,6 +328,11 @@ def apply_batch(db: Session, share: models.Share, user: models.User, batch: Batc
         value = change.value.wire()
         entry = by_id.get(value["id"])
         if entry:
+            if entry.record["type"] != value["type"]:
+                # A type conversion starts a new content lineage. Otherwise an
+                # old note/image/Bases target could become valid again after a
+                # conversion away and back. Exact batch retries keep this ID.
+                entry.collaboration_generation = uuid.uuid4()
             entry.path, entry.record = path, value
         else:
             db.add(

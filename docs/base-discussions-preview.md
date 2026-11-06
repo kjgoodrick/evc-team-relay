@@ -4,7 +4,7 @@ This increment implements standalone Bases discussion targets for saved views,
 records/items, cells and note/file property headers. It includes server
 authorization, client sessions/offline queues and an explicit native sidebar
 target picker. **Inline layout adapters are not connected yet.** Groups,
-formula/summary dependencies, non-Markdown records, inline definitions,
+formula/summary dependencies, inline definitions,
 Time & Line targets and presence remain required work.
 
 Creation requires `COLLABORATION_BASES_DISCUSSIONS_ENABLED=true` together with
@@ -15,6 +15,28 @@ in `discussion_base_targets`; it does not advertise other targets. Upgrade
 clients before enabling creation. Disabling this creation flag preserves reads,
 replies and recovery for existing discussions while the discussion API remains
 available.
+
+## Supported file records
+
+`discussion_base_record_types` advertises `markdown`, `image`, `audio`, `video`,
+`pdf`, `canvas` and `file` when creation is enabled. Older servers that omit this
+field accept only Markdown records. The client validates and caches the list,
+ignores unknown future kinds, and reverts to the old limit after a downgrade.
+Folders, missing/deleted records and records from another share are refused.
+This is support for Bases rows/cells representing those files; it does not add
+PDF-page, Canvas-node or attachment-content annotations.
+
+Note-property cells require Markdown records. File-property cells and item
+threads support every advertised file kind. The server derives access from the
+record ID and keeps the same permission intersection for every kind. There is
+no attachment upload/download or file-edit authority granted by commenting.
+
+A managed inventory type conversion now rotates `collaboration_generation`
+within the existing share-locked transaction. Exact conversion retries do not
+rotate it again; converting back starts another generation and cannot revive
+old anchors. Renames and ordinary content updates preserve generation. Old
+threads/drafts are retained under their original lineage rather than applied to
+new file semantics. No database migration is required.
 
 ## Identity and target capture
 
@@ -32,7 +54,7 @@ metadata, never `.base` or Markdown bytes. The response contains:
   "view_id": "<saved-view UUID>",
   "generation": "<definition generation UUID>",
   "registry_revision": 1,
-  "record_id": "<optional managed Markdown entry UUID>",
+  "record_id": "<optional managed file record UUID>",
   "record_generation": "<present only with record_id>"
 }
 ```
@@ -49,7 +71,7 @@ Creation uses the existing transactional `thread.create` command. Its anchor is:
   "registry_revision": 1,
   "target": {
     "type": "cell",
-    "record_id": "<managed Markdown entry UUID>",
+    "record_id": "<managed file record UUID>",
     "record_generation": "<record generation UUID>",
     "property": {"source": "note", "name": "status"}
   }
@@ -79,7 +101,7 @@ the product's saved-view discussion namespace without another database scope
 migration. Native cache and surface integration must preserve that distinction.
 
 All reads require membership and definition read access. Item/cell threads also
-require current read access to the same-share, live Markdown record and its
+require current read access to the same-share, live file record and its
 matching generation. Comment mutations require comment access to both entries.
 View/property threads have definition-level authority. There is no separate
 property ACL. Mentions additionally require recipient access to the record.
@@ -130,8 +152,8 @@ version 9 preserves older local work while preventing old workers from opening
 the new queues. This requires no server migration.
 
 The sidebar explicitly selects a saved discussion view independently of the
-native layout. Its fallback picker captures view, managed Markdown record, cell
-and note/file property-header targets. It searches local shared notes, including
+native layout. Its fallback picker captures view, managed file record, cell
+and note/file property-header targets. It searches local shared files, including
 records outside the current view filters; it does not infer a record from the
 rendered row's text or order. Offline capture uses verified cached context and
 record grants, while delivery rechecks the server. Native markers/navigation,
@@ -169,12 +191,32 @@ Cached comments and queued offline work also survived a native reload.
 The final offline test exposed missing cached authority after a snapshot reset.
 The strengthened actual HTTP fixture reproduced that failure; the session now
 reauthorizes before replay, preserving the verified read grant/generation for
-offline startup. This last fix still needs the broader native reset/regrant
-acceptance run. Offline saved-view choice can use the existing registry cache
+offline startup. A subsequent native check now verifies automatic reset/regrant cache
+replacement and an offline reload; broader reviewer/mobile acceptance remains. Offline saved-view choice can use the existing registry cache
 when a same-account discussion session retains read access and no inventory
 provider exists; known inventory denial is never overridden.
 
 Remaining: target-aware mention choices and permission UI, every Bases inline
-rendering/navigation adapter, all other agreed target kinds, non-Markdown
-records, inline/provisional identities, image/Bases presence, mobile and resource
+rendering/navigation adapter, all other agreed target kinds,
+inline/provisional identities, image/Bases presence, mobile and resource
 checks. This evidence establishes a sidebar preview, not release readiness.
+
+
+The file-record increment passed 77 Bases/inventory tests plus 165 related server
+regressions, 1,916 plugin tests (twelve opt-in skips), the three actual HTTP
+suites/four tests and the preview build/lint/type gates. Coverage includes every
+advertised kind, all record-dependent
+mutation/read/receipt paths, picture access after object I/O, type conversion,
+exact retries, content changes and conversion back. The actual client HTTP
+fixture now runs the session/offline/revocation matrix on an image file-property
+cell and checks content updates, rename, conversion and retained stale drafts.
+
+Native Obsidian 1.13.7 selected image, CSV and `.base` records, sent image-cell
+and CSV-item comments, restored an image-cell draft and retained an offline CSV
+queue after reload. Two policy changes forced automatic cache generations 1 → 2
+→ 3 while preserving the owner's read grant and two threads. Both remained
+readable after services stopped and the vault reloaded. This establishes the
+native snapshot-reset cache fix; it is not a native reviewer-revocation or mobile
+matrix. The source/image/CSV bytes were unchanged, and the disposable services,
+database and test vault were closed. Final queued native delivery was not tested;
+actual HTTP verifies restart and replay with comment-only access.

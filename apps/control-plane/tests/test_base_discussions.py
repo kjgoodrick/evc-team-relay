@@ -13,6 +13,7 @@ from test_discussions import world as discussion_world
 from app.core.config import get_settings
 from app.db import models as m
 from app.services import managed_service
+from app.services.base_discussions import RECORD_TYPES
 
 world = discussion_world
 base = base_fixture
@@ -30,15 +31,19 @@ def context(client, w, view_id, *, record=None, actor="reviewer", expected=200):
 
 
 @pytest.fixture
-def targets(client, db_session, world, base, monkeypatch):
+def targets(client, db_session, world, base, monkeypatch, request):
     monkeypatch.setattr(get_settings(), "collaboration_bases_discussions_enabled", True)
     snapshot = inspect(client, world)
     record_id = str(uuid.uuid4())
+    kind = getattr(request, "param", "markdown")
+    extension = dict(
+        markdown="md", image="png", audio="mp3", video="mp4", pdf="pdf", canvas="canvas", file="txt"
+    )[kind]
     record = m.ManagedEntry(
         id=record_id,
         share_id=world.share.id,
-        path="Notes/Record.md",
-        record={"type": "markdown", "id": record_id, "version": 0},
+        path="Notes/Record." + extension,
+        record={"type": kind, "id": record_id, "version": 0},
         deleted=False,
     )
     db_session.add(record)
@@ -64,7 +69,11 @@ def anchor(t, kind="cell", *, second=False):
     if kind in {"cell", "item"}:
         target.update({k: t.captured[k] for k in ("record_id", "record_generation")})
     if kind in {"cell", "property"}:
-        target["property"] = {"source": "note", "name": "status"}
+        target["property"] = (
+            {"source": "note", "name": "status"}
+            if t.record.record["type"] == "markdown"
+            else {"source": "file", "name": "size"}
+        )
     return {"version": 1, "type": "base", **value, "target": target}
 
 
@@ -146,8 +155,40 @@ def test_context_is_read_only_and_cannot_capture_an_inaccessible_or_foreign_reco
     ).json()
     assert caps["features"]["discussion_bases"] is True
     assert caps["discussion_base_targets"] == ["view", "item", "cell", "property"]
+    assert caps["discussion_base_record_types"] == list(RECORD_TYPES)
 
 
+@pytest.mark.parametrize("targets", RECORD_TYPES, indirect=True)
+def test_file_records_have_stable_item_and_cell_targets_without_content_annotations(
+    client, db_session, targets
+):
+    t = targets
+    before = t.record.record.copy()
+    captured = context(client, t.w, t.captured["view_id"], record=t.record, actor="reader")
+    assert captured == t.captured
+    for kind in ("item", "cell"):
+        payload = command(t, kind)
+        result = send(client, t.w, payload)
+        assert send(client, t.w, payload) == result
+        saved = get(client, t, f"/threads/{result['thread_id']}")["anchor"]
+        assert saved["target"] == payload["command"]["anchor"]["target"]
+    assert db_session.get(m.ManagedEntry, t.record.id).record == before
+    if before["type"] != "markdown":
+        invalid = command(t)
+        invalid["command"]["anchor"]["target"]["property"] = {"source": "note", "name": "status"}
+        send(client, t.w, invalid, expected=422)
+
+
+@pytest.mark.parametrize("kind", ["folder", "future-file-kind"])
+def test_non_file_and_unknown_records_cannot_acquire_context(client, db_session, targets, kind):
+    t = targets
+    t.record.record = {**t.record.record, "type": kind}
+    db_session.commit()
+    context(client, t.w, t.captured["view_id"], record=t.record, expected=404)
+    send(client, t.w, command(t, "item"), expected=404)
+
+
+@pytest.mark.parametrize("targets", ["markdown", "image", "file"], indirect=True)
 def test_record_comment_revocation_blocks_every_mutation_and_accepted_retry_but_not_reading(
     client, db_session, targets
 ):
@@ -200,6 +241,7 @@ def test_record_comment_revocation_blocks_every_mutation_and_accepted_retry_but_
 
 
 @pytest.mark.parametrize("change", ["read", "delete", "generation", "type"])
+@pytest.mark.parametrize("targets", ["markdown", "image", "file"], indirect=True)
 def test_record_loss_hides_all_thread_reads_receipts_and_events(
     client, db_session, targets, change
 ):
@@ -215,7 +257,22 @@ def test_record_loss_hides_all_thread_reads_receipts_and_events(
         elif change == "generation":
             record.collaboration_generation = uuid.uuid4()
         else:
-            record.record = {"type": "file"}
+            previous = record.record.copy()
+            kind = "image" if previous["type"] == "file" else "file"
+            managed_service.apply_batch(
+                db_session,
+                t.w.share,
+                t.w.owner,
+                managed_service.Batch(
+                    changes=[
+                        {
+                            "path": record.path,
+                            "previous": previous,
+                            "value": {**previous, "type": kind},
+                        }
+                    ]
+                ),
+            )
         db_session.commit()
     thread, message = result["thread_id"], result["message_id"]
     for suffix in [
@@ -372,6 +429,7 @@ def test_forged_or_unsupported_anchor_evidence_is_rejected(client, targets, fiel
     assert response.status_code in {404, 409, 422}, response.text
 
 
+@pytest.mark.parametrize("targets", ["markdown", "image", "file"], indirect=True)
 def test_pictures_in_base_threads_recheck_record_access_including_after_object_io(
     client, db_session, targets, pictures
 ):

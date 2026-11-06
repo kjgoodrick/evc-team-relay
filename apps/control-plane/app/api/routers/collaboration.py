@@ -82,6 +82,9 @@ def capabilities(
         "discussion_base_targets": ["view", "item", "cell", "property"]
         if base_discussions.enabled()
         else [],
+        "discussion_base_record_types": list(base_discussions.RECORD_TYPES)
+        if base_discussions.enabled()
+        else [],
         "discussion_body_version": 1,
         "discussion_session_required": True,
         "reaction_keys": REACTION_KEYS,

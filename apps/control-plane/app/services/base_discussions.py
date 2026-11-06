@@ -16,6 +16,10 @@ from app.db import models as m
 from app.schemas import discussions as s
 from app.services import collaboration_policy, managed_service
 
+# Bases represents files, including attachments. These are row/cell targets, not
+# annotation support for PDF pages, Canvas nodes, or other file contents.
+RECORD_TYPES = ("markdown", "image", "audio", "video", "pdf", "canvas", "file")
+
 
 def error(status=404, code="target_unavailable"):
     raise HTTPException(status, {"code": code})
@@ -59,7 +63,7 @@ def record_for(db, ctx, record_id, *, user=None, write=False):
             m.ManagedEntry.deleted.is_(False),
         )
     )
-    if not entry or entry.record.get("type") != "markdown":
+    if not entry or entry.record.get("type") not in RECORD_TYPES:
         error()
     permission = managed_service.permission(
         ctx.share, user, entry.path, managed_service.rules_for(db, ctx.share, user)
@@ -101,6 +105,12 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
                 409 if creation else 404,
                 "anchor_generation_mismatch" if creation else "target_unavailable",
             )
+        if (
+            isinstance(anchor.target, s.BaseCellTarget)
+            and anchor.target.property.source == "note"
+            and entry.record.get("type") != "markdown"
+        ):
+            error(422 if creation else 404, "invalid_anchor" if creation else "target_unavailable")
 
 
 def stored_anchor(payload):

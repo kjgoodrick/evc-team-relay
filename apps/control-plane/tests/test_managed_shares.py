@@ -55,6 +55,31 @@ def apply(db, share, user, *changes):
     return managed.apply_batch(db, share, user, managed.Batch(changes=list(changes)))
 
 
+def test_type_conversion_rotates_lineage_once_and_cannot_revive_old_anchors(
+    db_session, team
+):
+    share, owner, _ = team
+    initial = record("markdown")
+    apply(db_session, share, owner, change("Record.md", initial))
+    entry = db_session.get(models.ManagedEntry, initial["id"])
+    entry.collaboration_generation = original_generation = uuid.uuid4()
+    db_session.commit()
+    converted = {**initial, "type": "image"}
+    changes = (change("Record.md", None, initial), change("Record.png", converted))
+    apply(db_session, share, owner, *changes)
+    first = entry.collaboration_generation
+    assert first and first != original_generation
+    apply(db_session, share, owner, *changes)
+    assert entry.collaboration_generation == first
+    updated = {**converted, "hash": "a" * 64}
+    apply(db_session, share, owner, change("Record.png", updated, converted))
+    assert entry.collaboration_generation == first
+    apply(
+        db_session, share, owner, change("Record.png", None, updated), change("Record.md", initial)
+    )
+    assert entry.collaboration_generation not in {first, original_generation}
+
+
 def test_hidden_child_not_in_inventory_or_grants(db_session, team):
     share, owner, bob = team
     public, secret = record(), record()
