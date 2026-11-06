@@ -142,16 +142,20 @@ def manifest(db: Session, share: models.Share, user: models.User) -> dict:
             )
         )
     )
+    visible_removed = [
+        entry
+        for entry in removed
+        if entry.last_path and permission(share, user, entry.last_path, rules) != "none"
+    ]
     return {
         "records": {e.path: e.record for e in visible},
         "permissions": {e.path: permission(share, user, e.path, rules) for e in visible},
         "activity": {e.id: e.activity for e in visible if e.activity},
         "owner": user.is_admin or share.owner_user_id == user.id,
-        "base_content": manifest_versions(db, share.id, visible),
+        "base_content": manifest_versions(db, share.id, visible, visible_removed),
         "deleted": {
-            path: [e.id for e in removed if e.last_path == path]
-            for path in {e.last_path for e in removed if e.last_path}
-            if permission(share, user, path, rules) != "none"
+            path: [e.id for e in visible_removed if e.last_path == path]
+            for path in {e.last_path for e in visible_removed}
         },
     }
 

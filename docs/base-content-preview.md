@@ -1,9 +1,10 @@
 # Conditional Bases file publication
 
-This server increment protects standalone managed `.base` configuration saves.
-It does not yet connect the Obsidian file-transfer client, provide conflict UI,
-or enable Bases comments. `MANAGED_BASES_SYNC_ENABLED` defaults false. Upgrade
-the client and complete native/offline acceptance before enabling it.
+This server protects standalone managed `.base` configuration saves. The upgraded
+Obsidian client now has a native sync/recovery preview, including explicit removal
+review. This does not enable Bases comments. `MANAGED_BASES_SYNC_ENABLED` defaults
+false. Complete the remaining native/offline/mobile acceptance before production
+enablement.
 
 ## Storage decision
 
@@ -96,10 +97,17 @@ slots per process and use the existing storage timeouts.
 ## Compatibility and lifecycle
 
 The managed manifest adds `base_content` with `protocol_version: 1`, `enabled`,
-`recovery: true`,
-and an authorized entry-ID-to-version map. Hidden/deleted entries are omitted;
-no bytes are loaded for this metadata. This also identifies guarded files renamed
-away from `.base`. Collaboration capabilities advertise `features.bases_sync`.
+`recovery: true`, and an authorized entry-ID-to-version map in `versions`.
+Hidden/deleted entries are omitted from that map. An additional optional `retired`
+map associates deleted guarded entry IDs with their last path, only when current
+path permission allows the ordinary `deleted` tombstone. It contains no content
+or historical bodies. Hidden paths remain absent, including after permission
+revocation. No bytes are loaded for this metadata. Both maps identify guarded
+files renamed away from `.base`; a new file at the same path has a different ID
+and must never be treated as the deleted file. Clients require the matching
+ordinary tombstone as well before entering removal recovery. Absence from the
+manifest does not establish deletion. Collaboration capabilities advertise
+`features.bases_sync`.
 
 When enabled, `.base` metadata must be published through this protocol; new files
 first claim a managed `type: file` identity without a hash. Generic inventory
@@ -140,13 +148,28 @@ rename-versus-publication races, obsolete legacy uploads, populated downgrade
 refusal, schema parity and deletion cascades. Existing discussion and picture
 concurrency/storage proofs pass with the migration.
 
-The plugin now has protocol/transport modules, account-scoped durable baselines,
-pending requests, prepared downloads, conflict copies and three-way comparison.
-The actual HTTP fixture verifies those modules and PostgreSQL verifies concurrent
-save/withdrawal. They are not yet connected to native file reconciliation.
+The plugin now connects the protocol to native file reconciliation with explicit
+settings, bounded scheduling, guarded disk writes, inventory coordination and
+review/export controls. Removal retains its baseline, pending requests and the
+observed local file in the account-scoped cache. Explicit review moves the file
+intact into the excluded recovery folder, recording intent before the move and
+acknowledging it afterwards. A new or newly authorized file at the same path blocks
+that action. Removal never implicitly withdraws unknown publication or restores
+the old identity.
 
-Next: explicit Bases sync settings, the native sync worker and disk-write guards,
-conflict review/export controls, then native/offline/mobile tests.
+The deletion increment passed 40 content/managed-share tests and native Obsidian
+1.13.7 checks with actual disposable HTTP services. A server-directed rename,
+restart, remote deletion while the vault was closed, and an unsent local edit
+were followed by native review/move/export. The removed identity stayed deleted
+and the baseline/offline edit remained recoverable. The earlier PostgreSQL
+serialization checks continue to cover the unchanged mutation protocol; this
+increment adds manifest metadata without a schema migration.
+
+Next: guided restore from recovery, complete local-delete handling, remaining
+native rename/parent-folder races, cache reclamation and mobile acceptance.
+An external rename to an unsupported extension was observed as native deletion;
+the remaining bytes stayed on disk but their old managed identity was not kept.
+Do not claim arbitrary filesystem renames preserve identity.
 Never choose a winning configuration using device timestamps, automatically
 overwrite a differing local file with no known baseline, or silently fall back
 to the old upload protocol when the guarded API refuses a request.

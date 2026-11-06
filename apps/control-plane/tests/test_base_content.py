@@ -353,6 +353,7 @@ def test_manifest_reports_versions_only_for_currently_visible_entries(
         "enabled": True,
         "recovery": True,
         "versions": {world.entry.id: current["state"]["content_version"]},
+        "retired": {},
     }
     db_session.scalar(
         select(m.ManagedRule).where(m.ManagedRule.user_id == world.reader.id)
@@ -362,6 +363,53 @@ def test_manifest_reports_versions_only_for_currently_visible_entries(
         managed_service.manifest(db_session, world.share, world.reader)["base_content"]["versions"]
         == {}
     )
+
+
+def test_deleted_guarded_identity_survives_rename_but_never_bypasses_current_acl(
+    client, world, content, db_session, monkeypatch
+):
+    current = send(client, world, payload(read(client, world)["state"]))
+    entry_id, record = world.entry.id, current["state"]["record"]
+    db_session.commit()
+    db_session.expire_all()
+
+    def batch(changes):
+        return managed_service.apply_batch(
+            db_session,
+            world.share,
+            world.owner,
+            managed_service.Batch.model_validate({"changes": changes}),
+        )
+
+    renamed = "Notes/Former-base.txt"
+    batch(
+        [
+            {"path": world.entry.path, "previous": record, "value": None},
+            {"path": renamed, "previous": None, "value": record},
+        ]
+    )
+    removed = batch([{"path": renamed, "previous": record, "value": None}])
+    assert removed["base_content"]["versions"] == {}
+    assert removed["base_content"]["retired"] == {entry_id: renamed}
+    assert removed["deleted"][renamed] == [entry_id]
+    # Disable publication and create a different identity at the same path.
+    # Tombstones must remain tied to the old identity, never its replacement.
+    monkeypatch.setattr(get_settings(), "managed_bases_sync_enabled", False)
+    replacement = {"id": str(uuid.uuid4()), "version": 0, "type": "file"}
+    manifest = batch([{"path": renamed, "previous": None, "value": replacement}])
+    assert manifest["records"][renamed] == replacement
+    assert manifest["base_content"]["retired"] == {entry_id: renamed}
+    assert not client.get(path(world), headers=headers(world.tokens["reader"])).is_success
+    for actor in (world.reader, world.reviewer):
+        assert managed_service.manifest(db_session, world.share, actor)["base_content"][
+            "retired"
+        ] == {entry_id: renamed}
+    db_session.scalar(
+        select(m.ManagedRule).where(m.ManagedRule.user_id == world.reader.id)
+    ).permission = "none"
+    db_session.commit()
+    hidden = managed_service.manifest(db_session, world.share, world.reader)
+    assert hidden["base_content"]["retired"] == {} and hidden["deleted"] == {}
 
 
 def test_withdraw_fences_late_saves_and_checks_exact_intent_and_current_permission(

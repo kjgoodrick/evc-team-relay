@@ -306,12 +306,15 @@ def guard_inventory(db, entries, changes):
             error(409, "base_content_protocol_required")
 
 
-def manifest_versions(db, share_id, visible):
+def manifest_versions(db, share_id, visible, visible_removed=()):
     visible_ids = {entry.id for entry in visible}
-    rows = db.execute(
-        select(m.ManagedBaseContent.entry_id, m.ManagedBaseContent.version)
-        .join(m.ManagedEntry, m.ManagedEntry.id == m.ManagedBaseContent.entry_id)
-        .where(m.ManagedEntry.share_id == share_id, m.ManagedEntry.deleted.is_(False))
+    removed_paths = {entry.id: entry.last_path for entry in visible_removed}
+    rows = list(
+        db.execute(
+            select(m.ManagedBaseContent.entry_id, m.ManagedBaseContent.version)
+            .join(m.ManagedEntry, m.ManagedEntry.id == m.ManagedBaseContent.entry_id)
+            .where(m.ManagedEntry.share_id == share_id)
+        )
     )
     return {
         "protocol_version": 1,
@@ -319,5 +322,13 @@ def manifest_versions(db, share_id, visible):
         "recovery": True,
         "versions": {
             entry_id: str(version) for entry_id, version in rows if entry_id in visible_ids
+        },
+        # A renamed-away guarded file remains protected after deletion/restart.
+        # This exposes no bytes or history and uses the same current path ACL as
+        # the ordinary tombstone. Absence is never evidence of deletion.
+        "retired": {
+            entry_id: removed_paths[entry_id]
+            for entry_id, _version in rows
+            if entry_id in removed_paths
         },
     }
