@@ -35,6 +35,10 @@ def enabled():
     )
 
 
+def definitions_enabled():
+    return enabled() and get_settings().collaboration_bases_definition_targets_enabled
+
+
 def definition_for(db, ctx):
     definition = db.scalar(
         select(m.BaseDefinition).where(m.BaseDefinition.entry_id == ctx.entry.id)
@@ -111,6 +115,36 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
             and entry.record.get("type") != "markdown"
         ):
             error(422 if creation else 404, "invalid_anchor" if creation else "target_unavailable")
+    if isinstance(anchor.target, s.BaseDefinedTarget):
+        if creation:
+            from app.services import base_target_definitions
+
+            if not definitions_enabled():
+                error(409, "base_definition_targets_disabled")
+            if not base_target_definitions.synchronize(db, definition):
+                error(409, "base_definition_targets_limit")
+        target = db.get(m.BaseTargetDefinition, anchor.target.definition_id)
+        if not target or target.view_id != anchor.view_id or target.kind != anchor.target.type:
+            error(
+                409 if creation else 404,
+                "base_target_definition_unavailable" if creation else "target_unavailable",
+            )
+        if creation:
+            if (
+                not target.active
+                or target.revision != anchor.target.definition_revision
+                or target.revision > anchor.registry_revision
+            ):
+                error(409, "base_target_definition_changed")
+            if (
+                target.descriptor.get("property") != anchor.target.property.model_dump(mode="json")
+                or isinstance(anchor.target, s.BaseSummaryTarget)
+                and target.descriptor.get("summary") != anchor.target.summary
+            ):
+                error(422, "invalid_anchor")
+        # Existing discussions retain their captured definition after edits,
+        # removal or disablement. They contain no evaluated result or record
+        # values, so their authority remains the definition/view's read access.
 
 
 def stored_anchor(payload):

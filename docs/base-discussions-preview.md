@@ -6,15 +6,20 @@ authorization, client sessions/offline queues and an explicit native sidebar
 target picker. Contextual native table/cards/list controls now connect capture,
 markers and exact navigation; integrated table behavior has desktop evidence.
 The server also maintains a definition catalogue for formulas, summaries and
-grouping rules. Their discussion targets, computed-value dependencies, inline definitions,
-Time & Line targets and presence remain required work.
+grouping rules. Formula and summary **definition discussions** now have server
+targets and a sidebar picker with offline drafts. Formula cells, computed-result
+dependencies, group/lane values, inline definitions, Time & Line targets and
+presence remain required work. The new definition controls have automated and
+actual-service evidence; native Obsidian/mobile acceptance remains.
 
 Creation requires `COLLABORATION_BASES_DISCUSSIONS_ENABLED=true` together with
 the existing policy, discussions and registry flags. All remain opt-in. The
 general `comments` and `bases` release capabilities remain false. The new
-`discussion_bases` capability lists exactly `view`, `item`, `cell`, `property`
-in `discussion_base_targets`; it does not advertise other targets. Upgrade
-clients before enabling creation. Disabling this creation flag preserves reads,
+`discussion_bases` capability lists `view`, `item`, `cell`, `property`
+in `discussion_base_targets`. `COLLABORATION_BASES_DEFINITION_TARGETS_ENABLED=true`
+adds `formula` and `summary`; it defaults to false and requires the preceding
+flags. Upgrade every discussion client before enabling the new kinds. Disabling
+a creation flag preserves reads,
 replies and recovery for existing discussions while the discussion API remains
 available.
 
@@ -83,10 +88,51 @@ Creation uses the existing transactional `thread.create` command. Its anchor is:
 Other targets are `{type: "view"}`, an `item` with the same record fields, or
 `{type: "property", property: {source, name}}`. Properties accept only `note`
 and `file` namespaces, with bounded valid Unicode names. They identify the
-property, not a captured cell value. Client-claimed dependency arrays, formulas
-and unknown target kinds are rejected. Formula/summary/group targets need their
-own capture/dependency contracts before implementation. The definition identity
-catalogue below supplies part of that contract; it does not enable new anchors.
+property, not a captured cell value. Client-claimed dependency arrays, computed
+results and unknown target kinds are rejected. Formula/summary definition targets
+use the separate schema below; group/lane values and formula cells remain open.
+
+## Formula and summary definition discussions
+
+A `formula` target contains `{type, definition_id, definition_revision,
+property: {source: "formula", name}}`. A `summary` target contains the same
+identity/revision, a property in the `note`, `file` or `formula` namespace, and
+the configured `summary` name. Its `definition_id` is the catalogue target UUID,
+distinct from the enclosing anchor's `.base` definition UUID. Neither target
+accepts record IDs, calculated values or client-supplied dependency lists.
+
+Creation checks the current server-owned target, saved view, kind, revision and
+descriptor under the existing share lock. The target revision cannot be newer
+than the captured registry revision. A presentation-only change can preserve
+offline captures, while a definition edit/revert rejects a stale new thread
+with `base_target_definition_changed`. Existing threads keep their captured
+definition after edits, removal or creation disablement; exact accepted retries,
+replies, history, pictures and other mutations retain ordinary view authority.
+This does not grant permission to read or quote any calculated row/aggregate.
+
+The sidebar picker lists verified formulas and summary assignments. It saves
+the selected version in a normal durable target draft, supports existing offline
+queues, and requires a fresh choice when capture discovers a changed definition.
+Complete catalogue pages commit as one account-scoped proof. Verification tickets
+fence older successes/denials and cache resets; newer registry context cannot be
+replaced by older catalogue data. Offline capture requires a previously verified
+complete catalogue for that account/view/generation. Comment-only users can
+create these discussions; readers can inspect without gaining comment authority.
+
+Thread cards report whether the definition still matches, changed or cannot be
+verified. Registry changes refresh that status while preserving the active
+draft. **Definition details** performs another check; native definition placement
+is not implemented yet. Rejected work keeps its original target and body and
+explains changed/missing definitions or disabled creation. Cache version 11 uses
+the existing stores and fences older workers that cannot decode these targets.
+
+Automated checks cover typed codecs, bounded pagination, stale responses,
+offline restart, readers, permission/generation boundaries, picker lifecycle,
+status refresh and draft preservation. Actual plugin/HTTP checks exercise a
+comment-only user, capture, offline restart, view rename, exact retry, changed
+definitions and historical replies. PostgreSQL verifies duplicate delivery and
+stale ORM definitions after an edit. Native capture/send/reload, mobile, inline
+markers/navigation and computed/group targets remain required acceptance/work.
 
 ## Formula, summary and grouping definition catalogue
 
@@ -94,7 +140,7 @@ catalogue below supplies part of that contract; it does not enable new anchors.
 accepts `{view_id, expected_revision?, after?}`. Continuing a page requires its
 registry revision; any intervening registry change returns `stale_base_revision`.
 `features.discussion_base_definition_catalog` advertises this read interface.
-The existing four discussion target kinds remain unchanged.
+The catalogue is available independently of the new definition-creation flag.
 
 An authorized reader receives definition/view/generation/registry lineage,
 `targets`, `has_more`, `next_after`, and `computed_values: false`. Each target has
@@ -137,11 +183,11 @@ aliases are omitted instead of choosing one assignment. Unavailable identities
 remain stored for future target review/repair. Downgrade refuses to discard a
 nonempty identity table; export/migration is required first.
 
-Remaining work: client catalogue/cache integration; typed formula/summary/group
-anchors; group values and computed-output authorization; native adapters,
-markers/navigation and offline capture/recovery. This endpoint does not make
-those comments usable yet. The full feature scope remains in the repository's
-implementation plan.
+Remaining work includes group values and computed-output authorization; formula
+cells and group-specific summaries; native adapters, markers/navigation and the
+complete offline recovery/acceptance matrix. Definition discussions above use
+the catalogue without claiming that broader support. The full feature scope
+remains in the repository's implementation plan.
 
 The input structure follows the official [Bases syntax](https://obsidian.md/help/bases/syntax)
 and [table summary documentation](https://obsidian.md/help/bases/views/table).

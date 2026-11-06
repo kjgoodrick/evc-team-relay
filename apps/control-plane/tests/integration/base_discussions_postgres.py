@@ -6,6 +6,7 @@ through the real guarded publication and registry inspection services.
 """
 
 import base64
+import json
 import os
 import sys
 import threading
@@ -28,11 +29,12 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas.base_content import PublishBaseContent
-from app.schemas.bases import BaseTargetContext, InspectBase
+from app.schemas.bases import BaseTargetCatalog, BaseTargetContext, InspectBase
 from app.schemas.discussions import CommandEnvelope
 from app.services import (
     base_content,
     base_discussions,
+    base_target_definitions,
     bases_registry,
     managed_service,
     session_service,
@@ -337,6 +339,116 @@ def main():
             assert db.scalar(select(func.count()).select_from(m.DiscussionThread)) == 2
         print(
             "PASS: a move under an unreadable parent resets the cursor and hides existing targets"
+        )
+
+        settings.collaboration_bases_definition_targets_enabled = True
+
+        def publish_definitions(expression):
+            raw = json.dumps(
+                {
+                    "formulas": {"total": expression},
+                    "views": [
+                        {
+                            "name": "Table",
+                            "type": "table",
+                            "summaries": {"formula.total": "Average"},
+                        },
+                        {"name": "Cards", "type": "cards"},
+                    ],
+                }
+            ).encode()
+            with Session(engine, autoflush=False) as db:
+                current = base_content.read(db, tokens["owner"], share_id, entry_id)
+                saved = base_content.publish(
+                    db,
+                    tokens["owner"],
+                    share_id,
+                    entry_id,
+                    PublishBaseContent.model_validate(
+                        {
+                            "operation_id": str(uuid.uuid4()),
+                            "expected": current["state"],
+                            "content_base64": base64.b64encode(raw).decode(),
+                        }
+                    ),
+                )
+                bases_registry.synchronize(
+                    db,
+                    tokens["owner"],
+                    share_id,
+                    entry_id,
+                    InspectBase(content_sha256=saved["state"]["record"]["hash"]),
+                )
+                return base_target_definitions.catalog(
+                    db, tokens["reviewer"], share_id, entry_id, BaseTargetCatalog(view_id=view_id)
+                )
+
+        definitions = publish_definitions("price * 2")
+
+        def defined_command(kind):
+            target = next(item for item in definitions["targets"] if item["kind"] == kind)
+            value = envelope().model_dump(mode="json")
+            value["command"]["anchor"] = {
+                "version": 1,
+                "type": "base",
+                **{
+                    key: definitions[key]
+                    for key in ("definition_id", "view_id", "generation", "registry_revision")
+                },
+                "target": {
+                    "type": kind,
+                    "definition_id": target["id"],
+                    "definition_revision": target["revision"],
+                    "property": target["property"],
+                    **({"summary": target["summary"]} if kind == "summary" else {}),
+                },
+            }
+            return CommandEnvelope.model_validate(value)
+
+        created = []
+        for kind in ("formula", "summary"):
+            payload = defined_command(kind)
+            barrier = threading.Barrier(2)
+
+            def send_defined():
+                with Session(engine, autoflush=False) as db:
+                    barrier.wait(timeout=5)
+                    return discussions.apply_command(db, tokens["reviewer"], payload)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first, second = pool.submit(send_defined), pool.submit(send_defined)
+                result = first.result()
+                assert second.result() == result
+            created.append((payload, result))
+
+        with Session(engine, autoflush=False, expire_on_commit=False) as stale:
+            cached_definitions = [
+                stale.get(m.BaseTargetDefinition, uuid.UUID(item["id"]))
+                for item in definitions["targets"]
+            ]
+            stale.commit()
+            publish_definitions("price * 3")
+            for kind, (payload, accepted) in zip(("formula", "summary"), created):
+                try:
+                    discussions.apply_command(stale, tokens["reviewer"], defined_command(kind))
+                except HTTPException as exc:
+                    assert (
+                        exc.status_code == 409
+                        and exc.detail["code"] == "base_target_definition_changed"
+                    )
+                else:
+                    raise AssertionError("A stale ORM definition authorized new capture")
+                assert discussions.apply_command(stale, tokens["reviewer"], payload) == accepted
+                assert (
+                    discussions.read_thread(
+                        stale, tokens["reviewer"], share_id, entry_id, payload.command.thread_id
+                    )["anchor"]["target"]["definition_revision"]
+                    == 2
+                )
+            assert stale.scalar(select(func.count()).select_from(m.DiscussionThread)) == 4
+        print(
+            "PASS: formula/summary retries serialize once; definition edits reject stale ORM "
+            "capture without changing historical access or accepted receipts"
         )
     finally:
         with Session(engine) as db:

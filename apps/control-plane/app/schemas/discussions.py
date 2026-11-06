@@ -342,6 +342,35 @@ class BasePropertyTarget(StrictModel):
     property: BaseProperty
 
 
+class BaseDefinitionProperty(BaseProperty):
+    source: Literal["note", "file", "formula"]
+
+
+class BaseFormulaProperty(BaseProperty):
+    source: Literal["formula"]
+
+
+class BaseDefinedTarget(StrictModel):
+    definition_id: uuid.UUID
+    definition_revision: int = Field(ge=1, le=9007199254740991, strict=True)
+
+
+class BaseFormulaTarget(BaseDefinedTarget):
+    type: Literal["formula"]
+    property: BaseFormulaProperty
+
+
+class BaseSummaryTarget(BaseDefinedTarget):
+    type: Literal["summary"]
+    property: BaseDefinitionProperty
+    summary: str = Field(min_length=1, max_length=256)
+
+    @field_validator("summary")
+    @classmethod
+    def valid_summary(cls, value):
+        return BaseProperty.valid_name(value)
+
+
 class BaseAnchor(StrictModel):
     version: Literal[1]
     type: Literal["base"]
@@ -350,7 +379,12 @@ class BaseAnchor(StrictModel):
     generation: uuid.UUID
     registry_revision: int = Field(ge=1, le=9007199254740991, strict=True)
     target: Annotated[
-        BaseViewTarget | BaseItemTarget | BaseCellTarget | BasePropertyTarget,
+        BaseViewTarget
+        | BaseItemTarget
+        | BaseCellTarget
+        | BasePropertyTarget
+        | BaseFormulaTarget
+        | BaseSummaryTarget,
         Field(discriminator="type"),
     ]
 
