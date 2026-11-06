@@ -12,7 +12,7 @@ import httpx
 from fastapi import HTTPException
 
 from app.core.config import get_settings
-from app.schemas.discussions import CommandEnvelope, TextAnchor, ThreadCreate
+from app.schemas.discussions import CommandEnvelope, ThreadCreate, source_anchor
 
 _slots = threading.BoundedSemaphore(4)
 
@@ -164,8 +164,8 @@ def validate(envelope: CommandEnvelope) -> AnchorProof:
         fail(409, "text_anchors_disabled")
     if not isinstance(envelope.command, ThreadCreate):
         fail(422, "invalid_anchor")
-    anchor = envelope.command.anchor
-    if not isinstance(anchor, TextAnchor) or anchor.document_id != envelope.entry_id:
+    anchor = source_anchor(envelope.command.anchor)
+    if anchor is None or anchor.document_id != envelope.entry_id:
         fail(422, "invalid_anchor")
     if not _slots.acquire(blocking=False):
         fail()

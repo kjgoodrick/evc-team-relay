@@ -249,6 +249,7 @@ def test_preview_disabled_and_no_unimplemented_feature_advertised(client, team, 
         discussion_commands=False,
         discussion_text_anchors=False,
         discussion_block_anchors=False,
+        discussion_image_occurrences=False,
     )
     monkeypatch.setattr(get_settings(), "collaboration_policy_enabled", False)
     assert (

@@ -35,7 +35,7 @@ class BoundedDiscussionRoute(APIRoute):
                     value = json.loads(body)
                     command = value.get("command") if isinstance(value, dict) else None
                     anchor = command.get("anchor") if isinstance(command, dict) else None
-                    is_text = isinstance(anchor, dict) and anchor.get("type") == "text"
+                    is_text = isinstance(anchor, dict) and anchor.get("type") in {"text", "image"}
                 except (ValueError, UnicodeError):
                     is_text = False
                 if not is_text:

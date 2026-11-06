@@ -63,6 +63,11 @@ def main():
         help="Run selected-text comments through the private relay barrier",
     )
     parser.add_argument(
+        "--image-anchors",
+        action="store_true",
+        help="Run image occurrence comments through the private relay barrier",
+    )
+    parser.add_argument(
         "--relay", type=Path, default=ROOT.parent / "relay-server/target/debug/relay"
     )
     parser.add_argument(
@@ -72,6 +77,8 @@ def main():
         help="Hold a disposable desktop smoke-test server open instead of running Jest",
     )
     args = parser.parse_args()
+    if args.image_anchors:
+        args.text_anchors = True
     processes = []
     with tempfile.TemporaryDirectory(prefix="evc-managed-integration-") as temporary:
         temp = Path(temporary)
@@ -143,6 +150,8 @@ allowed_token_types = ["server"]
 
         if args.presence_locations:
             os.environ["COLLABORATION_PRESENCE_ENABLED"] = "true"
+        if args.image_anchors:
+            os.environ["COLLABORATION_IMAGE_ANCHORS_ENABLED"] = "true"
 
         get_settings.cache_clear()
         from app.db import models, session
@@ -240,6 +249,24 @@ allowed_token_types = ["server"]
                     ]
                 ),
             )
+            image_id = str(uuid.uuid4())
+            if args.image_anchors:
+                managed_service.apply_batch(
+                    db,
+                    share,
+                    owner,
+                    managed_service.Batch(
+                        changes=[
+                            managed_service.Change(
+                                path="chart.png",
+                                previous=None,
+                                value=managed_service.Record(
+                                    id=image_id, type="image", mimetype="image/png", hash="a" * 64
+                                ),
+                            )
+                        ]
+                    ),
+                )
             owner_session, _ = session_service.create_session(db, owner.id)
             bob_session, _ = session_service.create_session(db, bob.id)
             db.commit()
@@ -250,6 +277,7 @@ allowed_token_types = ["server"]
                 "note": note,
                 "secret": secret,
                 "second": second if args.presence_locations else None,
+                "image": image_id if args.image_anchors else None,
                 "bobId": str(bob.id),
                 "ownerId": str(owner.id),
                 "ownerToken": security.create_access_token(
@@ -313,7 +341,9 @@ path = "{temp / "relay-data"}"
                         time.sleep(0.2)
                     return 0
                 fixture_variable = (
-                    "EVC_LOCATION_FIXTURE"
+                    "EVC_IMAGE_ANCHOR_FIXTURE"
+                    if args.image_anchors
+                    else "EVC_LOCATION_FIXTURE"
                     if args.presence_locations
                     else "EVC_PRESENCE_FIXTURE"
                     if args.presence
@@ -322,7 +352,9 @@ path = "{temp / "relay-data"}"
                     else "EVC_MANAGED_FIXTURE"
                 )
                 test_file = (
-                    "__tests__/presence/realLocationStack.test.ts"
+                    "__tests__/collaboration/realImageAnchorStack.test.ts"
+                    if args.image_anchors
+                    else "__tests__/presence/realLocationStack.test.ts"
                     if args.presence_locations
                     else "__tests__/presence/realPresenceStack.test.ts"
                     if args.presence

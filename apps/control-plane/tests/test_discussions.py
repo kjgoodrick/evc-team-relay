@@ -809,6 +809,7 @@ def text_command(w):
 
 
 def enable_anchors(monkeypatch):
+    monkeypatch.setattr(get_settings(), "collaboration_image_anchors_enabled", True)
     monkeypatch.setattr(get_settings(), "collaboration_text_anchors_enabled", True)
     monkeypatch.setattr(
         get_settings(), "collaboration_anchor_relay_token", SecretStr("private-fixture-token")
@@ -890,6 +891,169 @@ def relay_mock(monkeypatch, change=None):
 
     monkeypatch.setattr(anchor_service.httpx, "Client", factory)
     return requests
+
+
+def image_command(w, asset=None, geometry=None):
+    payload = text_command(w)
+    payload["command"]["anchor"] = {
+        "version": 1,
+        "type": "image",
+        "occurrence": payload["command"]["anchor"],
+        "asset": asset
+        or {
+            "kind": "external",
+            "url": "https://images.example.test/chart.png",
+            "version_evidence": "unknown",
+        },
+        "basis": {"width": 1200, "height": 800, "orientation": "display"},
+        "geometry": geometry or {"type": "region", "x": 0.2, "y": 0.3, "width": 0.4, "height": 0.5},
+    }
+    return payload
+
+
+def test_image_flag_pauses_new_targets_but_preserves_receipts_and_reads(client, world, monkeypatch):
+    enable_anchors(monkeypatch)
+    requests = relay_mock(monkeypatch)
+    accepted = image_command(world)
+    result = send(client, world, accepted)
+    assert len(requests) == 2
+    monkeypatch.setattr(get_settings(), "collaboration_image_anchors_enabled", False)
+    rejected = send(client, world, image_command(world), expected=409)
+    assert rejected["error"]["message"]["code"] == "image_anchors_disabled"
+    assert len(requests) == 2
+    assert send(client, world, accepted) == result
+    saved = client.get(
+        base(world) + "/threads/" + result["thread_id"], headers=headers(world.tokens["reader"])
+    )
+    assert saved.status_code == 200 and saved.json()["anchor"]["type"] == "image"
+    send(client, world, text_command(world))
+    assert len(requests) == 4
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {"type": "whole"},
+        {"type": "pin", "x": 0, "y": 1},
+        {"type": "region", "x": 0.1, "y": 0.2, "width": 0.5, "height": 0.6},
+    ],
+)
+def test_image_occurrence_roundtrip_receipt_and_private_relay_contract(
+    client, world, monkeypatch, geometry
+):
+    enable_anchors(monkeypatch)
+    requests = relay_mock(monkeypatch)
+    payload = image_command(world, geometry=geometry)
+    result = send(client, world, payload)
+    assert send(client, world, payload) == result and len(requests) == 2
+    saved = client.get(
+        base(world) + "/threads/" + result["thread_id"], headers=headers(world.tokens["reader"])
+    ).json()
+    assert saved["anchor"] == {**payload["command"]["anchor"], "entry_id": world.entry.id}
+    assert "url" not in json.dumps(requests) and "geometry" not in json.dumps(requests)
+    assert (
+        requests[1]["anchors"][0]["dependency"]
+        == payload["command"]["anchor"]["occurrence"]["dependency"]
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"geometry": {"type": "pin", "x": True, "y": 0}},
+        {"geometry": {"type": "region", "x": 0.9, "y": 0, "width": 0.2, "height": 1}},
+        {"geometry": {"type": "region", "x": 0, "y": 0, "width": 0, "height": 1}},
+        {"basis": {"width": True, "height": 1, "orientation": "display"}},
+        {"asset": {"kind": "external", "url": "file:///private", "version_evidence": "unknown"}},
+        {
+            "asset": {
+                "kind": "external",
+                "url": "https://images.example.test:99999/chart.png",
+                "version_evidence": "unknown",
+            }
+        },
+        {
+            "asset": {
+                "kind": "external",
+                "url": "https://user:password@example.test/x",
+                "version_evidence": "unknown",
+            }
+        },
+        {"asset": {"kind": "managed", "entry_id": str(uuid.uuid4()), "sha256": "bad"}},
+    ],
+)
+def test_image_anchor_rejects_invalid_coordinates_and_unsafe_sources(
+    client, world, monkeypatch, change
+):
+    enable_anchors(monkeypatch)
+    requests = relay_mock(monkeypatch)
+    payload = image_command(world)
+    payload["command"]["anchor"].update(change)
+    send(client, world, payload, expected=422)
+    assert not requests
+
+
+def test_image_url_rejects_escaped_surrogate_without_echoing_input(client, world, monkeypatch):
+    enable_anchors(monkeypatch)
+    requests = relay_mock(monkeypatch)
+    payload = image_command(world)
+    payload["command"]["anchor"]["asset"]["url"] = "https://images.example.test/\ud800.png"
+    response = client.post(
+        "/v1/collaboration/commands",
+        headers={**headers(world.tokens["reviewer"]), "Content-Type": "application/json"},
+        content=json.dumps(payload, ensure_ascii=True),
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == {"code": "invalid_command"}
+    assert "images.example.test" not in response.text
+    assert not requests
+
+
+def test_image_asset_requires_current_same_share_read_and_rechecks_after_network(
+    client, db_session, world, monkeypatch
+):
+    enable_anchors(monkeypatch)
+    asset = m.ManagedEntry(
+        id=str(uuid.uuid4()),
+        share_id=world.share.id,
+        path="Notes/chart.png",
+        record={"type": "image", "hash": "b" * 64},
+        deleted=False,
+    )
+    db_session.add(asset)
+    db_session.commit()
+    descriptor = {"kind": "managed", "entry_id": asset.id, "sha256": "a" * 64}
+    # An older observed version is retained for review, never replaced by the
+    # current hash. The asset reference still requires current read access.
+    requests = relay_mock(monkeypatch)
+    first = image_command(world, asset=descriptor)
+    send(client, world, first)
+    assert len(requests) == 2
+    asset.path = "Private/chart.png"
+    db_session.commit()
+    send(client, world, image_command(world, asset=descriptor), expected=404)
+    assert len(requests) == 2
+    asset.path = "Notes/chart.png"
+    db_session.commit()
+
+    def revoke(envelope):
+        asset.deleted = True
+        db_session.commit()
+        source = envelope.command.anchor.occurrence
+        return anchor_service.AnchorProof(
+            anchor_service.command_hash(envelope),
+            envelope.entry_id,
+            envelope.share_id,
+            source.generation,
+            anchor_service.now_ms() + 15000,
+            time.monotonic() + 12,
+            "a" * 64,
+            "attached",
+        )
+
+    monkeypatch.setattr(anchor_service, "validate", revoke)
+    send(client, world, image_command(world, asset=descriptor), expected=404)
+    assert db_session.scalar(select(func.count()).select_from(m.DiscussionThread)) == 1
 
 
 def proof(envelope, **changes):

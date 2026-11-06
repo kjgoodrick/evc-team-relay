@@ -12,6 +12,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictFloat,
     field_validator,
     model_serializer,
     model_validator,
@@ -215,7 +216,87 @@ class TextAnchor(StrictModel):
         return self
 
 
-Anchor = Annotated[NoteAnchor | TextAnchor, Field(discriminator="type")]
+class ManagedImage(StrictModel):
+    kind: Literal["managed"]
+    entry_id: uuid.UUID
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ExternalImage(StrictModel):
+    kind: Literal["external"]
+    url: str = Field(max_length=2048)
+    version_evidence: Literal["unknown"]
+
+    @field_validator("url")
+    @classmethod
+    def safe_url(cls, value):
+        if (
+            not value.lower().startswith(("https://", "http://"))
+            or "\\" in value
+            or any(0xD800 <= ord(c) <= 0xDFFF for c in value)
+        ):
+            raise ValueError("Images require an unambiguous HTTP(S) URL")
+        urlsplit(value).port  # Invalid brackets/ports must reject before storage.
+        return LinkNode.safe_url(value)
+
+
+Coordinate = Annotated[StrictFloat, Field(ge=0, le=1)]
+
+
+class WholeImage(StrictModel):
+    type: Literal["whole"]
+
+
+class ImagePin(StrictModel):
+    type: Literal["pin"]
+    x: Coordinate
+    y: Coordinate
+
+
+class ImageRegion(ImagePin):
+    type: Literal["region"]
+    width: Annotated[StrictFloat, Field(gt=0, le=1)]
+    height: Annotated[StrictFloat, Field(gt=0, le=1)]
+
+    @model_validator(mode="after")
+    def inside_image(self):
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ValueError("Region must remain inside the image")
+        return self
+
+
+class ImageBasis(StrictModel):
+    width: int = Field(gt=0, le=100000, strict=True)
+    height: int = Field(gt=0, le=100000, strict=True)
+    orientation: Literal["display"]
+
+
+class ImageAnchor(StrictModel):
+    version: Literal[1]
+    type: Literal["image"]
+    occurrence: TextAnchor
+    asset: Annotated[ManagedImage | ExternalImage, Field(discriminator="kind")]
+    basis: ImageBasis
+    geometry: Annotated[WholeImage | ImagePin | ImageRegion, Field(discriminator="type")]
+
+    @model_validator(mode="after")
+    def image_occurrence(self):
+        if self.occurrence.structure is not None or self.occurrence.selected_length == 0:
+            raise ValueError("An image occurrence requires a nonempty embed range")
+        return self
+
+
+Anchor = Annotated[NoteAnchor | TextAnchor | ImageAnchor, Field(discriminator="type")]
+
+
+def source_anchor(anchor: Anchor) -> TextAnchor | None:
+    return (
+        anchor.occurrence
+        if isinstance(anchor, ImageAnchor)
+        else anchor
+        if isinstance(anchor, TextAnchor)
+        else None
+    )
 
 
 class ThreadCreate(StrictModel):

@@ -219,6 +219,37 @@ def existing_receipt(db, ctx, envelope, request_hash):
     return result
 
 
+def validate_image_asset(db, ctx, anchor):
+    if not isinstance(anchor, s.ImageAnchor):
+        return
+    if not get_settings().collaboration_image_anchors_enabled:
+        error(409, "image_anchors_disabled")
+    if not isinstance(anchor.asset, s.ManagedImage):
+        return
+    # The share lock held by context also serializes inventory/rule writers.
+    # This reference never authorizes a download or trusts a client-provided path.
+    asset = db.scalar(
+        select(m.ManagedEntry)
+        .where(
+            m.ManagedEntry.id == str(anchor.asset.entry_id),
+            m.ManagedEntry.share_id == ctx.share.id,
+            m.ManagedEntry.deleted.is_(False),
+        )
+        .execution_options(populate_existing=True)
+    )
+    if (
+        not asset
+        or asset.record.get("type") != "image"
+        or managed_service.permission(
+            ctx.share, ctx.user, asset.path, managed_service.rules_for(db, ctx.share, ctx.user)
+        )
+        not in {"read", "write"}
+    ):
+        error(404, "image_unavailable")
+    # Offline comments may describe an older image. Preserve the observed hash
+    # as evidence instead of relabeling old coordinates with the current hash.
+
+
 def prepare_text_anchor(db, token, envelope):
     ctx = context(db, token, envelope.share_id, envelope.entry_id, write=True)
     prior = existing_receipt(db, ctx, envelope, anchor_service.command_hash(envelope))
@@ -226,12 +257,13 @@ def prepare_text_anchor(db, token, envelope):
         return prior
     if not anchor_service.enabled():
         error(409, "text_anchors_disabled")
-    anchor = envelope.command.anchor
+    anchor = s.source_anchor(envelope.command.anchor)
     if anchor.document_id != envelope.entry_id:
         error(422, "invalid_anchor")
     if anchor.generation != ctx.entry.collaboration_generation:
         error(409, "anchor_generation_mismatch")
     validate_mentions(db, ctx, envelope.command.body)
+    validate_image_asset(db, ctx, envelope.command.anchor)
     # Release every authorization/identity lock before any private network I/O.
     # The final command transaction reacquires and rechecks all of them.
     db.commit()
@@ -243,8 +275,9 @@ def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
     require_clean_session(db)
     envelope = envelope.model_copy(deep=True)
     try:
-        text = isinstance(envelope.command, s.ThreadCreate) and isinstance(
-            envelope.command.anchor, s.TextAnchor
+        text = (
+            isinstance(envelope.command, s.ThreadCreate)
+            and s.source_anchor(envelope.command.anchor) is not None
         )
         limit = 256 * 1024 if text else 65536
         if len(envelope.canonical_json().encode("utf-8")) > limit:
@@ -277,12 +310,13 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
     if prior is not None:
         return prior
     command = envelope.command
-    if isinstance(command, s.ThreadCreate) and isinstance(command.anchor, s.TextAnchor):
+    if isinstance(command, s.ThreadCreate) and s.source_anchor(command.anchor) is not None:
         if not anchor_service.enabled():
             error(409, "text_anchors_disabled")
         if not isinstance(proof, anchor_service.AnchorProof):
             error(503, "anchor_validation_unavailable")
         proof.check(envelope, ctx.entry.collaboration_generation)
+        validate_image_asset(db, ctx, command.anchor)
     if hasattr(command, "body"):
         validate_mentions(db, ctx, command.body)
     if isinstance(command, s.ThreadCreate):

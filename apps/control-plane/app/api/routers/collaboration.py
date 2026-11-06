@@ -41,12 +41,19 @@ def capabilities(
             "bases": False,
             "discussion_text_anchors": anchor_service.enabled(),
             "discussion_block_anchors": anchor_service.enabled(),
+            "discussion_image_occurrences": anchor_service.enabled()
+            and get_settings().collaboration_image_anchors_enabled,
             "discussion_commands": (
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled
             ),
         },
-        "discussion_targets": ["note", "text"] if anchor_service.enabled() else ["note"],
+        "discussion_targets": (
+            ["note", "text"]
+            + (["image"] if get_settings().collaboration_image_anchors_enabled else [])
+        )
+        if anchor_service.enabled()
+        else ["note"],
         "discussion_body_version": 1,
         "discussion_session_required": True,
         "reaction_keys": REACTION_KEYS,

@@ -14,6 +14,11 @@ text-anchor capability. Blocks remain text targets with bounded structural
 metadata; this is not a separate document identity or a complete Reading-view
 adapter.
 
+An independent image-occurrence capability now supports whole-image, pin and
+region anchors on embeds in managed Markdown notes. It remains disabled by
+default; see [image payloads and upgrade requirements](image-discussion-preview.md).
+Direct image-file scopes and images inside message bodies are not yet supported.
+
 Apply Alembic through `202611050003` in an isolated preview database. The additive
 migration creates discussion scopes, threads, anchor revisions, messages,
 message revisions, reactions, command receipts, and events. It adds a per-share
@@ -119,8 +124,8 @@ recipient permissions. Rendering must create text/DOM nodes, never trust HTML.
 
 Bodies are nonblank and at most 32 KiB UTF-8. The entire streamed POST body is
 limited to 64 KiB before parsing, including chunked requests. Unknown fields,
-HTML, unsupported anchors, and images reject; they are not silently stripped.
-When text anchors are enabled, only text-create envelopes may exceed 64 KiB, up
+HTML, unsupported anchors, and message-body images reject; they are not silently stripped.
+When text anchors are enabled, only text/image-anchor create envelopes may exceed 64 KiB, up
 to 256 KiB; their decoded dependency remains limited to 64 KiB. Read-body budgets
 also reserve space for anchor bytes.
 Page size is at most 100. Message/history pages also limit aggregate serialized
