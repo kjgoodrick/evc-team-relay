@@ -45,6 +45,9 @@ class Settings(BaseSettings):
 
     jwt_secret: str = Field(default="dev-secret-change-me")
     jwt_algorithm: str = Field(default="HS256")
+    collaboration_presence_enabled: bool = Field(
+        default=False, description="Enable the single-process collaboration location channel"
+    )
     access_token_expire_minutes: int = Field(default=60)
     refresh_token_expire_days: int = Field(default=30)
 

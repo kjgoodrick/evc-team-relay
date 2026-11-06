@@ -230,6 +230,13 @@ class PresenceConnection:
             if surface == "reading" and cursor is not None:
                 raise InvalidPresence("Reading presence cannot publish an editor cursor")
             viewport, selection = state.get("viewport"), state.get("selection")
+            instance = state.get("instanceId")
+            if instance is not None:
+                try:
+                    if not isinstance(instance, str) or str(uuid.UUID(instance)) != instance:
+                        raise ValueError
+                except ValueError:
+                    raise InvalidPresence("Invalid presence instance") from None
             if viewport is not None and not relative_position(viewport):
                 raise InvalidPresence("Invalid viewport position")
             if selection is not None and (
@@ -248,7 +255,7 @@ class PresenceConnection:
             }
             if surface is not None:
                 trusted["surface"] = surface
-            for key in ("viewport", "selection"):
+            for key in ("viewport", "selection", "instanceId"):
                 if key in state:
                     trusted[key] = state[key]
             encoded = json.dumps(trusted, separators=(",", ":"), ensure_ascii=False).encode()

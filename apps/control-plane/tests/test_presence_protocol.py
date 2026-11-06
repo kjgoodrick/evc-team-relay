@@ -88,6 +88,21 @@ def test_unknown_surface_rejects(surface):
         PresenceConnection().transform(frame({"surface": surface}), IDENTITY)
 
 
+def test_optional_instance_identity_is_validated_and_preserved():
+    instance = "a8c90563-f8dd-466c-aeaa-87493d018754"
+    state = decoded(PresenceConnection().transform(frame({"instanceId": instance}), IDENTITY))[2]
+    assert state["instanceId"] == instance
+    assert state["user"] == IDENTITY.user()
+
+
+@pytest.mark.parametrize(
+    "instance", ["not-an-id", True, {}, 12, "A8C90563-F8DD-466C-AEAA-87493D018754"]
+)
+def test_invalid_instance_identity_rejects(instance):
+    with pytest.raises(InvalidPresence):
+        PresenceConnection().transform(frame({"instanceId": instance}), IDENTITY)
+
+
 def test_semantic_reading_location_preserves_relative_positions_without_cursor_or_path():
     state = {
         "surface": "reading",

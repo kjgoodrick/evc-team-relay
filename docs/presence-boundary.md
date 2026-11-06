@@ -22,8 +22,12 @@ pixel offsets or a path. Optional `selection` is a validated anchor/head pair
 accepted only for the Reading surface; its editor `cursor` remains null.
 Missing fields retain compatibility with the previous trusted state shape.
 The 4,096-byte payload/state bound applies to the complete state including these
-fields and authenticated profile data. This does not add a location directory or
-authorize cross-document subscriptions.
+fields and authenticated profile data. These fields do not themselves authorize
+cross-document subscriptions. The separate, disabled-by-default
+[location channel preview](presence-location-channel.md) now supplies the server
+boundary for those subscriptions; its client integration remains unfinished.
+The optional `instanceId` is a validated canonical UUID for one plugin lifetime,
+bound to the authenticated user and opaque login-session identity by that channel.
 
 `sessionId` is a stable HMAC-derived public identifier for an authenticated login
 session. Sessionless legacy credentials receive a per-connection random identity;
