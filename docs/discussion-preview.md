@@ -222,6 +222,12 @@ acknowledgment. Never log comment bodies, credentials, or replay cursors.
 
 ## Validation and remaining work
 
+Private pictures in comment bodies now have a separately gated server protocol,
+bucket and immutable revision references. See the
+[picture preview protocol](comment-picture-preview.md) for authorization,
+limits, tests and the unfinished client/offline/cleanup work. The capability is
+disabled by default and is not a completed native feature.
+
 Focused discussion/policy tests cover permissions, retries, immutable history,
 revocation, strict input, bounds, tombstones, pagination, and autoflush-disabled
 sessions. `tests/integration/discussions_postgres.py` additionally runs the full

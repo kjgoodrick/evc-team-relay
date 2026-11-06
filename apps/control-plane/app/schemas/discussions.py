@@ -92,11 +92,17 @@ class ListBlock(StrictModel):
     items: list[Paragraph] = Field(min_length=1, max_length=100)
 
 
+class PictureBlock(StrictModel):
+    type: Literal["picture"]
+    picture_id: uuid.UUID
+    alt: str = Field(default="", max_length=1024)
+
+
 class MessageBody(StrictModel):
     version: Literal[1]
-    blocks: list[Annotated[Paragraph | CodeBlock | ListBlock, Field(discriminator="type")]] = Field(
-        min_length=1, max_length=100
-    )
+    blocks: list[
+        Annotated[Paragraph | CodeBlock | ListBlock | PictureBlock, Field(discriminator="type")]
+    ] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def bounded_body(self):
@@ -110,7 +116,7 @@ class MessageBody(StrictModel):
         def meaningful(node):
             if isinstance(node, dict):
                 return (
-                    node.get("type") == "mention"
+                    node.get("type") in {"mention", "picture"}
                     or bool(str(node.get("text", "")).strip())
                     or any(meaningful(v) for v in node.values() if isinstance(v, (dict, list)))
                 )
@@ -118,7 +124,12 @@ class MessageBody(StrictModel):
 
         if not meaningful(self.model_dump(mode="json")):
             raise ValueError("Message cannot be blank")
+        if len([block for block in self.blocks if isinstance(block, PictureBlock)]) > 10:
+            raise ValueError("Message cannot contain more than ten pictures")
         return self
+
+    def picture_ids(self) -> set[uuid.UUID]:
+        return {block.picture_id for block in self.blocks if isinstance(block, PictureBlock)}
 
     def mentioned_users(self) -> set[uuid.UUID]:
         found = set()

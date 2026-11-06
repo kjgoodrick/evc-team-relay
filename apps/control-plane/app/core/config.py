@@ -43,6 +43,17 @@ class Settings(BaseSettings):
         default=False,
         description="Preview managed image-file discussions; upgrade clients before enabling",
     )
+    collaboration_pictures_enabled: bool = Field(
+        default=False,
+        description="Preview private pictures in comment bodies; upgrade clients before enabling",
+    )
+    collaboration_pictures_bucket: str = Field(
+        default="relay-discussion-pictures",
+        description="Separately provisioned private bucket for comment pictures; no public policy",
+        min_length=3,
+        max_length=63,
+        pattern=r"^[a-z0-9][a-z0-9.-]*[a-z0-9]$",
+    )
     collaboration_anchor_relay_token: SecretStr | None = Field(
         default=None, description="Internal relay server credential; never issued to clients"
     )

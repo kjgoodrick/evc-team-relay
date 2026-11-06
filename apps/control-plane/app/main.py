@@ -167,6 +167,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
     from app.api.routers import (
         collaboration,
         collaboration_events,
+        discussion_pictures,
         discussions,
         managed,
         native_oauth,
@@ -177,6 +178,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.include_router(collaboration.router, prefix="/v1")
     app.include_router(collaboration_events.router, prefix="/v1")
     app.include_router(discussions.router, prefix="/v1")
+    app.include_router(discussion_pictures.router, prefix="/v1")
     app.include_router(native_oauth.router, prefix="/v1")
     app.include_router(managed.router, prefix="/v1")
     app.include_router(users.router, prefix="/v1")

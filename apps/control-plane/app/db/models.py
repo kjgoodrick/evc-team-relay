@@ -10,6 +10,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Text,
@@ -1029,6 +1030,54 @@ class DiscussionMessageRevision(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
+
+
+class DiscussionPicture(Base):
+    __tablename__ = "discussion_pictures"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('staged', 'verified', 'attached', 'expired')",
+            name="ck_discussion_picture_state",
+        ),
+        CheckConstraint(
+            "source_size > 0 AND source_size <= 10485760", name="ck_discussion_picture_size"
+        ),
+        Index("ix_discussion_pictures_scope_owner", "scope_id", "owner_id", "state"),
+        Index("ix_discussion_pictures_expiry", "state", "expires_at"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    scope_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discussion_scopes.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_size: Mapped[int] = mapped_column(nullable=False)
+    source_mime: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="staged")
+    # Private object keys are never exposed in the protocol or copied into bodies.
+    renditions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DiscussionPictureReference(Base):
+    __tablename__ = "discussion_picture_references"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["message_id", "revision"],
+            ["discussion_message_revisions.message_id", "discussion_message_revisions.revision"],
+            ondelete="CASCADE",
+        ),
+    )
+    picture_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_pictures.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    revision: Mapped[int] = mapped_column(primary_key=True)
 
 
 class DiscussionReaction(Base):

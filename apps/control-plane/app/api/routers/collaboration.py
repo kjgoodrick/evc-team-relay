@@ -12,6 +12,7 @@ from app.services import (
     anchor_service,
     collaboration_auth,
     collaboration_policy,
+    discussion_pictures,
     managed_service,
     share_service,
 )
@@ -48,6 +49,7 @@ def capabilities(
                 and get_settings().collaboration_discussions_enabled
                 and get_settings().collaboration_image_files_enabled
             ),
+            "discussion_pictures": discussion_pictures.enabled(),
             "discussion_commands": (
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled
@@ -76,7 +78,12 @@ def capabilities(
             "note_command_bytes": 65536,
             "anchor_dependency_bytes": 65536,
             "page_items": 100,
+            "picture_bytes": 10 * 1024 * 1024,
+            "picture_pixels": 20_000_000,
+            "pictures_per_message": 10,
         },
+        "discussion_picture_formats": ["image/png", "image/jpeg", "image/webp", "image/gif"],
+        "discussion_picture_animation": False,
     }
 
 
