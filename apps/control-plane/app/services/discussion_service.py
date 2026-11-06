@@ -216,7 +216,7 @@ def document_context(db, token, share_id, entry_id):
         raise
 
 
-def existing_receipt(db, ctx, envelope, request_hash):
+def existing_receipt(db, ctx, envelope, request_hash, *, allow_withdrawn=False):
     receipt = db.get(m.DiscussionReceipt, (ctx.user.id, envelope.operation_id))
     if receipt is None:
         return None
@@ -224,8 +224,69 @@ def existing_receipt(db, ctx, envelope, request_hash):
     if receipt.request_hash != request_hash or not scope or receipt.scope_id != scope.id:
         error(409, "operation_id_conflict")
     result = dict(receipt.result)
+    if result.get("withdrawn") is True and not allow_withdrawn:
+        error(410, "operation_withdrawn")
     db.commit()
     return result
+
+
+def withdraw_command(db, token, envelope):
+    """Resolve an ambiguous send before replacing it, under the command lock.
+
+    A normal receipt wins. Otherwise the SAME receipt primary key becomes a
+    permanent withdrawal: a concurrent/late send cannot accept that operation.
+    No target proof or object-store I/O is needed to retire the identity.
+    """
+    require_clean_session(db)
+    envelope = envelope.model_copy(deep=True)
+    try:
+        request_hash = anchor_service.command_hash(envelope)
+        ctx = context(db, token, envelope.share_id, envelope.entry_id, write=True)
+        prior = existing_receipt(db, ctx, envelope, request_hash, allow_withdrawn=True)
+        if prior is not None:
+            if prior.get("withdrawn") is True:
+                return dict(
+                    status="withdrawn",
+                    operation_id=str(envelope.operation_id),
+                    entry_id=str(envelope.entry_id),
+                )
+            return dict(status="accepted", result=prior)
+        scope = scope_for(db, ctx)
+        if scope is None:
+            scope = m.DiscussionScope(
+                share_id=ctx.share.id,
+                entry_id=ctx.entry.id,
+                kind="image" if ctx.entry.record.get("type") == "image" else "note",
+            )
+            db.add(scope)
+            db.flush()
+        db.add(
+            m.DiscussionReceipt(
+                actor_id=ctx.user.id,
+                operation_id=envelope.operation_id,
+                scope_id=scope.id,
+                request_hash=request_hash,
+                result={"withdrawn": True},
+            )
+        )
+        db.commit()
+        return dict(
+            status="withdrawn",
+            operation_id=str(envelope.operation_id),
+            entry_id=str(envelope.entry_id),
+        )
+    except IntegrityError:
+        db.rollback()
+        error(409, "operation_id_conflict")
+    except OperationalError:
+        db.rollback()
+        error(503, "retryable_transaction")
+    except SQLAlchemyError:
+        db.rollback()
+        error(500, "discussion_storage_error")
+    except Exception:
+        db.rollback()
+        raise
 
 
 def validate_image_asset(db, ctx, anchor):

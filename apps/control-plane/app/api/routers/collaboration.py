@@ -50,6 +50,10 @@ def capabilities(
                 and get_settings().collaboration_image_files_enabled
             ),
             "discussion_pictures": discussion_pictures.enabled(),
+            "discussion_recovery": (
+                get_settings().collaboration_policy_enabled
+                and get_settings().collaboration_discussions_enabled
+            ),
             "discussion_commands": (
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled

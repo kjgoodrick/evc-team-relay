@@ -489,6 +489,64 @@ def check_cleanup(
         "PASS: actual PostgreSQL/MinIO expiry before deletion, late PUT reconciliation, "
         "live history protection, nonblocking share locks, retired-ID fencing and competing leases"
     )
+    for _ in range(4):
+        command = CommandEnvelope.model_validate(
+            dict(
+                protocol_version=1,
+                operation_id=uuid.uuid4(),
+                share_id=share_id,
+                entry_id=entry_id,
+                command=dict(
+                    type="thread.create",
+                    thread_id=uuid.uuid4(),
+                    message_id=uuid.uuid4(),
+                    anchor=dict(version=1, type="note"),
+                    body=dict(
+                        version=1,
+                        blocks=[
+                            dict(
+                                type="paragraph", children=[dict(type="text", text="Recovery race")]
+                            )
+                        ],
+                    ),
+                ),
+            )
+        )
+        start = threading.Barrier(2)
+
+        def compete(withdraw):
+            with factory() as db:
+                start.wait(timeout=5)
+                try:
+                    call = (
+                        discussion_service.withdraw_command
+                        if withdraw
+                        else discussion_service.apply_command
+                    )
+                    return call(db, tokens["reviewer"], command)
+                except HTTPException as exc:
+                    assert not withdraw and exc.status_code == 410
+                    return None
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            sent, withdrawn = list(pool.map(compete, [False, True]))
+        assert withdrawn["status"] == ("accepted" if sent else "withdrawn")
+        with factory() as db:
+            assert (db.get(m.DiscussionMessage, command.command.message_id) is not None) == bool(
+                sent
+            )
+            if sent:
+                assert withdrawn["result"] == sent
+            else:
+                try:
+                    discussion_service.apply_command(db, tokens["reviewer"], command)
+                    raise AssertionError("A late send bypassed withdrawal")
+                except HTTPException as error:
+                    assert error.status_code == 410
+    print(
+        "PASS: concurrent PostgreSQL send/withdraw returns acceptance "
+        "or permanently fences the original"
+    )
 
 
 if __name__ == "__main__":

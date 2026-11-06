@@ -5,6 +5,7 @@ database locking/migrations. No real vault, relay, credentials or service is use
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 from managed_stack import port, ready, stop
@@ -129,6 +131,28 @@ def main():
             with Image.new("RGBA", (800, 600), (40, 80, 120, 160)) as image:
                 image.save(picture_path, format="PNG", pnginfo=info)
             fixture["picturePath"] = str(picture_path)
+            with session.get_sessionmaker()() as db:
+                scope = m.DiscussionScope(
+                    share_id=uuid.UUID(fixture["share"]), entry_id=fixture["entry"], kind="note"
+                )
+                db.add(scope)
+                db.flush()
+                expired_id = uuid.uuid4()
+                raw = picture_path.read_bytes()
+                db.add(
+                    m.DiscussionPicture(
+                        id=expired_id,
+                        scope_id=scope.id,
+                        owner_id=uuid.UUID(fixture["reviewer"]),
+                        state="expired",
+                        source_sha256=hashlib.sha256(raw).hexdigest(),
+                        source_size=len(raw),
+                        created_at=security.utcnow() - timedelta(days=2),
+                        expires_at=security.utcnow() - timedelta(days=1),
+                    )
+                )
+                db.commit()
+                fixture["expiredPictureId"] = str(expired_id)
         fixture_path = temp / "fixture.json"
         fixture_path.write_text(json.dumps(fixture))
         fixture_path.chmod(0o600)

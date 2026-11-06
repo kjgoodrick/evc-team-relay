@@ -104,7 +104,9 @@ that retain the previous revision's pictures, but blocks new attachments.
   100 MiB source-byte quota per uploader/share. These are staging limits, not
   complete vault storage accounting. Timestamp-expired staging reservations stop
   consuming this allowance immediately, even before maintenance runs. Expired
-  IDs cannot be reused; client-side replacement/recovery is still unfinished.
+  IDs cannot be reused. Queued comments now have explicit upload refresh with
+  server-confirmed withdrawal; draft/online-command and editable rejected-work
+  recovery remain unfinished.
 
 The decoder follows Pillow's distinction between verification and pixel loading,
 and its orientation API; it adds a stricter explicit pixel limit before decoding.
@@ -161,10 +163,39 @@ table and private bucket, and reset incomplete inventory progress before resumin
 The coherent backup/restore implementation and rehearsal remain separate work;
 do not restore rows into a live cleanup run.
 
+## Safe queued-comment recovery
+
+The negotiated `discussion_recovery` capability adds authenticated
+`POST /v1/collaboration/commands/withdraw`, taking the exact original
+`CommandEnvelope`. This is a recovery primitive, not deletion of a posted comment.
+Current read/comment permission is required. It returns either
+`{status: "accepted", result: <original command result>}` or
+`{status: "withdrawn", operation_id, entry_id}`. A mismatched hash/scope conflicts.
+
+An accepted receipt always wins. Otherwise withdrawal occupies the same
+actor/operation primary key as successful command receipts, with a private
+`withdrawn` marker in the existing JSON result. No new SQL migration is needed.
+The Share lock serializes normal sends and withdrawal; the receipt's global key
+also excludes conflicting cross-scope reuse. Every later original send receives
+`410 operation_withdrawn`, including a send already waiting on a private anchor
+proof. Withdrawal itself never calls the relay or picture store, does not
+revalidate the saved anchor or referenced message, and creates no message/event.
+It preserves actor/scoped identity
+through the existing receipt lifecycle; backups and future retention must keep
+these fences with accepted receipts.
+
+The client only replaces queued picture work after a validated withdrawal
+response. A lost withdrawal response retries the original recovery request;
+an already accepted comment is reconciled without generating another upload.
+The local source/reference/request transfer is atomic and preserves rich bodies,
+descriptions and anchors. This increment does not yet provide arbitrary editing
+of rejected attachments, draft expiry repair or Send-and-reopen recovery.
+
 ## Evidence and remaining acceptance
 
-Latest checks: **146 focused server tests passed**, including **28 picture tests**
-and **20 cleanup tests**, plus existing retention coverage.
+Latest checks: **149 focused server tests passed**, including **28 picture tests**,
+**20 cleanup tests** and **9 command-recovery tests**. The previous cleanup
+checkpoint additionally ran the existing retention-worker tests.
 Changed-file Ruff lint/format and whitespace checks passed. The PostgreSQL and
 PostgreSQL/MinIO proofs described below passed separately. Existing dependency
 deprecation/test-key warnings remain; they are not picture-test failures.
@@ -206,8 +237,11 @@ database, then runs the plugin's `realPictureStack.test.ts`. That test verifies
 offline blob/outbox restart, a comment-only uploader, a lost upload response
 recovered without retransmitting verified bytes, private staging, actual binary
 content/thumbnails, edit history and preserved originals after revocation. The
-extended test also exercises the account-owned picture loader/cache and the
-online Send and reopen path used by the native composer. The
+extended test also exercises the account-owned picture loader/cache, the
+online Send and reopen path used by the native composer, recovery of a genuinely
+expired picture reservation, and reconciliation of a lost successful comment
+response without re-upload or duplicate publication. PostgreSQL proofs also
+cover concurrent send/withdraw and withdrawal during private anchor validation. The
 fixture removes its bucket and stops its HTTP process; it refuses nonloopback
 MinIO endpoints. It complements the PostgreSQL proofs above. The text-only
 driver mode was also rerun successfully after adding this option.

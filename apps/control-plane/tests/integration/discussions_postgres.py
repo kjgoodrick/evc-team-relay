@@ -224,7 +224,7 @@ def main():
     settings.collaboration_discussions_enabled = True
     settings.collaboration_text_anchors_enabled = True
     settings.collaboration_anchor_relay_token = SecretStr("disposable-mocked-private-hop")
-    for change, expected in [("generation", 409), ("permission", 403)]:
+    for change, expected in [("generation", 409), ("permission", 403), ("withdrawal", 410)]:
         with Session(engine) as db:
             generation = db.get(m.ManagedEntry, str(entry_id)).collaboration_generation
         selected = envelope(
@@ -283,6 +283,11 @@ def main():
                         revoker.get(
                             m.ManagedEntry, str(entry_id)
                         ).collaboration_generation = uuid.uuid4()
+                    elif change == "withdrawal":
+                        assert (
+                            service.withdraw_command(revoker, token, selected)["status"]
+                            == "withdrawn"
+                        )
                     else:
                         rule = revoker.scalar(
                             select(m.ManagedCommentRule).where(
@@ -296,7 +301,8 @@ def main():
             assert pending.result(timeout=5)[0] == expected
         with Session(engine) as db:
             assert db.get(m.DiscussionThread, selected.command.thread_id) is None
-            assert db.get(m.DiscussionReceipt, (reviewer_id, selected.operation_id)) is None
+            receipt = db.get(m.DiscussionReceipt, (reviewer_id, selected.operation_id))
+            assert (receipt is not None) == (change == "withdrawal")
             assert db.get(m.Share, share_id).collaboration_sequence == 2
             if change == "permission":
                 db.scalar(
@@ -305,7 +311,7 @@ def main():
                 db.commit()
     print(
         "PASS: private validation releases SQL locks; "
-        "generation changes and revocation prevent commit"
+        "generation changes, revocation and command withdrawal prevent commit"
     )
 
     # A stale ORM identity must not resurrect permissions after a committed revoke.
@@ -330,7 +336,7 @@ def main():
         db.expire_all()
         assert db.get(m.DiscussionMessage, create.command.message_id).author_id is None
         assert db.scalar(select(func.count()).select_from(m.DiscussionMessageRevision)) == 2
-        assert db.scalar(select(func.count()).select_from(m.DiscussionReceipt)) == 2
+        assert db.scalar(select(func.count()).select_from(m.DiscussionReceipt)) == 3
         assert db.scalar(select(func.count()).select_from(m.DiscussionReaction)) == 0
         share_service.delete_share(db, db.get(m.Share, share_id))
         assert db.scalar(select(func.count()).select_from(m.DiscussionThread)) == 0

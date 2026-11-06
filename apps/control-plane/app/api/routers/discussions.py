@@ -25,7 +25,13 @@ class BoundedDiscussionRoute(APIRoute):
             if request.method != "POST":
                 return await handler(request)
             body = bytearray()
-            limit = 256 * 1024 if anchor_service.enabled() else 65536
+            # Recovery must still retire an old text request after creation is
+            # disabled. It never validates the anchor through the private relay.
+            limit = (
+                256 * 1024
+                if anchor_service.enabled() or request.url.path.endswith("/commands/withdraw")
+                else 65536
+            )
             async for chunk in request.stream():
                 if len(body) + len(chunk) > limit:
                     raise HTTPException(413, {"code": "command_too_large"})
@@ -84,6 +90,13 @@ def command(
     payload: CommandEnvelope, token: str = Depends(credential), db: Session = Depends(get_db)
 ):
     return service.apply_command(db, token, payload)
+
+
+@router.post("/commands/withdraw")
+def withdraw(
+    payload: CommandEnvelope, token: str = Depends(credential), db: Session = Depends(get_db)
+):
+    return service.withdraw_command(db, token, payload)
 
 
 @router.get("/shares/{share_id}/entries/{entry_id}/anchor-context")
