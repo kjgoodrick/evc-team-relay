@@ -229,6 +229,16 @@ class PresenceConnection:
                 raise InvalidPresence("Invalid cursor")
             if surface == "reading" and cursor is not None:
                 raise InvalidPresence("Reading presence cannot publish an editor cursor")
+            viewport, selection = state.get("viewport"), state.get("selection")
+            if viewport is not None and not relative_position(viewport):
+                raise InvalidPresence("Invalid viewport position")
+            if selection is not None and (
+                surface != "reading"
+                or not isinstance(selection, dict)
+                or set(selection) != {"anchor", "head"}
+                or not all(relative_position(selection[key]) for key in ("anchor", "head"))
+            ):
+                raise InvalidPresence("Invalid Reading selection")
             # Ignore all caller-supplied identity, colors, URLs and unknown state.
             # Each future surface extends this explicit schema, not arbitrary JSON.
             trusted = {
@@ -238,6 +248,9 @@ class PresenceConnection:
             }
             if surface is not None:
                 trusted["surface"] = surface
+            for key in ("viewport", "selection"):
+                if key in state:
+                    trusted[key] = state[key]
             encoded = json.dumps(trusted, separators=(",", ":"), ensure_ascii=False).encode()
             if len(encoded) > MAX_AWARENESS:
                 raise InvalidPresence("Presence profile too large")

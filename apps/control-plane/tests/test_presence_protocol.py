@@ -88,6 +88,40 @@ def test_unknown_surface_rejects(surface):
         PresenceConnection().transform(frame({"surface": surface}), IDENTITY)
 
 
+def test_semantic_reading_location_preserves_relative_positions_without_cursor_or_path():
+    state = {
+        "surface": "reading",
+        "viewport": POSITION,
+        "selection": {"anchor": POSITION, "head": POSITION},
+        "path": "Private/Note.md",
+    }
+    trusted = decoded(PresenceConnection().transform(frame(state), IDENTITY))[2]
+    assert trusted == {
+        "surface": "reading",
+        "viewport": POSITION,
+        "selection": state["selection"],
+        "user": IDENTITY.user(),
+        "sessionId": "public-session",
+        "cursor": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"viewport": 15},
+        {"viewport": {"tname": "private"}},
+        {"viewport": {**POSITION, "scrollTop": 1}},
+        {"surface": "editor", "selection": {"anchor": POSITION, "head": POSITION}},
+        {"surface": "reading", "selection": [POSITION]},
+        {"surface": "reading", "selection": {"anchor": POSITION, "head": {"tname": "private"}}},
+    ],
+)
+def test_malformed_semantic_location_rejects(state):
+    with pytest.raises(InvalidPresence):
+        PresenceConnection().transform(frame(state), IDENTITY)
+
+
 @pytest.mark.parametrize(
     "bad",
     [

@@ -3,7 +3,8 @@
 The managed WebSocket gateway now authenticates and bounds Yjs awareness in
 addition to checking document permissions. This is a foundation for the planned
 presence feature. The plugin now has a foreground-note controller and privacy/
-status/retry controls; jump, follow, image pointers and Bases adapters remain.
+status/retry controls, a current-note roster and current-note Jump/Follow.
+Authorized cross-note following, image pointers and Bases adapters remain.
 
 `apps/control-plane/app/services/presence_protocol.py` validates one complete
 protocol frame, permits one awareness client ID per socket, validates relative
@@ -15,6 +16,14 @@ URLs are removed. No full email, login session UUID, token, path or arbitrary
 client state is forwarded as presence metadata. The optional `surface` field
 accepts only `editor` or `reading`; Reading rejects a non-null editor cursor.
 Payloads without a surface retain their previous trusted shape.
+
+Optional `viewport` carries a validated relative position in `contents`, never
+pixel offsets or a path. Optional `selection` is a validated anchor/head pair
+accepted only for the Reading surface; its editor `cursor` remains null.
+Missing fields retain compatibility with the previous trusted state shape.
+The 4,096-byte payload/state bound applies to the complete state including these
+fields and authenticated profile data. This does not add a location directory or
+authorize cross-document subscriptions.
 
 `sessionId` is a stable HMAC-derived public identifier for an authenticated login
 session. Sessionless legacy credentials receive a per-connection random identity;
@@ -81,7 +90,8 @@ The fixture verifies authenticated OAuth display data, read-only cursor updates,
 spoofing rejection, socket ID switching/collision rejection, bounded payloads,
 automatic collision recovery without changing document identity/content,
 disconnect/reconnect, editor/Reading transitions, privacy disappearance with
-note sync still connected, and live permission revocation. Existing managed-sync and
+note sync still connected, semantic Reading selection/viewport round trips and
+live permission revocation. Existing managed-sync and
 text/block-comment fixtures also pass with the new boundary. Native desktop and
 mobile two-client presence acceptance is still pending. A disposable desktop
 Obsidian instance plus a protocol observer has verified foreground-note
