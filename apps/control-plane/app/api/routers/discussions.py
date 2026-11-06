@@ -115,10 +115,13 @@ def threads(
     entry_id: uuid.UUID,
     after: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
+    view_id: uuid.UUID | None = None,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
 ):
-    return service.list_threads(db, token, share_id, entry_id, after=after, limit=limit)
+    return service.list_threads(
+        db, token, share_id, entry_id, after=after, limit=limit, view_id=view_id
+    )
 
 
 @router.get("/shares/{share_id}/entries/{entry_id}/participants")
@@ -193,7 +196,10 @@ def changes(
     entry_id: uuid.UUID,
     cursor: str | None = Query(None, max_length=2048),
     limit: int = Query(100, ge=1, le=100),
+    view_id: uuid.UUID | None = None,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
 ):
-    return service.changes(db, token, share_id, entry_id, cursor=cursor, limit=limit)
+    return service.changes(
+        db, token, share_id, entry_id, cursor=cursor, limit=limit, view_id=view_id
+    )

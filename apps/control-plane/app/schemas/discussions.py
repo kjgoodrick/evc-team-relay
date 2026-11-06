@@ -306,8 +306,58 @@ class ImageFileAnchor(StrictModel):
     geometry: Annotated[WholeImage | ImagePin | ImageRegion, Field(discriminator="type")]
 
 
+class BaseProperty(StrictModel):
+    source: Literal["note", "file"]
+    name: str = Field(min_length=1, max_length=256)
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value):
+        if any(ord(c) < 32 for c in value):
+            raise ValueError("Invalid property name")
+        try:
+            value.encode("utf-8")
+        except UnicodeError:
+            raise ValueError("Invalid property name") from None
+        return value
+
+
+class BaseViewTarget(StrictModel):
+    type: Literal["view"]
+
+
+class BaseItemTarget(StrictModel):
+    type: Literal["item"]
+    record_id: uuid.UUID
+    record_generation: uuid.UUID
+
+
+class BaseCellTarget(BaseItemTarget):
+    type: Literal["cell"]
+    property: BaseProperty
+
+
+class BasePropertyTarget(StrictModel):
+    type: Literal["property"]
+    property: BaseProperty
+
+
+class BaseAnchor(StrictModel):
+    version: Literal[1]
+    type: Literal["base"]
+    definition_id: uuid.UUID
+    view_id: uuid.UUID
+    generation: uuid.UUID
+    registry_revision: int = Field(ge=1, le=9007199254740991, strict=True)
+    target: Annotated[
+        BaseViewTarget | BaseItemTarget | BaseCellTarget | BasePropertyTarget,
+        Field(discriminator="type"),
+    ]
+
+
 Anchor = Annotated[
-    NoteAnchor | TextAnchor | ImageAnchor | ImageFileAnchor, Field(discriminator="type")
+    NoteAnchor | TextAnchor | ImageAnchor | ImageFileAnchor | BaseAnchor,
+    Field(discriminator="type"),
 ]
 
 

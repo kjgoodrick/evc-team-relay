@@ -160,6 +160,20 @@ def manifest(db: Session, share: models.Share, user: models.User) -> dict:
     }
 
 
+def invalidate_discussion_snapshots(db: Session, share_id: uuid.UUID) -> None:
+    """Caller holds the share write lock; rotate without rewriting stale ORM fields.
+
+    A cursor may have skipped threads whose dependent records were hidden. A
+    new epoch forces clients to discard their snapshot when authority changes,
+    including on regrant. Ordinary content edits must not trigger this reset.
+    """
+    db.execute(
+        update(models.Share)
+        .where(models.Share.id == share_id)
+        .values(collaboration_epoch=uuid.uuid4())
+    )
+
+
 def apply_batch(db: Session, share: models.Share, user: models.User, batch: Batch) -> dict:
     member(db, share, user)
     # Serialize structural changes and rule edits per share in PostgreSQL.
@@ -257,6 +271,15 @@ def apply_batch(db: Session, share: models.Share, user: models.User, batch: Batc
     from app.services.base_content import guard_inventory
 
     guard_inventory(db, by_id, changes)
+    if any(
+        path in by_path
+        and (change.value is None or change.value.type != by_path[path].record["type"])
+        for path, change in changes.items()
+    ):
+        # A move removes the old path in this same batch. Deletes and type
+        # changes can likewise hide existing targets; additions/hash updates
+        # cannot change the authority of an existing target.
+        invalidate_discussion_snapshots(db, share.id)
     # Explicit file/folder exceptions travel with a renamed object. Otherwise
     # moving Budget.md under a broadly readable parent would silently unhide it.
     moves = [

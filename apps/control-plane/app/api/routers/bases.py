@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.api.routers.discussions import BoundedDiscussionRoute, credential
 from app.db.session import get_db
-from app.schemas.bases import InspectBase, ReconcileBase
+from app.schemas.bases import BaseTargetContext, InspectBase, ReconcileBase
+from app.services import base_discussions
 from app.services import bases_registry as service
 
 
@@ -21,6 +22,17 @@ router = APIRouter(
     dependencies=[Depends(require_preview)],
     route_class=BoundedDiscussionRoute,
 )
+
+
+@router.post("/target-context")
+def target_context(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: BaseTargetContext,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return base_discussions.target_context(db, token, share_id, entry_id, payload)
 
 
 @router.post("/inspect")

@@ -150,7 +150,7 @@ def stage(db, token, share_id, entry_id, payload):
         scope = m.DiscussionScope(
             share_id=ctx.share.id,
             entry_id=ctx.entry.id,
-            kind="image" if ctx.entry.record.get("type") == "image" else "note",
+            kind=discussions.scope_kind(ctx),
         )
         db.add(scope)
         db.flush()
@@ -296,7 +296,8 @@ def readable(db, ctx, picture):
     # History is visible for live messages; deleted messages are visible only
     # to their author/moderator. Removed threads remain moderator-only.
     query = (
-        select(m.DiscussionPictureReference.picture_id)
+        select(m.DiscussionThread)
+        .select_from(m.DiscussionPictureReference)
         .join(
             m.DiscussionMessage, m.DiscussionMessage.id == m.DiscussionPictureReference.message_id
         )
@@ -313,8 +314,10 @@ def readable(db, ctx, picture):
                 m.DiscussionMessage.deleted.is_(False), m.DiscussionMessage.author_id == ctx.user.id
             ),
         )
-    if db.scalar(query.limit(1)) is None:
-        discussions.error(404, "target_unavailable")
+    for thread in db.scalars(query.distinct()).yield_per(100):
+        if discussions.base_discussions.can_read_thread(db, ctx, thread):
+            return
+    discussions.error(404, "target_unavailable")
 
 
 @transactional

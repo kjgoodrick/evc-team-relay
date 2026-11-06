@@ -51,6 +51,10 @@ class Settings(BaseSettings):
         default=False,
         description="Preview verified Bases view identities; does not enable Bases comments",
     )
+    collaboration_bases_discussions_enabled: bool = Field(
+        default=False,
+        description="Preview Bases view/item/cell/property discussions; requires upgraded clients",
+    )
     managed_bases_sync_enabled: bool = Field(
         default=False,
         description="Preview conditional Bases file publication; requires upgraded clients",

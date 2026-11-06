@@ -8,6 +8,12 @@ class InspectBase(BaseModel):
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class BaseTargetContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    view_id: uuid.UUID
+    record_id: uuid.UUID | None = None
+
+
 class ViewBinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
     slot: int = Field(ge=0, lt=64, strict=True)

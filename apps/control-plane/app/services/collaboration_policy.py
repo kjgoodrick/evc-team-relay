@@ -134,6 +134,7 @@ def replace_rules(
     for rule in update.rules:
         db.add(models.ManagedCommentRule(share_id=share.id, **rule.model_dump()))
     share.comment_rules_revision += 1
+    managed_service.invalidate_discussion_snapshots(db, share.id)
     db.add(
         models.AuditLog(
             action=models.AuditAction.SHARE_UPDATED,

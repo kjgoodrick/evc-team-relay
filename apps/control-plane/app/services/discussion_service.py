@@ -24,7 +24,13 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas import discussions as s
-from app.services import anchor_service, collaboration_auth, collaboration_policy, managed_service
+from app.services import (
+    anchor_service,
+    base_discussions,
+    collaboration_auth,
+    collaboration_policy,
+    managed_service,
+)
 
 
 def error(status: int, code: str):
@@ -51,7 +57,7 @@ def context(
     entry_id: uuid.UUID,
     *,
     write=False,
-    entry_types=frozenset({"markdown", "image"}),
+    entry_types=None,
     require_comment=True,
 ) -> Context:
     # These entry points own their transaction; refresh previously read ORM
@@ -89,8 +95,11 @@ def context(
         .execution_options(populate_existing=True)
     )
     entry = db.scalar(entry_query.with_for_update() if write else entry_query)
-    if not entry or entry.record.get("type") not in entry_types:
+    allowed_types = {"markdown", "image", "file"} if entry_types is None else entry_types
+    if not entry or entry.record.get("type") not in allowed_types:
         error(404, "target_unavailable")
+    if entry_types is None and entry.record.get("type") == "file":
+        base_discussions.definition_for(db, Context(user, share, entry, moderate))
     permission = managed_service.permission(
         share, user, entry.path, managed_service.rules_for(db, share, user)
     )
@@ -107,13 +116,17 @@ def context(
     return Context(user, share, entry, moderate)
 
 
+def scope_kind(ctx):
+    return {"image": "image", "file": "base"}.get(ctx.entry.record.get("type"), "note")
+
+
 def scope_for(db: Session, ctx: Context) -> m.DiscussionScope | None:
     scope = db.scalar(
         select(m.DiscussionScope).where(
             m.DiscussionScope.share_id == ctx.share.id, m.DiscussionScope.entry_id == ctx.entry.id
         )
     )
-    if scope and scope.kind != ("image" if ctx.entry.record.get("type") == "image" else "note"):
+    if scope and scope.kind != scope_kind(ctx):
         # An inventory type change must not reinterpret a note's discussions as
         # image-file discussions (or vice versa). Explicit migration is separate.
         error(404, "target_unavailable")
@@ -152,8 +165,15 @@ def participants(db, token, share_id, entry_id, *, after=None, limit=50):
 
 
 def thread_for(
-    db: Session, scope: m.DiscussionScope | None, thread_id: uuid.UUID, *, include_removed=False
+    db: Session,
+    ctx: Context,
+    thread_id: uuid.UUID,
+    *,
+    include_removed=False,
+    write=False,
+    scope=None,
 ) -> m.DiscussionThread:
+    scope = scope or scope_for(db, ctx)
     if scope is None:
         error(404, "target_unavailable")
     thread = db.scalar(
@@ -163,10 +183,11 @@ def thread_for(
     )
     if thread is None or (thread.deleted and not include_removed):
         error(404, "target_unavailable")
+    base_discussions.authorize_thread(db, ctx, thread, write=write)
     return thread
 
 
-def validate_mentions(db: Session, ctx: Context, body: s.MessageBody):
+def validate_mentions(db: Session, ctx: Context, body: s.MessageBody, anchor=None):
     mentioned = body.mentioned_users()
     if len(mentioned) > 50:
         error(422, "too_many_mentions")
@@ -187,6 +208,11 @@ def validate_mentions(db: Session, ctx: Context, body: s.MessageBody):
             not in {"read", "write"}
         ):
             error(422, "mention_unavailable")
+        if isinstance(anchor, s.BaseAnchor):
+            try:
+                base_discussions.validate(db, ctx, anchor, user=user)
+            except HTTPException:
+                error(422, "mention_unavailable")
     # Delivery will reauthorize recipients. Persist IDs, never a trusted client
     # display name, and never grant access as a side effect of a mention.
 
@@ -205,6 +231,9 @@ def document_context(db, token, share_id, entry_id):
         if ctx.entry.record.get("type") == "image":
             if not get_settings().collaboration_image_files_enabled:
                 error(404, "image_files_disabled")
+        elif ctx.entry.record.get("type") == "file":
+            if not base_discussions.enabled():
+                error(404, "base_discussions_disabled")
         elif not anchor_service.enabled():
             error(404, "text_anchors_disabled")
         entry = db.scalar(
@@ -237,6 +266,10 @@ def existing_receipt(db, ctx, envelope, request_hash, *, allow_withdrawn=False):
     result = dict(receipt.result)
     if result.get("withdrawn") is True and not allow_withdrawn:
         error(410, "operation_withdrawn")
+    if ctx.entry.record.get("type") == "file" and result.get("withdrawn") is not True:
+        thread_for(
+            db, ctx, uuid.UUID(result["thread_id"]), include_removed=True, write=True, scope=scope
+        )
     db.commit()
     return result
 
@@ -267,7 +300,7 @@ def withdraw_command(db, token, envelope):
             scope = m.DiscussionScope(
                 share_id=ctx.share.id,
                 entry_id=ctx.entry.id,
-                kind="image" if ctx.entry.record.get("type") == "image" else "note",
+                kind=scope_kind(ctx),
             )
             db.add(scope)
             db.flush()
@@ -332,6 +365,8 @@ def validate_image_asset(db, ctx, anchor):
 
 
 def validate_anchor_target(ctx, anchor):
+    if isinstance(anchor, s.BaseAnchor) != (ctx.entry.record.get("type") == "file"):
+        error(422, "invalid_anchor_scope")
     image_file = isinstance(anchor, s.ImageFileAnchor)
     if image_file != (ctx.entry.record.get("type") == "image"):
         error(422, "invalid_anchor_scope")
@@ -409,6 +444,8 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
     command = envelope.command
     if isinstance(command, s.ThreadCreate):
         validate_anchor_target(ctx, command.anchor)
+        if isinstance(command.anchor, s.BaseAnchor):
+            base_discussions.validate(db, ctx, command.anchor, creation=True, write=True)
     if isinstance(command, s.ThreadCreate) and s.source_anchor(command.anchor) is not None:
         if not anchor_service.enabled():
             error(409, "text_anchors_disabled")
@@ -416,21 +453,23 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
             error(503, "anchor_validation_unavailable")
         proof.check(envelope, ctx.entry.collaboration_generation)
         validate_image_asset(db, ctx, command.anchor)
-    if hasattr(command, "body"):
-        validate_mentions(db, ctx, command.body)
+    target_anchor = command.anchor if isinstance(command, s.ThreadCreate) else None
     if isinstance(command, s.ThreadCreate):
         if scope is None:
             scope = m.DiscussionScope(
                 share_id=ctx.share.id,
                 entry_id=ctx.entry.id,
-                kind="image" if ctx.entry.record.get("type") == "image" else "note",
+                kind=scope_kind(ctx),
             )
             db.add(scope)
             db.flush()
         if db.get(m.DiscussionThread, command.thread_id) is not None:
             error(409, "identifier_unavailable")
     else:
-        thread = thread_for(db, scope, command.thread_id)
+        thread = thread_for(db, ctx, command.thread_id, scope=scope, write=True)
+        target_anchor = base_discussions.authorize_thread(db, ctx, thread, write=True)
+    if hasattr(command, "body"):
+        validate_mentions(db, ctx, command.body, target_anchor)
     # A row-locked counter produces commit order. No sequence allocation or
     # event is committed when any later validation fails.
     ctx.share.collaboration_epoch = ctx.share.collaboration_epoch or uuid.uuid4()
@@ -568,7 +607,15 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
             sequence=sequence,
             scope_id=scope.id,
             kind=command.type,
-            payload={**result, "actor_id": str(ctx.user.id)},
+            payload={
+                **result,
+                "actor_id": str(ctx.user.id),
+                **(
+                    {"view_id": str(target_anchor.view_id)}
+                    if isinstance(target_anchor, s.BaseAnchor)
+                    else {}
+                ),
+            },
         )
     )
     db.add(
@@ -615,37 +662,53 @@ def bounded_bodies(rows, body_of, budget=384 * 1024):
     return page
 
 
-def list_threads(db, token, share_id, entry_id, *, after=0, limit=50):
+def requested_view(db, ctx, view_id):
+    if ctx.entry.record.get("type") == "file":
+        if view_id is None:
+            error(422, "base_view_required")
+        base_discussions.view_for(db, ctx, view_id)
+    elif view_id is not None:
+        error(422, "invalid_anchor_scope")
+
+
+def list_threads(db, token, share_id, entry_id, *, after=0, limit=50, view_id=None):
     ctx = context(db, token, share_id, entry_id)
+    requested_view(db, ctx, view_id)
     scope = scope_for(db, ctx)
-    rows = (
-        []
-        if scope is None
-        else list(
-            db.scalars(
-                select(m.DiscussionThread)
-                .where(
-                    m.DiscussionThread.scope_id == scope.id,
-                    m.DiscussionThread.deleted.is_(False),
-                    m.DiscussionThread.created_sequence > after,
-                )
-                .order_by(m.DiscussionThread.created_sequence)
-                .limit(limit + 1)
-            )
+    rows = []
+    if scope is not None:
+        query = select(m.DiscussionThread).where(
+            m.DiscussionThread.scope_id == scope.id,
+            m.DiscussionThread.deleted.is_(False),
+            m.DiscussionThread.created_sequence > after,
         )
-    )
+        if view_id is not None:
+            query = query.join(
+                m.DiscussionAnchorRevision,
+                and_(
+                    m.DiscussionAnchorRevision.thread_id == m.DiscussionThread.id,
+                    m.DiscussionAnchorRevision.revision == m.DiscussionThread.anchor_revision,
+                ),
+            ).where(m.DiscussionAnchorRevision.payload["view_id"].as_string() == str(view_id))
+        rows = list(
+            db.scalars(query.order_by(m.DiscussionThread.created_sequence).limit(limit + 1))
+        )
     page = rows[:limit]
+    through = page[-1].created_sequence if page else after
     # This is live keyset browsing, not a paginated point-in-time snapshot.
+    # Bases pages bound scanned candidates, not just visible results. Advancing
+    # over hidden records cannot leak their IDs or make an empty page loop.
     return {
-        "threads": [thread_data(t) for t in page],
+        "threads": [thread_data(t) for t in page if base_discussions.can_read_thread(db, ctx, t)],
         "has_more": len(rows) > limit,
-        "next_after": page[-1].created_sequence if page else after,
+        "next_after": through,
+        **({"view_id": str(view_id), "scanned_through": through} if view_id is not None else {}),
     }
 
 
 def read_thread(db, token, share_id, entry_id, thread_id, *, after=0, limit=50):
     ctx = context(db, token, share_id, entry_id)
-    thread = thread_for(db, scope_for(db, ctx), thread_id, include_removed=ctx.moderate)
+    thread = thread_for(db, ctx, thread_id, include_removed=ctx.moderate)
     anchor = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
     rows = db.execute(
         select(m.DiscussionMessage, m.DiscussionMessageRevision)
@@ -712,7 +775,7 @@ def message_data(db, ctx, rows):
 def read_thread_state(db, token, share_id, entry_id, thread_id):
     """Removal metadata is readable without exposing removed text or anchor quotes."""
     ctx = context(db, token, share_id, entry_id)
-    thread = thread_for(db, scope_for(db, ctx), thread_id, include_removed=True)
+    thread = thread_for(db, ctx, thread_id, include_removed=True)
     result = {"thread": thread_data(thread)}
     if not thread.deleted:
         anchor = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
@@ -723,7 +786,7 @@ def read_thread_state(db, token, share_id, entry_id, thread_id):
 def read_message(db, token, share_id, entry_id, thread_id, message_id):
     """Fetch the current authorized revision/reactions without replaying a long thread."""
     ctx = context(db, token, share_id, entry_id)
-    thread = thread_for(db, scope_for(db, ctx), thread_id, include_removed=ctx.moderate)
+    thread = thread_for(db, ctx, thread_id, include_removed=ctx.moderate)
     row = db.execute(
         select(m.DiscussionMessage, m.DiscussionMessageRevision)
         .join(
@@ -747,7 +810,7 @@ def read_message(db, token, share_id, entry_id, thread_id, message_id):
 
 def history(db, token, share_id, entry_id, thread_id, message_id, *, after=0, limit=50):
     ctx = context(db, token, share_id, entry_id)
-    thread = thread_for(db, scope_for(db, ctx), thread_id, include_removed=ctx.moderate)
+    thread = thread_for(db, ctx, thread_id, include_removed=ctx.moderate)
     message = db.scalar(
         select(m.DiscussionMessage).where(
             m.DiscussionMessage.id == message_id, m.DiscussionMessage.thread_id == thread.id
@@ -790,7 +853,7 @@ def cursor_codec():
     return Fernet(base64.urlsafe_b64encode(key))
 
 
-def cursor_value(ctx, sequence):
+def cursor_value(ctx, sequence, view_id=None):
     return {
         "v": 1,
         "user": str(ctx.user.id),
@@ -798,11 +861,13 @@ def cursor_value(ctx, sequence):
         "entry": ctx.entry.id,
         "epoch": str(ctx.share.collaboration_epoch),
         "sequence": sequence,
+        **({"view": str(view_id)} if view_id is not None else {}),
     }
 
 
-def changes(db, token, share_id, entry_id, *, cursor=None, limit=100):
+def changes(db, token, share_id, entry_id, *, cursor=None, limit=100, view_id=None):
     ctx = context(db, token, share_id, entry_id)
+    requested_view(db, ctx, view_id)
     offset = 0
     if cursor:
         if len(cursor) > 2048:
@@ -813,7 +878,7 @@ def changes(db, token, share_id, entry_id, *, cursor=None, limit=100):
             if (
                 type(offset) is not int
                 or offset < 0
-                or value != cursor_value(ctx, offset)
+                or value != cursor_value(ctx, offset, view_id)
                 or offset > ctx.share.collaboration_sequence
             ):
                 error(409, "snapshot_required")
@@ -830,6 +895,11 @@ def changes(db, token, share_id, entry_id, *, cursor=None, limit=100):
                     m.DiscussionEvent.share_id == ctx.share.id,
                     m.DiscussionEvent.scope_id == scope.id,
                     m.DiscussionEvent.sequence > offset,
+                    *(
+                        [m.DiscussionEvent.payload["view_id"].as_string() == str(view_id)]
+                        if view_id is not None
+                        else []
+                    ),
                 )
                 .order_by(m.DiscussionEvent.sequence)
                 .limit(limit + 1)
@@ -841,14 +911,21 @@ def changes(db, token, share_id, entry_id, *, cursor=None, limit=100):
     through = page[-1].sequence if has_more else ctx.share.collaboration_sequence
     checkpoint = (
         cursor_codec()
-        .encrypt(json.dumps(cursor_value(ctx, through), sort_keys=True).encode())
+        .encrypt(json.dumps(cursor_value(ctx, through, view_id), sort_keys=True).encode())
         .decode()
     )
     return {
         "events": [
             {"kind": event.kind, "sequence": event.sequence, "data": event.payload}
             for event in page
+            if view_id is None or event_readable(db, ctx, event)
         ],
         "cursor": checkpoint,
         "has_more": has_more,
+        **({"view_id": str(view_id), "filtered": True} if view_id is not None else {}),
     }
+
+
+def event_readable(db, ctx, event):
+    thread = db.get(m.DiscussionThread, uuid.UUID(event.payload["thread_id"]))
+    return thread is not None and base_discussions.can_read_thread(db, ctx, thread)

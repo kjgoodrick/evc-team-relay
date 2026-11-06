@@ -182,6 +182,7 @@ def set_rules(
     db.execute(delete(models.ManagedRule).where(models.ManagedRule.share_id == share_id))
     for rule in payload:
         db.add(models.ManagedRule(share_id=share_id, **rule.model_dump()))
+    service.invalidate_discussion_snapshots(db, share_id)
     db.commit()
     return payload
 
