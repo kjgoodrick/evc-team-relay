@@ -4,7 +4,7 @@ November 6, 2026. This is an opt-in extension to
 [the discussion preview](discussion-preview.md), not a production rollout or
 the complete image feature. Embedded-image scopes belong to managed Markdown
 entries. A separate preview now supports managed image-file scopes through the
-API and client session/outbox; native image-file controls remain unfinished.
+API, client session/outbox and native desktop image-file controls.
 Uploaded pictures in messages also remain unfinished.
 
 ## Capability and compatibility
@@ -112,9 +112,12 @@ separate work.
 The client parses these targets, binds reads and queued commands to the requested
 file, persists the capability and generation, and queues them through the existing
 account-isolated outbox. `DiscussionSession.watch(entryId, listener, "image")`
-selects file context independently of note/text capability. Native host binding,
-the default image-file composer, preview/reveal and direct-file overlays are
-still required before user testing.
+selects file context independently of note/text capability. The native client
+now supplies image-file commands, target drafts, sidebar discussions, preview/
+reveal and verified direct-file overlays. Creation uses a placement dialog;
+direct manipulation, the full geometry/format matrix and mobile acceptance
+remain unfinished. Desktop evidence includes owner and comment-only reviewer
+creation, draft reload and original file-byte preservation.
 
 API coverage includes whole/pin/region round trips, stable lineage, old-version
 preservation, flag disable, retries, reader/commenter separation, permission,
