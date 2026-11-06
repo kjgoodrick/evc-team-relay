@@ -45,7 +45,14 @@ def require_clean_session(db: Session):
 
 
 def context(
-    db: Session, token: str, share_id: uuid.UUID, entry_id: uuid.UUID, *, write=False
+    db: Session,
+    token: str,
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    *,
+    write=False,
+    entry_types=frozenset({"markdown", "image"}),
+    require_comment=True,
 ) -> Context:
     # These entry points own their transaction; refresh previously read ORM
     # identities, including when tests exercise a stale session intentionally.
@@ -82,15 +89,19 @@ def context(
         .execution_options(populate_existing=True)
     )
     entry = db.scalar(entry_query.with_for_update() if write else entry_query)
-    if not entry or entry.record.get("type") not in {"markdown", "image"}:
+    if not entry or entry.record.get("type") not in entry_types:
         error(404, "target_unavailable")
     permission = managed_service.permission(
         share, user, entry.path, managed_service.rules_for(db, share, user)
     )
     if permission not in {"read", "write"}:
         error(404, "target_unavailable")
-    if write and not collaboration_policy.can_comment(
-        share, user, entry.path, permission, collaboration_policy.rules_for(db, share, user)
+    if (
+        write
+        and require_comment
+        and not collaboration_policy.can_comment(
+            share, user, entry.path, permission, collaboration_policy.rules_for(db, share, user)
+        )
     ):
         error(403, "comment_forbidden")
     return Context(user, share, entry, moderate)

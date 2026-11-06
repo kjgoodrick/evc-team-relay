@@ -10,6 +10,7 @@ from app.schemas.collaboration import CommentRuleSet, CommentRuleUpdate, EntryCa
 from app.schemas.discussions import REACTION_KEYS
 from app.services import (
     anchor_service,
+    bases_registry,
     collaboration_auth,
     collaboration_policy,
     discussion_pictures,
@@ -40,6 +41,7 @@ def capabilities(
             "comment_permissions": get_settings().collaboration_policy_enabled,
             "comments": False,
             "bases": False,
+            "bases_registry": bases_registry.enabled(),
             "discussion_text_anchors": anchor_service.enabled(),
             "discussion_block_anchors": anchor_service.enabled(),
             "discussion_image_occurrences": anchor_service.enabled()

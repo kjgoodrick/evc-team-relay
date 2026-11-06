@@ -165,6 +165,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.include_router(auth.router, prefix="/v1")
     app.include_router(oauth.router, prefix="/v1")  # OAuth/OIDC authentication
     from app.api.routers import (
+        bases,
         collaboration,
         collaboration_events,
         discussion_pictures,
@@ -176,6 +177,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
 
     app.state.collaboration_presence = PresenceBroker()
     app.include_router(collaboration.router, prefix="/v1")
+    app.include_router(bases.router, prefix="/v1")
     app.include_router(collaboration_events.router, prefix="/v1")
     app.include_router(discussions.router, prefix="/v1")
     app.include_router(discussion_pictures.router, prefix="/v1")

@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -855,6 +856,58 @@ class ManagedEntry(Base):
         UUID(as_uuid=True), nullable=True, default=uuid.uuid4
     )
     deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+
+class BaseDefinition(Base):
+    __tablename__ = "collaboration_bases"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entry_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("managed_entries.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    generation: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BaseView(Base):
+    __tablename__ = "collaboration_base_views"
+    __table_args__ = (
+        UniqueConstraint("definition_id", "slot", name="uq_collaboration_base_view_slot"),
+        Index("ix_collaboration_base_view_state", "definition_id", "state", "id"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    definition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("collaboration_bases.id", ondelete="CASCADE"), nullable=False
+    )
+    slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    descriptor: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BaseRegistryRevision(Base):
+    __tablename__ = "collaboration_base_revisions"
+    __table_args__ = (
+        UniqueConstraint("actor_id", "operation_id", name="uq_collaboration_base_operation"),
+    )
+    definition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_bases.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    operation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
 
 class ManagedRule(Base):

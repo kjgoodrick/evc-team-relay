@@ -47,6 +47,10 @@ class Settings(BaseSettings):
         default=False,
         description="Preview private pictures in comment bodies; upgrade clients before enabling",
     )
+    collaboration_bases_registry_enabled: bool = Field(
+        default=False,
+        description="Preview verified Bases view identities; does not enable Bases comments",
+    )
     collaboration_pictures_bucket: str = Field(
         default="relay-discussion-pictures",
         description="Separately provisioned private bucket for comment pictures; no public policy",

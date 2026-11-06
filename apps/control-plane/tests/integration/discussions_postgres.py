@@ -51,7 +51,7 @@ def main():
     config = Config("alembic.ini")
     command.upgrade(config, "head")
     with engine.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "202611060002"
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "202611060003"
         diffs = compare_metadata(MigrationContext.configure(conn), m.Base.metadata)
 
         def relevant(diff):
@@ -62,6 +62,7 @@ def main():
                 or "collaboration_sequence" in str(diff)
                 or "collaboration_epoch" in str(diff)
                 or "collaboration_generation" in str(diff)
+                or "collaboration_base" in str(diff)
             )
 
         assert not [d for d in diffs if relevant(d)], diffs
