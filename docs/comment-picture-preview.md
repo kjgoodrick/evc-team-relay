@@ -1,9 +1,10 @@
 # Private pictures in comments: server preview
 
 Updated November 6, 2026. This increment implements the server/storage protocol;
-it is **not a finished picture feature**. The plugin composer, rendering, durable
-offline blobs/upload dependencies, expired-work repair and object cleanup are
-still required. Keep `COLLABORATION_PICTURES_ENABLED=false` outside disposable
+it is **not a finished picture feature**. The plugin now has durable offline
+blobs/upload dependencies and a verified HTTP transport. Native picker/paste,
+image display, Send and reopen integration, expired-work repair and object
+cleanup are still required. Keep `COLLABORATION_PICTURES_ENABLED=false` outside disposable
 development fixtures until those parts and compatible clients are ready.
 
 ## Storage and permissions
@@ -141,6 +142,17 @@ the PostgreSQL fixture above, and a disposable MinIO endpoint with the synthetic
 credentials named in the script. It creates and removes its own random bucket.
 
 These checks do not establish native Obsidian/mobile behavior, offline image
-dependencies, cleanup, restoration, real-device memory/battery performance or
+UI integration, cleanup, restoration, real-device memory/battery performance or
 production readiness. No production deployment or live vault installation is
 part of this increment.
+
+The subsequent client proof uses `tests/integration/discussions_client.py` with
+`--pictures-endpoint 127.0.0.1:<disposable-minio-port>` and the plugin checkout.
+It creates a private temporary bucket, an actual loopback HTTP server and SQLite
+database, then runs the plugin's `realPictureStack.test.ts`. That test verifies
+offline blob/outbox restart, a comment-only uploader, a lost upload response
+recovered without retransmitting verified bytes, private staging, actual binary
+content/thumbnails, edit history and preserved originals after revocation. The
+fixture removes its bucket and stops its HTTP process; it refuses nonloopback
+MinIO endpoints. It complements the PostgreSQL proofs above. The text-only
+driver mode was also rerun successfully after adding this option.

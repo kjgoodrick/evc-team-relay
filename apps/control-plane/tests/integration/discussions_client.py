@@ -7,6 +7,7 @@ database locking/migrations. No real vault, relay, credentials or service is use
 import argparse
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -23,7 +24,15 @@ sys.path.insert(0, str(ROOT))
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", type=Path, required=True)
+    parser.add_argument(
+        "--pictures-endpoint",
+        help="Disposable MinIO at 127.0.0.1:<port>, using synthetic picture-test credentials",
+    )
     args = parser.parse_args()
+    if args.pictures_endpoint:
+        match = re.fullmatch(r"127\.0\.0\.1:(\d+)", args.pictures_endpoint)
+        if not match or not 1024 <= int(match[1]) <= 65535:
+            raise RuntimeError("Picture tests require a disposable loopback MinIO endpoint")
     with tempfile.TemporaryDirectory(prefix="evc-discussion-client-") as temporary:
         temp, number = Path(temporary), port()
         os.environ.update(
@@ -34,6 +43,15 @@ def main():
             LOG_LEVEL="WARNING",
             CONTROL_PLANE_PUBLIC_URL=f"http://127.0.0.1:{number}",
         )
+        if args.pictures_endpoint:
+            os.environ.update(
+                COLLABORATION_PICTURES_ENABLED="true",
+                COLLABORATION_PICTURES_BUCKET="discussion-pictures-client-" + uuid.uuid4().hex,
+                MINIO_ENDPOINT=args.pictures_endpoint,
+                MINIO_ACCESS_KEY="picture-test",
+                MINIO_SECRET_KEY="disposable-picture-test-password",
+                MINIO_SECURE="false",
+            )
         from app.core import security
         from app.core.config import get_settings
 
@@ -94,6 +112,7 @@ def main():
                 "share": str(share.id),
                 "entry": entry.id,
                 "reviewer": str(reviewer.id),
+                "owner": str(owner.id),
                 "token": security.create_access_token(
                     str(reviewer.id), session_id=str(reviewer_session.id)
                 ),
@@ -101,11 +120,31 @@ def main():
                     str(owner.id), session_id=str(owner_session.id)
                 ),
             }
+        if args.pictures_endpoint:
+            from PIL import Image, PngImagePlugin
+
+            picture_path = temp / "picture.png"
+            info = PngImagePlugin.PngInfo()
+            info.add_text("private", "Remove fixture metadata")
+            with Image.new("RGBA", (800, 600), (40, 80, 120, 160)) as image:
+                image.save(picture_path, format="PNG", pnginfo=info)
+            fixture["picturePath"] = str(picture_path)
         fixture_path = temp / "fixture.json"
         fixture_path.write_text(json.dumps(fixture))
         fixture_path.chmod(0o600)
         process = None
+        picture_store = None
+        bucket_created = False
         try:
+            if args.pictures_endpoint:
+                from app.clients.storage_client import get_minio_client
+
+                picture_store = get_minio_client()
+                bucket = get_settings().collaboration_pictures_bucket
+                if picture_store.bucket_exists(bucket):
+                    raise RuntimeError("Expected a new disposable picture bucket")
+                picture_store.make_bucket(bucket)
+                bucket_created = True
             with (temp / "server.log").open("w") as log:
                 process = subprocess.Popen(
                     [
@@ -132,10 +171,17 @@ def main():
                         "test",
                         "--",
                         "--runInBand",
-                        "__tests__/collaboration/realDiscussionStack.test.ts",
+                        "__tests__/collaboration/realPictureStack.test.ts"
+                        if args.pictures_endpoint
+                        else "__tests__/collaboration/realDiscussionStack.test.ts",
                     ],
                     cwd=args.plugin.resolve(),
-                    env={**os.environ, "EVC_DISCUSSION_FIXTURE": str(fixture_path)},
+                    env={
+                        **os.environ,
+                        "EVC_PICTURE_FIXTURE"
+                        if args.pictures_endpoint
+                        else "EVC_DISCUSSION_FIXTURE": str(fixture_path),
+                    },
                     timeout=90,
                     check=False,
                 )
@@ -144,7 +190,15 @@ def main():
         finally:
             stop(process)
             session.get_engine().dispose()
-    print("PASS: real HTTP outbox retry, replies/history/reactions, revocation and local recovery")
+            if picture_store and bucket_created:
+                for obj in picture_store.list_objects(bucket, recursive=True):
+                    picture_store.remove_object(bucket, obj.object_name)
+                picture_store.remove_bucket(bucket)
+    print(
+        "PASS: real picture HTTP/outbox and MinIO proof"
+        if args.pictures_endpoint
+        else "PASS: real HTTP outbox retry, replies/history/reactions, revocation and recovery"
+    )
 
 
 if __name__ == "__main__":
