@@ -7,6 +7,7 @@ from enum import Enum
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -936,6 +937,34 @@ class BaseRegistryRevision(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
+
+
+class BaseTargetDefinition(Base):
+    """View-local identities for formula, summary and grouping definitions.
+
+    A revision is the registry revision that last changed this definition. An
+    absent definition retains its identity but cannot be captured. Reappearance
+    advances the revision even when the expression was restored byte-for-byte.
+    """
+
+    __tablename__ = "collaboration_base_target_definitions"
+    __table_args__ = (
+        UniqueConstraint("view_id", "kind", "name", name="uq_base_target_definition_key"),
+        Index("ix_base_target_definition_active", "view_id", "active", "id"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    view_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_base_views.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    observed_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    descriptor: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class ManagedRule(Base):

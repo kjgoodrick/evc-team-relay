@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.api.routers.discussions import BoundedDiscussionRoute, credential
 from app.db.session import get_db
-from app.schemas.bases import BaseTargetContext, InspectBase, ReconcileBase
-from app.services import base_discussions
+from app.schemas.bases import BaseTargetCatalog, BaseTargetContext, InspectBase, ReconcileBase
+from app.services import base_discussions, base_target_definitions
 from app.services import bases_registry as service
 
 
@@ -44,6 +44,17 @@ def inspect(
     db: Session = Depends(get_db),
 ):
     return service.synchronize(db, token, share_id, entry_id, payload)
+
+
+@router.post("/target-definitions")
+def target_definitions(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: BaseTargetCatalog,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return base_target_definitions.catalog(db, token, share_id, entry_id, payload)
 
 
 @router.post("/reconcile")

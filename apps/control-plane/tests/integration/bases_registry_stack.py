@@ -34,9 +34,123 @@ from app.core.config import get_settings
 from app.db import models as m
 from app.db.session import get_db
 from app.schemas.base_content import PublishBaseContent
-from app.schemas.bases import InspectBase, ReconcileBase
-from app.services import base_content, managed_service, session_service
+from app.schemas.bases import BaseTargetCatalog, InspectBase, ReconcileBase
+from app.services import base_content, base_target_definitions, managed_service, session_service
 from app.services import bases_registry as service
+
+
+def prove_target_definitions(engine, client, route, auth, publish, share_id, entry_id, tokens):
+    settings = get_settings()
+    settings.collaboration_discussions_enabled = (
+        settings.collaboration_bases_discussions_enabled
+    ) = True
+    views = [
+        dict(
+            name="Table",
+            type="table",
+            groupBy=dict(property="status", direction="ASC"),
+            summaries={"formula.total": "Average"},
+        ),
+        dict(name="Cards", type="cards"),
+    ]
+
+    def inspect_def(formulas):
+        sha = publish(views, formulas=formulas)
+        response = client.post(
+            route + "/inspect", headers=auth["owner"], json=dict(content_sha256=sha)
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    snapshot = inspect_def(dict(total="price * 2"))
+    view_id = snapshot["views"][0]["id"]
+    payload = BaseTargetCatalog(view_id=view_id)
+    first = client.post(
+        route + "/target-definitions",
+        headers=auth["reviewer"],
+        json=payload.model_dump(mode="json"),
+    )
+    assert first.status_code == 200, first.text
+    assert len(first.json()["targets"]) == 3
+    assert first.json()["computed_values"] is False
+    with Session(engine) as db:
+        # Simulate the lazy initialization of an already-existing registry.
+        for row in db.scalars(select(m.BaseTargetDefinition)):
+            db.delete(row)
+        db.commit()
+    barrier = threading.Barrier(2)
+
+    def read_catalog():
+        with Session(engine, autoflush=False) as db:
+            barrier.wait(timeout=10)
+            return base_target_definitions.catalog(
+                db, tokens["reviewer"], share_id, uuid.UUID(entry_id), payload
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        left, right = [
+            future.result() for future in [pool.submit(read_catalog), pool.submit(read_catalog)]
+        ]
+    assert left == right
+    with Session(engine) as db:
+        assert db.scalar(select(func.count()).select_from(m.BaseTargetDefinition)) == 4
+    print("PASS: concurrent read-only semantic catalogs create one identity per view/definition")
+
+    inspect_def(dict(total="price * 3"))
+    inspect_def(dict(total="price * 2"))
+    restored = client.post(
+        route + "/target-definitions",
+        headers=auth["reviewer"],
+        json=payload.model_dump(mode="json"),
+    ).json()
+    before = {item["id"]: item for item in left["targets"]}
+    for item in restored["targets"]:
+        assert item["fingerprint"] == before[item["id"]]["fingerprint"]
+        assert (item["revision"] > before[item["id"]]["revision"]) == (item["kind"] != "group")
+    with Session(engine) as db:
+        share = db.scalar(select(m.Share).where(m.Share.id == share_id).with_for_update())
+        db.add(
+            m.ManagedRule(
+                share_id=share.id,
+                user_id=db.scalar(
+                    select(m.ShareMember.user_id).where(m.ShareMember.share_id == share.id)
+                ),
+                path="Planning.base",
+                recursive=False,
+                permission="none",
+            )
+        )
+        db.commit()
+    denied = client.post(
+        route + "/target-definitions",
+        headers=auth["reviewer"],
+        json=payload.model_dump(mode="json"),
+    )
+    assert denied.status_code == 404, denied.text
+    with Session(engine) as db:
+        rule = db.scalar(
+            select(m.ManagedRule).where(
+                m.ManagedRule.share_id == share_id, m.ManagedRule.path == "Planning.base"
+            )
+        )
+        db.delete(rule)
+        db.commit()
+    settings.database_url = engine.url.render_as_string(hide_password=False)
+    try:
+        command.downgrade(Config("alembic.ini"), "202611060004")
+    except RuntimeError as exc:
+        assert "Export/migrate Bases target identities" in str(exc)
+    else:
+        raise AssertionError("Nonempty semantic identities must prevent destructive downgrade")
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060005"
+    print(
+        "PASS: semantic edit/revert revisions, current read revocation "
+        "and nonempty downgrade refusal"
+    )
+    # Return the descriptors expected by the subsequent rename/repair proof.
+    views[:] = [dict(name="Table", type="table"), dict(name="Cards", type="cards")]
+    inspect_def({})
 
 
 def prove_content(engine, url, client, share_id, entry_id, tokens, minio, key):
@@ -196,7 +310,7 @@ def prove_content(engine, url, client, share_id, entry_id, tokens, minio, key):
     else:
         raise AssertionError("Nonempty guarded content must prevent destructive downgrade")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060005"
     assert client.get(route, headers=auth).json() == current
     print("PASS: nonempty downgrade is refused and leaves the version and bytes intact")
 
@@ -213,7 +327,7 @@ def main():
         url, connect_args={"connect_timeout": 5, "options": "-c statement_timeout=10000"}
     )
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060005"
     settings = get_settings()
     settings.collaboration_policy_enabled = settings.collaboration_bases_registry_enabled = True
     settings.minio_endpoint = endpoint
@@ -284,8 +398,8 @@ def main():
 
         key = f"web-assets/{share_id}/{entry_id}"
 
-        def publish(views):
-            raw = json.dumps({"views": views}).encode()
+        def publish(views, **extra):
+            raw = json.dumps({"views": views, **extra}).encode()
             sha256 = hashlib.sha256(raw).hexdigest()
             minio.put_object(
                 settings.minio_bucket, key, BytesIO(raw), len(raw), content_type="application/yaml"
@@ -367,6 +481,9 @@ def main():
             route = f"/v1/collaboration/shares/{share_id}/entries/{entry_id}/bases"
             auth = {name: {"Authorization": "Bearer " + token} for name, token in tokens.items()}
             with TestClient(app) as client:
+                prove_target_definitions(
+                    engine, client, route, auth, publish, share_id, entry_id, tokens
+                )
                 sha256 = publish(
                     [dict(name="Cards", type="cards"), dict(name="Renamed", type="table")]
                 )
@@ -459,6 +576,7 @@ def main():
             assert db.scalar(select(func.count()).select_from(m.BaseDefinition)) == 0
             assert db.scalar(select(func.count()).select_from(m.BaseView)) == 0
             assert db.scalar(select(func.count()).select_from(m.BaseRegistryRevision)) == 0
+            assert db.scalar(select(func.count()).select_from(m.BaseTargetDefinition)) == 0
             assert db.scalar(select(func.count()).select_from(m.ManagedBaseContent)) == 0
             assert db.scalar(select(func.count()).select_from(m.ManagedBaseReceipt)) == 0
         for obj in minio.list_objects(settings.minio_bucket, recursive=True):

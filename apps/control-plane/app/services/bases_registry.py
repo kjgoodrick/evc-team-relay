@@ -18,7 +18,7 @@ from app.clients import storage_client
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas.bases import ReconcileBase
-from app.services import base_content, discussion_service, managed_service
+from app.services import base_content, base_target_definitions, discussion_service, managed_service
 from app.services import bases_definition as codec
 
 error = discussion_service.error
@@ -302,6 +302,7 @@ def synchronize(db, token, share_id, entry_id, payload):
         definition.revision += 1
         definition.content_sha256, definition.configuration = expected_hash, verified.value
         db.flush()
+        base_target_definitions.synchronize(db, definition)
         result = snapshot(db, definition)
         db.add(
             m.BaseRegistryRevision(

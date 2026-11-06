@@ -14,6 +14,19 @@ class BaseTargetContext(BaseModel):
     record_id: uuid.UUID | None = None
 
 
+class BaseTargetCatalog(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    view_id: uuid.UUID
+    expected_revision: int | None = Field(default=None, ge=1, le=9007199254740991, strict=True)
+    after: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def stable_page(self):
+        if self.after is not None and self.expected_revision is None:
+            raise ValueError("Continuing a catalog requires its registry revision")
+        return self
+
+
 class ViewBinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
     slot: int = Field(ge=0, lt=64, strict=True)

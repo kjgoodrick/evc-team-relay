@@ -3,8 +3,10 @@
 This increment implements standalone Bases discussion targets for saved views,
 records/items, cells and note/file property headers. It includes server
 authorization, client sessions/offline queues and an explicit native sidebar
-target picker. **Inline layout adapters are not connected yet.** Groups,
-formula/summary dependencies, inline definitions,
+target picker. Contextual native table/cards/list controls now connect capture,
+markers and exact navigation; integrated table behavior has desktop evidence.
+The server also maintains a definition catalogue for formulas, summaries and
+grouping rules. Their discussion targets, computed-value dependencies, inline definitions,
 Time & Line targets and presence remain required work.
 
 Creation requires `COLLABORATION_BASES_DISCUSSIONS_ENABLED=true` together with
@@ -83,7 +85,68 @@ Other targets are `{type: "view"}`, an `item` with the same record fields, or
 and `file` namespaces, with bounded valid Unicode names. They identify the
 property, not a captured cell value. Client-claimed dependency arrays, formulas
 and unknown target kinds are rejected. Formula/summary/group targets need their
-own verified identity and dependency contracts before implementation.
+own capture/dependency contracts before implementation. The definition identity
+catalogue below supplies part of that contract; it does not enable new anchors.
+
+## Formula, summary and grouping definition catalogue
+
+`POST /v1/collaboration/shares/{share}/entries/{base}/bases/target-definitions`
+accepts `{view_id, expected_revision?, after?}`. Continuing a page requires its
+registry revision; any intervening registry change returns `stale_base_revision`.
+`features.discussion_base_definition_catalog` advertises this read interface.
+The existing four discussion target kinds remain unchanged.
+
+An authorized reader receives definition/view/generation/registry lineage,
+`targets`, `has_more`, `next_after`, and `computed_values: false`. Each target has
+an opaque `id`, a `kind` (`formula`, `summary`, or `group`), its last-changing
+`revision`, a semantic `fingerprint`, and a typed `property` locator. A summary
+also identifies its configured summary name. Formula names are view-local even
+though their expressions are declared globally in the `.base` file. A grouping
+definition identifies the rule; it does not identify any particular lane/value.
+
+The catalogue reads only the verified server-held configuration. It accepts no
+expressions, computed values, member lists or client dependency claims. A
+definition hash must still match the synchronized file, and the saved view must
+be active. The reader needs no file-edit/comment permission to inspect it.
+The existing share lock serializes initialization with synchronization and
+permission changes. No object storage access or expression evaluation occurs
+inside that lock.
+
+Migration `202611060005` adds server-owned identities outside vault content.
+Registry updates refresh them in the same transaction. Existing registries are
+initialized lazily through the catalogue. A view rename, layout/column reorder,
+or group direction/order change preserves semantic identity. Editing a relevant
+definition advances its revision; deletion, ambiguity and archival deactivate
+it. Restoring the same configuration advances the revision again. A formula
+rename gets a separate identity. Gaps caused by older writers conservatively
+invalidate proof, including an unobserved change followed by a revert.
+
+For this initial compiler, every formula is included in the dependency hash of
+formula targets and formula-based grouping. Summaries conservatively include
+all formula/custom-summary definitions and their result-set filter/limit inputs;
+sort is included when a limit makes it significant. This can request review
+after an unrelated formula edit, but covers dynamic and transitive references
+without attempting an incomplete expression parser. Later computed-value
+capture still requires independently verified record/access dependencies.
+
+Read pages contain at most 100 definitions. Each view supports at most 256 and
+each `.base` at most 1,024 active definitions. Exceeding either budget disables
+this catalogue with `base_definition_targets_limit`, while ordinary Bases sync
+and existing view/record/cell/property discussions continue. Ambiguous property
+aliases are omitted instead of choosing one assignment. Unavailable identities
+remain stored for future target review/repair. Downgrade refuses to discard a
+nonempty identity table; export/migration is required first.
+
+Remaining work: client catalogue/cache integration; typed formula/summary/group
+anchors; group values and computed-output authorization; native adapters,
+markers/navigation and offline capture/recovery. This endpoint does not make
+those comments usable yet. The full feature scope remains in the repository's
+implementation plan.
+
+The input structure follows the official [Bases syntax](https://obsidian.md/help/bases/syntax)
+and [table summary documentation](https://obsidian.md/help/bases/views/table).
+
+## Discussion target validity
 
 New threads require a currently active view and a registry definition matching
 the managed file's current hash. The captured registry revision must prove that
