@@ -1331,6 +1331,13 @@ async fn handle_socket_stream<S>(
 
                 match connection.send(&msg).await {
                     Ok(_) => {},
+                    Err(e) if matches!(e.downcast_ref::<y_sweet_core::sync::Error>(), Some(y_sweet_core::sync::Error::AwarenessConflict)) => {
+                        let _ = send.try_send(Message::Close(Some(CloseFrame {
+                            code: 4409,
+                            reason: "Awareness client ID unavailable".into(),
+                        })));
+                        break;
+                    }
                     Err(e) if e.to_string().contains("Token expired") => {
                         metrics.record_http_auth_error(
                             "expired",

@@ -53,6 +53,7 @@ def stop(process):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", type=Path, required=True)
+    parser.add_argument("--presence", action="store_true", help="Run authenticated awareness tests")
     parser.add_argument(
         "--text-anchors",
         action="store_true",
@@ -154,6 +155,25 @@ allowed_token_types = ["server"]
             )
             db.add_all([owner, bob])
             db.flush()
+            if args.presence:
+                provider = models.OAuthProvider(
+                    name="presence-fixture",
+                    issuer_url="https://identity.example.test",
+                    client_id="fixture",
+                    client_secret_encrypted="unused-test-only",
+                )
+                db.add(provider)
+                db.flush()
+                db.add(
+                    models.UserOAuthAccount(
+                        user_id=owner.id,
+                        provider_id=provider.id,
+                        provider_user_id="owner",
+                        email=owner.email,
+                        name="Fixture Owner",
+                        picture_url="https://identity.example.test/owner.png",
+                    )
+                )
             share = models.Share(
                 kind=models.ShareKind.FOLDER,
                 path="Team",
@@ -221,6 +241,7 @@ allowed_token_types = ["server"]
                 "note": note,
                 "secret": secret,
                 "bobId": str(bob.id),
+                "ownerId": str(owner.id),
                 "ownerToken": security.create_access_token(
                     str(owner.id), session_id=str(owner_session.id)
                 ),
@@ -282,10 +303,16 @@ path = "{temp / "relay-data"}"
                         time.sleep(0.2)
                     return 0
                 fixture_variable = (
-                    "EVC_TEXT_ANCHOR_FIXTURE" if args.text_anchors else "EVC_MANAGED_FIXTURE"
+                    "EVC_PRESENCE_FIXTURE"
+                    if args.presence
+                    else "EVC_TEXT_ANCHOR_FIXTURE"
+                    if args.text_anchors
+                    else "EVC_MANAGED_FIXTURE"
                 )
                 test_file = (
-                    "__tests__/collaboration/realTextAnchorStack.test.ts"
+                    "__tests__/presence/realPresenceStack.test.ts"
+                    if args.presence
+                    else "__tests__/collaboration/realTextAnchorStack.test.ts"
                     if args.text_anchors
                     else "__tests__/managed/realStack.test.ts"
                 )

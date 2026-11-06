@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::sync::Arc;
 use thiserror::Error;
@@ -9,6 +9,8 @@ use yrs::updates::encoder::{Encode, Encoder};
 use yrs::{Doc, Observer, Subscription};
 
 const NULL_STR: &str = "null";
+pub const MAX_AWARENESS_CLIENTS: usize = 128;
+pub const MAX_AWARENESS_STATE_BYTES: usize = 4096;
 
 #[cfg(not(feature = "sync"))]
 type AwarenessObserver = Observer<Arc<dyn Fn(&Awareness, &Event) + 'static>>;
@@ -31,6 +33,8 @@ pub struct Awareness {
     pub doc: Doc,
     states: HashMap<ClientID, String>,
     meta: HashMap<ClientID, MetaClientState>,
+    /// Live socket ownership survives a null state until that socket disconnects.
+    owned_clients: HashSet<ClientID>,
     on_update: Option<AwarenessObserver>,
 }
 
@@ -44,7 +48,19 @@ impl Awareness {
             on_update: None,
             states: HashMap::new(),
             meta: HashMap::new(),
+            owned_clients: HashSet::new(),
         }
+    }
+
+    pub(crate) fn claim_client(&mut self, client_id: ClientID) -> bool {
+        client_id != self.doc.client_id()
+            && self.owned_clients.len() < MAX_AWARENESS_CLIENTS
+            && self.owned_clients.insert(client_id)
+    }
+
+    pub(crate) fn release_client(&mut self, client_id: ClientID) {
+        self.owned_clients.remove(&client_id);
+        self.remove_state(client_id);
     }
 
     /// Returns a channel receiver for an incoming awareness events. This channel can be cloned.
@@ -127,7 +143,11 @@ impl Awareness {
     /// Clears out a state of a given client, effectively marking it as disconnected.
     pub fn remove_state(&mut self, client_id: ClientID) {
         let prev_state = self.states.remove(&client_id);
-        self.update_meta(client_id);
+        // A server disconnect tombstone uses the peer's last clock. Only a
+        // state's owner advances it; reconnect can then publish its next clock.
+        if client_id == self.doc.client_id() {
+            self.update_meta(client_id);
+        }
         if let Some(eh) = self.on_update.as_ref() {
             if prev_state.is_some() {
                 let e = Event::new(Vec::default(), Vec::default(), vec![client_id]);
@@ -302,12 +322,25 @@ impl Encode for AwarenessUpdate {
 impl Decode for AwarenessUpdate {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, yrs::encoding::read::Error> {
         let len: usize = decoder.read_var()?;
+        if len > MAX_AWARENESS_CLIENTS {
+            return Err(yrs::encoding::read::Error::UnexpectedValue);
+        }
         let mut clients = HashMap::with_capacity(len);
         for _ in 0..len {
-            let client_id = ClientID::new(decoder.read_var()?);
+            let raw_client_id: u64 = decoder.read_var()?;
+            if raw_client_id > (1u64 << 53) - 1 {
+                return Err(yrs::encoding::read::Error::UnexpectedValue);
+            }
+            let client_id = ClientID::new(raw_client_id);
             let clock: u32 = decoder.read_var()?;
             let json = decoder.read_string()?.to_string();
-            clients.insert(client_id, AwarenessUpdateEntry { clock, json });
+            if json.len() > MAX_AWARENESS_STATE_BYTES
+                || clients
+                    .insert(client_id, AwarenessUpdateEntry { clock, json })
+                    .is_some()
+            {
+                return Err(yrs::encoding::read::Error::UnexpectedValue);
+            }
         }
 
         Ok(AwarenessUpdate { clients })

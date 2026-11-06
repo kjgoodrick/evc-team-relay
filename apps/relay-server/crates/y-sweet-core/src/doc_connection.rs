@@ -417,13 +417,43 @@ impl DocConnection {
                 protocol.handle_awareness_query(&awareness)
             }
             Message::Awareness(update) => {
-                if update.clients.len() == 1 {
-                    let client_id = update.clients.keys().next().unwrap();
-                    self.client_id.get_or_init(|| *client_id);
-                } else {
-                    tracing::warn!("Received awareness update with more than one client");
+                if update.clients.len() != 1 {
+                    return Err(sync::Error::InvalidMessage {
+                        reason: "Send exactly one owned awareness state".into(),
+                    });
                 }
+                let (&client_id, entry) = update.clients.iter().next().unwrap();
+                let valid_json = entry.json.len() <= sync::awareness::MAX_AWARENESS_STATE_BYTES
+                    && serde_json::from_str::<serde_json::Value>(&entry.json)
+                        .is_ok_and(|value| value.is_object() || entry.json == "null");
+                if client_id.get() > (1u64 << 53) - 1
+                    || entry.clock > i32::MAX as u32
+                    || !valid_json
+                {
+                    return Err(sync::Error::InvalidMessage {
+                        reason: "Invalid awareness state".into(),
+                    });
+                }
+                // Check/claim under the room lock, across all gateway workers.
+                // Never let another connection update or remove a peer's state.
                 let mut awareness = a.write().unwrap();
+                if let Some(owned) = self.client_id.get() {
+                    if *owned != client_id {
+                        return Err(sync::Error::InvalidMessage {
+                            reason: "Awareness identity changed".into(),
+                        });
+                    }
+                } else {
+                    if entry.json == "null" {
+                        return Err(sync::Error::InvalidMessage {
+                            reason: "Unowned awareness disconnect".into(),
+                        });
+                    }
+                    if !awareness.claim_client(client_id) {
+                        return Err(sync::Error::AwarenessConflict);
+                    }
+                    let _ = self.client_id.set(client_id);
+                }
                 protocol.handle_awareness_update(&mut awareness, update)
             }
             Message::Custom(SYNC_STATUS_MESSAGE, data) => {
@@ -731,7 +761,7 @@ impl Drop for DocConnection {
         // If this client had an awareness state, remove it.
         if let Some(client_id) = self.client_id.get() {
             let mut awareness = self.awareness.write().unwrap();
-            awareness.remove_state(*client_id);
+            awareness.release_client(*client_id);
         }
     }
 }
@@ -740,6 +770,108 @@ impl Drop for DocConnection {
 mod tests {
     use super::*;
     use crate::sync::{DefaultProtocol, EventMessage, Message, SyncMessage};
+
+    fn presence_message(entries: &[(u64, u32, &str)]) -> Message {
+        Message::Awareness(sync::awareness::AwarenessUpdate {
+            clients: entries
+                .iter()
+                .map(|(id, clock, json)| {
+                    (
+                        ClientID::new(*id),
+                        sync::awareness::AwarenessUpdateEntry {
+                            clock: *clock,
+                            json: json.to_string(),
+                        },
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn awareness_has_one_socket_owner_including_read_only_and_null_states() {
+        let awareness = Arc::new(RwLock::new(Awareness::new(yrs::Doc::new())));
+        let owner = DocConnection::new(awareness.clone(), Authorization::ReadOnly, |_| {});
+        owner
+            .handle_msg(&DefaultProtocol, presence_message(&[(42, 1, "{}")]))
+            .unwrap();
+        let intruder = DocConnection::new(awareness.clone(), Authorization::Full, |_| {});
+        assert!(matches!(
+            intruder.handle_msg(&DefaultProtocol, presence_message(&[(42, 2, "{}")])),
+            Err(sync::Error::AwarenessConflict)
+        ));
+        assert!(intruder
+            .handle_msg(&DefaultProtocol, presence_message(&[(42, 2, "null")]))
+            .is_err());
+        drop(intruder);
+        assert!(awareness
+            .read()
+            .unwrap()
+            .clients()
+            .contains_key(&ClientID::new(42)));
+        for invalid in [
+            presence_message(&[]),
+            presence_message(&[(43, 2, "{}")]),
+            presence_message(&[(42, 2, "{}"), (43, 2, "null")]),
+        ] {
+            assert!(owner.handle_msg(&DefaultProtocol, invalid).is_err());
+        }
+        owner
+            .handle_msg(&DefaultProtocol, presence_message(&[(42, 2, "null")]))
+            .unwrap();
+        let replacement = DocConnection::new(awareness.clone(), Authorization::ReadOnly, |_| {});
+        assert!(matches!(
+            replacement.handle_msg(&DefaultProtocol, presence_message(&[(42, 3, "{}")])),
+            Err(sync::Error::AwarenessConflict)
+        ));
+        owner
+            .handle_msg(&DefaultProtocol, presence_message(&[(42, 3, "{}")]))
+            .unwrap();
+        drop(owner);
+        assert!(!awareness
+            .read()
+            .unwrap()
+            .clients()
+            .contains_key(&ClientID::new(42)));
+        replacement
+            .handle_msg(&DefaultProtocol, presence_message(&[(42, 5, "{}")]))
+            .unwrap();
+        assert!(awareness
+            .read()
+            .unwrap()
+            .clients()
+            .contains_key(&ClientID::new(42)));
+    }
+
+    #[test]
+    fn awareness_rejects_unbounded_and_non_object_states_before_claiming() {
+        let awareness = Arc::new(RwLock::new(Awareness::new(yrs::Doc::new())));
+        let connection = DocConnection::new(awareness.clone(), Authorization::Full, |_| {});
+        for json in ["null", "[]", "true", "{", "null "] {
+            assert!(connection
+                .handle_msg(&DefaultProtocol, presence_message(&[(42, 1, json)]))
+                .is_err());
+        }
+        assert!(connection
+            .handle_msg(&DefaultProtocol, presence_message(&[(42, u32::MAX, "{}")]))
+            .is_err());
+        let mut malformed = EncoderV1::new();
+        malformed.write_var(1u64);
+        malformed.write_var(1u64 << 53);
+        malformed.write_var(1u32);
+        malformed.write_string("{}");
+        assert!(sync::awareness::AwarenessUpdate::decode_v1(&malformed.to_vec()).is_err());
+        let huge = format!("{{\"padding\":\"{}\"}}", "a".repeat(4096));
+        assert!(connection
+            .handle_msg(&DefaultProtocol, presence_message(&[(42, 1, &huge)]))
+            .is_err());
+        assert!(Message::decode_v1(&presence_message(&[(42, 1, &huge)]).encode_v1()).is_err());
+        // Malformed attempts didn't reserve the ID or create visible state.
+        connection
+            .handle_msg(&DefaultProtocol, presence_message(&[(43, 1, "{}")]))
+            .unwrap();
+        assert_eq!(awareness.read().unwrap().clients().len(), 1);
+    }
 
     #[tokio::test]
     async fn test_query_subdocs_returns_snapshot_envelope() {

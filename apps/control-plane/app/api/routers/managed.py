@@ -18,6 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
 
 from app.api import deps
 from app.core import security
@@ -26,6 +27,12 @@ from app.db import models
 from app.db.session import get_db, get_sessionmaker
 from app.services import managed_service as service
 from app.services import share_service
+from app.services.presence_protocol import (
+    InvalidPresence,
+    PresenceConnection,
+    PresenceIdentity,
+    identity_for,
+)
 
 router = APIRouter(prefix="/managed", tags=["managed shares"])
 
@@ -179,7 +186,9 @@ def set_rules(
     return payload
 
 
-def check_socket(token: str, doc_id: str) -> tuple[str, str]:
+def check_socket(
+    token: str, doc_id: str, include_presence: bool = False
+) -> tuple[str, str, PresenceIdentity | None]:
     # Fresh session each time: no idle transaction/identity-map cache can hide
     # membership removal, policy changes, account disablement or session revocation.
     with get_sessionmaker()() as db:
@@ -187,13 +196,14 @@ def check_socket(token: str, doc_id: str) -> tuple[str, str]:
         entry = service.authorize_entry(db, share, user, doc_id, claims["mode"] == "write")
         if entry.record["type"] not in {"markdown", "canvas"}:
             raise HTTPException(403, "Not a collaborative document")
-        return str(share.id), claims["mode"]
+        identity = identity_for(db, user, claims) if include_presence else None
+        return str(share.id), claims["mode"], identity
 
 
 @router.websocket("/socket/{doc_id}")
 async def document_socket(websocket: WebSocket, doc_id: str, token: str):
     try:
-        share_id, mode = await run_in_threadpool(check_socket, token, doc_id)
+        share_id, mode, _ = await run_in_threadpool(check_socket, token, doc_id)
     except HTTPException:
         await websocket.close(code=4403)
         return
@@ -218,15 +228,19 @@ async def document_socket(websocket: WebSocket, doc_id: str, token: str):
     )
     await websocket.accept()
     tasks = []
+    presence = PresenceConnection()
+    close_code = 4403
     try:
         async with connect(uri, max_size=16 * 1024 * 1024, open_timeout=10, proxy=None) as relay:
 
             async def incoming():
                 while True:
                     data = await websocket.receive_bytes()
-                    await run_in_threadpool(check_socket, token, doc_id)
+                    _, _, identity = await run_in_threadpool(
+                        check_socket, token, doc_id, bool(data and data[0] == 1)
+                    )
                     # The relay enforces read-only Yjs message types too.
-                    await relay.send(data)
+                    await relay.send(presence.transform(data, identity))
 
             async def outgoing():
                 async for data in relay:
@@ -245,6 +259,11 @@ async def document_socket(websocket: WebSocket, doc_id: str, token: str):
                 task.result()
     except (HTTPException, WebSocketDisconnect):
         pass
+    except InvalidPresence:
+        close_code = 4400
+    except ConnectionClosed as error:
+        if error.rcvd and error.rcvd.code == 4409:
+            close_code = 4409
     except Exception:
         # No exception text: WebSocket library exceptions can contain the
         # upstream URI, which carries a private relay credential.
@@ -254,4 +273,4 @@ async def document_socket(websocket: WebSocket, doc_id: str, token: str):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         with contextlib.suppress(RuntimeError):
-            await websocket.close(code=4403)
+            await websocket.close(code=close_code)

@@ -478,6 +478,10 @@ pub enum Error {
     #[error("permission denied to access: {reason}")]
     PermissionDenied { reason: String },
 
+    /// The requested awareness ID already belongs to a live socket in this room.
+    #[error("awareness client ID unavailable")]
+    AwarenessConflict,
+
     /// Thrown whenever an unknown message tag has been sent.
     #[error("unsupported message tag identifier: {0}")]
     Unsupported(u8),
