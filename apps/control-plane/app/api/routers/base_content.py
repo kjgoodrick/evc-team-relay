@@ -17,7 +17,7 @@ class BoundedBaseContentRoute(APIRoute):
         handler = super().get_route_handler()
 
         async def bounded(request: Request):
-            if request.method != "PUT":
+            if request.method not in {"PUT", "POST"}:
                 return await handler(request)
             body = bytearray()
             async for chunk in request.stream():
@@ -49,12 +49,11 @@ def require_preview():
 router = APIRouter(
     prefix="/managed/shares/{share_id}/entries/{entry_id}/base-content",
     tags=["Bases content preview"],
-    dependencies=[Depends(require_preview)],
     route_class=BoundedBaseContentRoute,
 )
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_preview)])
 def read(
     share_id: uuid.UUID,
     entry_id: uuid.UUID,
@@ -64,7 +63,7 @@ def read(
     return service.read(db, token, share_id, entry_id)
 
 
-@router.put("")
+@router.put("", dependencies=[Depends(require_preview)])
 def publish(
     share_id: uuid.UUID,
     entry_id: uuid.UUID,
@@ -73,3 +72,15 @@ def publish(
     db: Session = Depends(get_db),
 ):
     return service.publish(db, token, share_id, entry_id, payload)
+
+
+@router.post("/withdraw")
+def withdraw(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: PublishBaseContent,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    # Recovery remains available after new guarded saves are disabled.
+    return service.withdraw(db, token, share_id, entry_id, payload)

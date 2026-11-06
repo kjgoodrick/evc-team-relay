@@ -110,6 +110,30 @@ def prove_content(engine, url, client, share_id, entry_id, tokens, minio, key):
     current = outcomes[0][1]["state"]
     print("PASS: concurrent duplicate publication returns one receipt and one content version")
 
+    # Unknown delivery is resolved under the same share lock as publication.
+    racing = payload(current, b"views: []\n# send versus withdrawal\n")
+    barrier = threading.Barrier(2)
+
+    def withdraw():
+        with Session(engine, autoflush=False) as db:
+            barrier.wait(timeout=10)
+            return base_content.withdraw(db, tokens["owner"], share_id, uuid.UUID(entry_id), racing)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = pool.submit(publish, racing), pool.submit(withdraw)
+        sent, recovery = a.result(), b.result()
+    if recovery["status"] == "accepted":
+        assert sent == (200, recovery["result"])
+    else:
+        assert recovery["status"] == "withdrawn" and sent[0] == 410, (sent, recovery)
+        response = client.put(route, headers=auth, json=racing.model_dump(mode="json"))
+        assert response.status_code == 410
+    current = client.get(route, headers=auth).json()["state"]
+    print(
+        "PASS: concurrent Bases send/withdraw returns acceptance or permanently fences "
+        "late publication"
+    )
+
     # Publication and structural rename share the same serialization boundary.
     edit = payload(current, b"views: []\n# edit versus rename\n")
     barrier = threading.Barrier(2)

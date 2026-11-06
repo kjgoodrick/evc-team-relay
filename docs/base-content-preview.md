@@ -80,6 +80,14 @@ still requires current edit permission and the same generation. It returns the
 original accepted state, which may be older than a later save: reconcile it with
 the current inventory rather than replacing newer state.
 
+`POST .../base-content/withdraw` accepts the same exact publication envelope.
+Under the publication lock it either returns `{status: "accepted", result: ...}`
+or persists a withdrawal receipt and returns `status: "withdrawn"` with the exact
+operation/entry IDs. Every later publication of that request receives
+`410 base_content_withdrawn`. Different intent cannot reuse the operation ID.
+Current file edit permission is required. This recovery route remains available
+when new guarded saves are disabled; a timeout never establishes withdrawal.
+
 Decoded content is limited to 256 KiB. The HTTP handler caps the streamed JSON
 body before parsing or opening a request database session. Errors do not echo
 configuration bodies or database parameters. Legacy reads have two bounded
@@ -87,7 +95,8 @@ slots per process and use the existing storage timeouts.
 
 ## Compatibility and lifecycle
 
-The managed manifest adds `base_content` with `protocol_version: 1`, `enabled`
+The managed manifest adds `base_content` with `protocol_version: 1`, `enabled`,
+`recovery: true`,
 and an authorized entry-ID-to-version map. Hidden/deleted entries are omitted;
 no bytes are loaded for this metadata. This also identifies guarded files renamed
 away from `.base`. Collaboration capabilities advertise `features.bases_sync`.
@@ -131,9 +140,13 @@ rename-versus-publication races, obsolete legacy uploads, populated downgrade
 refusal, schema parity and deletion cascades. Existing discussion and picture
 concurrency/storage proofs pass with the migration.
 
-Next: explicit Bases sync settings, account-scoped durable last-synced bytes/state
-and exact pending requests, three-way local/base/remote comparison, disk-write
-guards, conflict copies and review controls, then native/offline/mobile tests.
+The plugin now has protocol/transport modules, account-scoped durable baselines,
+pending requests, prepared downloads, conflict copies and three-way comparison.
+The actual HTTP fixture verifies those modules and PostgreSQL verifies concurrent
+save/withdrawal. They are not yet connected to native file reconciliation.
+
+Next: explicit Bases sync settings, the native sync worker and disk-write guards,
+conflict review/export controls, then native/offline/mobile tests.
 Never choose a winning configuration using device timestamps, automatically
 overwrite a differing local file with no known baseline, or silently fall back
 to the old upload protocol when the guarded API refuses a request.

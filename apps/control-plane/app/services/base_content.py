@@ -129,7 +129,7 @@ def read(db, token, share_id, entry_id):
         raise
 
 
-def publish(db, token, share_id, entry_id, payload):
+def prepare(share_id, entry_id, payload):
     # Decode/hash before acquiring database locks. The HTTP route bounds input.
     try:
         raw = base64.b64decode(payload.content_base64, validate=True)
@@ -148,14 +148,29 @@ def publish(db, token, share_id, entry_id, payload):
             "sha256": sha256,
         }
     )
+    return raw, sha256, expected, request_hash
+
+
+def receipt_for(db, ctx, payload, request_hash):
+    receipt = db.get(m.ManagedBaseReceipt, (ctx.user.id, payload.operation_id))
+    if receipt:
+        if receipt.entry_id != ctx.entry.id or receipt.request_hash != request_hash:
+            error(409, "operation_id_conflict")
+        if not receipt.result.get("withdrawn") and receipt.result["state"]["generation"] != str(
+            ctx.entry.collaboration_generation
+        ):
+            error(409, "base_content_lineage_changed")
+    return receipt
+
+
+def publish(db, token, share_id, entry_id, payload):
+    raw, sha256, expected, request_hash = prepare(share_id, entry_id, payload)
     try:
         ctx, content = context(db, token, share_id, entry_id, write=True)
-        receipt = db.get(m.ManagedBaseReceipt, (ctx.user.id, payload.operation_id))
+        receipt = receipt_for(db, ctx, payload, request_hash)
         if receipt:
-            if receipt.entry_id != str(entry_id) or receipt.request_hash != request_hash:
-                error(409, "operation_id_conflict")
-            if receipt.result["state"]["generation"] != str(ctx.entry.collaboration_generation):
-                error(409, "base_content_lineage_changed")
+            if receipt.result.get("withdrawn"):
+                error(410, "base_content_withdrawn")
             result = dict(receipt.result)
             db.commit()
             return result
@@ -215,6 +230,45 @@ def reject_legacy_write(db, share, entry_id):
         error(428, "base_content_protocol_required")
 
 
+def withdraw(db, token, share_id, entry_id, payload):
+    _, _, _, request_hash = prepare(share_id, entry_id, payload)
+    try:
+        ctx, _ = context(db, token, share_id, entry_id, write=True)
+        receipt = receipt_for(db, ctx, payload, request_hash)
+        if receipt and not receipt.result.get("withdrawn"):
+            result = {"status": "accepted", "result": dict(receipt.result)}
+        else:
+            if receipt is None:
+                db.add(
+                    m.ManagedBaseReceipt(
+                        actor_id=ctx.user.id,
+                        operation_id=payload.operation_id,
+                        entry_id=ctx.entry.id,
+                        request_hash=request_hash,
+                        result={"withdrawn": True},
+                    )
+                )
+            result = {
+                "status": "withdrawn",
+                "operation_id": str(payload.operation_id),
+                "entry_id": ctx.entry.id,
+            }
+        db.commit()
+        return result
+    except IntegrityError:
+        db.rollback()
+        error(409, "operation_id_conflict")
+    except OperationalError:
+        db.rollback()
+        error(503, "base_content_unavailable")
+    except SQLAlchemyError:
+        db.rollback()
+        error(500, "base_content_unavailable")
+    except Exception:
+        db.rollback()
+        raise
+
+
 def compatible_bytes(db, share, entry_id, token_payload, *, metadata_only=False):
     """Called only after the legacy endpoint's current read authorization."""
     if not share.managed:
@@ -262,6 +316,7 @@ def manifest_versions(db, share_id, visible):
     return {
         "protocol_version": 1,
         "enabled": enabled(),
+        "recovery": True,
         "versions": {
             entry_id: str(version) for entry_id, version in rows if entry_id in visible_ids
         },

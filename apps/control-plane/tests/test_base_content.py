@@ -351,6 +351,7 @@ def test_manifest_reports_versions_only_for_currently_visible_entries(
     assert manifest["base_content"] == {
         "protocol_version": 1,
         "enabled": True,
+        "recovery": True,
         "versions": {world.entry.id: current["state"]["content_version"]},
     }
     db_session.scalar(
@@ -361,3 +362,33 @@ def test_manifest_reports_versions_only_for_currently_visible_entries(
         managed_service.manifest(db_session, world.share, world.reader)["base_content"]["versions"]
         == {}
     )
+
+
+def test_withdraw_fences_late_saves_and_checks_exact_intent_and_current_permission(
+    client, world, content, monkeypatch
+):
+    initial = read(client, world)
+    body = payload(initial["state"])
+    monkeypatch.setattr(get_settings(), "managed_bases_sync_enabled", False)
+    response = client.post(
+        path(world) + "/withdraw", headers=headers(world.tokens["owner"]), json=body
+    )
+    assert response.status_code == 200 and response.json()["status"] == "withdrawn"
+    assert (
+        client.post(
+            path(world) + "/withdraw", headers=headers(world.tokens["reviewer"]), json=body
+        ).status_code
+        == 403
+    )
+    monkeypatch.setattr(get_settings(), "managed_bases_sync_enabled", True)
+    send(client, world, body, expected=410)
+    assert read(client, world) == initial
+    changed = {**body, "content_base64": base64.b64encode(b"replacement").decode()}
+    send(client, world, changed, expected=409)
+    accepted_body = payload(initial["state"])
+    accepted = send(client, world, accepted_body)
+    response = client.post(
+        path(world) + "/withdraw", headers=headers(world.tokens["owner"]), json=accepted_body
+    )
+    assert response.json() == {"status": "accepted", "result": accepted}
+    assert send(client, world, accepted_body) == accepted
