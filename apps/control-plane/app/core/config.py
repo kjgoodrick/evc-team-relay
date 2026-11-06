@@ -39,6 +39,10 @@ class Settings(BaseSettings):
         default=False,
         description="Preview image occurrence anchors; upgrade discussion clients before enabling",
     )
+    collaboration_image_files_enabled: bool = Field(
+        default=False,
+        description="Preview managed image-file discussions; upgrade clients before enabling",
+    )
     collaboration_anchor_relay_token: SecretStr | None = Field(
         default=None, description="Internal relay server credential; never issued to clients"
     )

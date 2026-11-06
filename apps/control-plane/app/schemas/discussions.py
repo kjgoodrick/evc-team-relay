@@ -286,7 +286,18 @@ class ImageAnchor(StrictModel):
         return self
 
 
-Anchor = Annotated[NoteAnchor | TextAnchor | ImageAnchor, Field(discriminator="type")]
+class ImageFileAnchor(StrictModel):
+    version: Literal[1]
+    type: Literal["image_file"]
+    generation: uuid.UUID
+    asset: ManagedImage
+    basis: ImageBasis
+    geometry: Annotated[WholeImage | ImagePin | ImageRegion, Field(discriminator="type")]
+
+
+Anchor = Annotated[
+    NoteAnchor | TextAnchor | ImageAnchor | ImageFileAnchor, Field(discriminator="type")
+]
 
 
 def source_anchor(anchor: Anchor) -> TextAnchor | None:

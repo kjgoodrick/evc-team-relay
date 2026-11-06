@@ -911,6 +911,175 @@ def image_command(w, asset=None, geometry=None):
     return payload
 
 
+@pytest.fixture
+def image_file_world(db_session, world, monkeypatch):
+    monkeypatch.setattr(get_settings(), "collaboration_image_files_enabled", True)
+    # This scope does not require a text relay, document dependency or note embed.
+    monkeypatch.setattr(get_settings(), "collaboration_text_anchors_enabled", False)
+    monkeypatch.setattr(get_settings(), "collaboration_anchor_relay_token", None)
+    world.entry.path = "Notes/chart.png"
+    world.entry.record = {"type": "image", "hash": "b" * 64}
+    db_session.commit()
+    return world
+
+
+def image_file_command(w, geometry=None):
+    payload = image_command(w, geometry=geometry)
+    payload["command"]["anchor"].update(
+        type="image_file",
+        generation=str(w.entry.collaboration_generation),
+        asset={"kind": "managed", "entry_id": w.entry.id, "sha256": "a" * 64},
+    )
+    del payload["command"]["anchor"]["occurrence"]
+    return payload
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {"type": "whole"},
+        {"type": "pin", "x": 0, "y": 1},
+        {"type": "region", "x": 0.1, "y": 0.2, "width": 0.5, "height": 0.6},
+    ],
+)
+def test_image_file_reviewer_roundtrip_without_private_relay(
+    client, db_session, image_file_world, monkeypatch, geometry
+):
+    w = image_file_world
+
+    def no_relay(*_args, **_kwargs):
+        pytest.fail("Image-file comments must not contact the document relay")
+
+    monkeypatch.setattr(anchor_service, "validate", no_relay)
+    payload = image_file_command(w, geometry)
+    result = send(client, w, payload)
+    assert send(client, w, payload) == result
+    assert db_session.get(m.DiscussionScope, uuid.UUID(result["scope_id"])).kind == "image"
+    saved = client.get(
+        base(w) + "/threads/" + result["thread_id"], headers=headers(w.tokens["reader"])
+    )
+    assert saved.status_code == 200
+    assert saved.json()["anchor"] == {**payload["command"]["anchor"], "entry_id": w.entry.id}
+    # An old offline version remains old; it is never relabeled with current bytes.
+    assert saved.json()["anchor"]["asset"]["sha256"] != w.entry.record["hash"]
+    send(client, w, image_file_command(w), actor="reader", expected=403)
+
+
+def test_image_file_context_capability_and_creation_disable(
+    client, db_session, image_file_world, monkeypatch
+):
+    w = image_file_world
+    w.entry.collaboration_generation = None
+    db_session.commit()
+    url = base(w) + "/anchor-context"
+    first = client.get(url, headers=headers(w.tokens["reader"]))
+    assert first.status_code == 200 and uuid.UUID(first.json()["generation"])
+    assert client.get(url, headers=headers(w.tokens["reviewer"])).json() == first.json()
+    caps = client.get(
+        f"/v1/collaboration/capabilities?share_id={w.share.id}",
+        headers=headers(w.tokens["reviewer"]),
+    ).json()
+    assert caps["features"]["discussion_image_files"]
+    assert caps["discussion_targets"] == ["note", "image_file"]
+    assert not caps["features"]["discussion_text_anchors"]
+    db_session.expire_all()
+    payload = image_file_command(w)
+    result = send(client, w, payload)
+    monkeypatch.setattr(get_settings(), "collaboration_image_files_enabled", False)
+    assert client.get(url, headers=headers(w.tokens["reviewer"])).status_code == 404
+    rejected = send(client, w, image_file_command(w), expected=409)
+    assert rejected["error"]["message"]["code"] == "image_files_disabled"
+    assert send(client, w, payload) == result
+    # Disabling new targets does not disable existing conversations.
+    reply = envelope(
+        w,
+        {
+            "type": "reply.create",
+            "thread_id": result["thread_id"],
+            "message_id": str(uuid.uuid4()),
+            "body": body("Still discussing this image"),
+        },
+    )
+    send(client, w, reply)
+    assert (
+        client.get(
+            base(w) + "/threads/" + result["thread_id"], headers=headers(w.tokens["reader"])
+        ).status_code
+        == 200
+    )
+
+
+@pytest.mark.parametrize(
+    "kind", ["note", "text", "image", "foreign_asset", "generation", "external"]
+)
+def test_image_file_rejects_wrong_scope_lineage_and_assets(client, image_file_world, kind):
+    w = image_file_world
+    payload = image_file_command(w)
+    anchor = payload["command"]["anchor"]
+    if kind in {"note", "text", "image"}:
+        factory = {"note": create, "text": text_command, "image": image_command}[kind]
+        payload["command"]["anchor"] = factory(w)["command"]["anchor"]
+    elif kind == "foreign_asset":
+        anchor["asset"]["entry_id"] = w.other.id
+    elif kind == "generation":
+        anchor["generation"] = str(uuid.uuid4())
+    else:
+        anchor["asset"] = {
+            "kind": "external",
+            "url": "https://example.test/image.png",
+            "version_evidence": "unknown",
+        }
+    response = send(client, w, payload, expected=409 if kind == "generation" else 422)
+    if kind == "generation":
+        assert response["error"]["message"]["code"] == "anchor_generation_mismatch"
+
+
+def test_markdown_rejects_image_file_targets(client, world, monkeypatch):
+    monkeypatch.setattr(get_settings(), "collaboration_image_files_enabled", True)
+    response = send(client, world, image_file_command(world), expected=422)
+    assert response["error"]["message"]["code"] == "invalid_anchor_scope"
+
+
+@pytest.mark.parametrize("revocation", ["hidden", "deleted", "comment", "session"])
+def test_image_file_reauthorizes_retries(client, db_session, image_file_world, revocation):
+    w = image_file_world
+    payload = image_file_command(w)
+    send(client, w, payload)
+    if revocation == "hidden":
+        w.entry.path = "Private/chart.png"
+    elif revocation == "deleted":
+        w.entry.deleted = True
+    elif revocation == "comment":
+        rule = db_session.scalar(
+            select(m.ManagedCommentRule).where(m.ManagedCommentRule.user_id == w.reviewer.id)
+        )
+        rule.allowed = False
+    else:
+        session_service.revoke_session(db_session, w.sessions["reviewer"])
+    db_session.commit()
+    send(
+        client,
+        w,
+        payload,
+        expected=401 if revocation == "session" else 403 if revocation == "comment" else 404,
+    )
+
+
+def test_entry_type_change_cannot_reinterpret_existing_scope(client, db_session, image_file_world):
+    w = image_file_world
+    result = send(client, w, image_file_command(w))
+    w.entry.record = {"type": "markdown"}
+    w.entry.path = "Notes/chart.md"
+    db_session.commit()
+    send(client, w, create(w), expected=404)
+    assert (
+        client.get(
+            base(w) + "/threads/" + result["thread_id"], headers=headers(w.tokens["reader"])
+        ).status_code
+        == 404
+    )
+
+
 def test_image_flag_pauses_new_targets_but_preserves_receipts_and_reads(client, world, monkeypatch):
     enable_anchors(monkeypatch)
     requests = relay_mock(monkeypatch)

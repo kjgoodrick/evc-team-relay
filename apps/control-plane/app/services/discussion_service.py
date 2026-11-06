@@ -82,7 +82,7 @@ def context(
         .execution_options(populate_existing=True)
     )
     entry = db.scalar(entry_query.with_for_update() if write else entry_query)
-    if not entry or entry.record.get("type") != "markdown":
+    if not entry or entry.record.get("type") not in {"markdown", "image"}:
         error(404, "target_unavailable")
     permission = managed_service.permission(
         share, user, entry.path, managed_service.rules_for(db, share, user)
@@ -97,11 +97,16 @@ def context(
 
 
 def scope_for(db: Session, ctx: Context) -> m.DiscussionScope | None:
-    return db.scalar(
+    scope = db.scalar(
         select(m.DiscussionScope).where(
             m.DiscussionScope.share_id == ctx.share.id, m.DiscussionScope.entry_id == ctx.entry.id
         )
     )
+    if scope and scope.kind != ("image" if ctx.entry.record.get("type") == "image" else "note"):
+        # An inventory type change must not reinterpret a note's discussions as
+        # image-file discussions (or vice versa). Explicit migration is separate.
+        error(404, "target_unavailable")
+    return scope
 
 
 def participants(db, token, share_id, entry_id, *, after=None, limit=50):
@@ -185,7 +190,11 @@ def document_context(db, token, share_id, entry_id):
     require_clean_session(db)
     try:
         ctx = context(db, token, share_id, entry_id)
-        if not anchor_service.enabled():
+        scope_for(db, ctx)
+        if ctx.entry.record.get("type") == "image":
+            if not get_settings().collaboration_image_files_enabled:
+                error(404, "image_files_disabled")
+        elif not anchor_service.enabled():
             error(404, "text_anchors_disabled")
         entry = db.scalar(
             select(m.ManagedEntry)
@@ -250,11 +259,27 @@ def validate_image_asset(db, ctx, anchor):
     # as evidence instead of relabeling old coordinates with the current hash.
 
 
+def validate_anchor_target(ctx, anchor):
+    image_file = isinstance(anchor, s.ImageFileAnchor)
+    if image_file != (ctx.entry.record.get("type") == "image"):
+        error(422, "invalid_anchor_scope")
+    if image_file:
+        if not get_settings().collaboration_image_files_enabled:
+            error(409, "image_files_disabled")
+        if str(anchor.asset.entry_id) != ctx.entry.id:
+            error(422, "invalid_anchor_scope")
+        if anchor.generation != ctx.entry.collaboration_generation:
+            error(409, "anchor_generation_mismatch")
+        # context() already locked and authorized this exact live image entry.
+        # Preserve the observed version, including older offline image hashes.
+
+
 def prepare_text_anchor(db, token, envelope):
     ctx = context(db, token, envelope.share_id, envelope.entry_id, write=True)
     prior = existing_receipt(db, ctx, envelope, anchor_service.command_hash(envelope))
     if prior is not None:
         return prior
+    validate_anchor_target(ctx, envelope.command.anchor)
     if not anchor_service.enabled():
         error(409, "text_anchors_disabled")
     anchor = s.source_anchor(envelope.command.anchor)
@@ -310,6 +335,8 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
     if prior is not None:
         return prior
     command = envelope.command
+    if isinstance(command, s.ThreadCreate):
+        validate_anchor_target(ctx, command.anchor)
     if isinstance(command, s.ThreadCreate) and s.source_anchor(command.anchor) is not None:
         if not anchor_service.enabled():
             error(409, "text_anchors_disabled")
@@ -321,7 +348,11 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
         validate_mentions(db, ctx, command.body)
     if isinstance(command, s.ThreadCreate):
         if scope is None:
-            scope = m.DiscussionScope(share_id=ctx.share.id, entry_id=ctx.entry.id, kind="note")
+            scope = m.DiscussionScope(
+                share_id=ctx.share.id,
+                entry_id=ctx.entry.id,
+                kind="image" if ctx.entry.record.get("type") == "image" else "note",
+            )
             db.add(scope)
             db.flush()
         if db.get(m.DiscussionThread, command.thread_id) is not None:

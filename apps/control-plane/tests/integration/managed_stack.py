@@ -68,6 +68,11 @@ def main():
         help="Run image occurrence comments through the private relay barrier",
     )
     parser.add_argument(
+        "--image-files",
+        action="store_true",
+        help="Run managed image-file discussions without text barriers",
+    )
+    parser.add_argument(
         "--relay", type=Path, default=ROOT.parent / "relay-server/target/debug/relay"
     )
     parser.add_argument(
@@ -152,6 +157,12 @@ allowed_token_types = ["server"]
             os.environ["COLLABORATION_PRESENCE_ENABLED"] = "true"
         if args.image_anchors:
             os.environ["COLLABORATION_IMAGE_ANCHORS_ENABLED"] = "true"
+        if args.image_files:
+            os.environ.update(
+                COLLABORATION_POLICY_ENABLED="true",
+                COLLABORATION_DISCUSSIONS_ENABLED="true",
+                COLLABORATION_IMAGE_FILES_ENABLED="true",
+            )
 
         get_settings.cache_clear()
         from app.db import models, session
@@ -209,10 +220,10 @@ allowed_token_types = ["server"]
                     user_id=bob.id,
                     path="",
                     recursive=True,
-                    permission="read" if args.text_anchors else "write",
+                    permission="read" if args.text_anchors or args.image_files else "write",
                 )
             )
-            if args.text_anchors:
+            if args.text_anchors or args.image_files:
                 db.add(
                     models.ManagedCommentRule(
                         share_id=share.id, user_id=bob.id, path="", recursive=True, allowed=True
@@ -250,7 +261,7 @@ allowed_token_types = ["server"]
                 ),
             )
             image_id = str(uuid.uuid4())
-            if args.image_anchors:
+            if args.image_anchors or args.image_files:
                 managed_service.apply_batch(
                     db,
                     share,
@@ -277,7 +288,7 @@ allowed_token_types = ["server"]
                 "note": note,
                 "secret": secret,
                 "second": second if args.presence_locations else None,
-                "image": image_id if args.image_anchors else None,
+                "image": image_id if args.image_anchors or args.image_files else None,
                 "bobId": str(bob.id),
                 "ownerId": str(owner.id),
                 "ownerToken": security.create_access_token(
@@ -341,7 +352,9 @@ path = "{temp / "relay-data"}"
                         time.sleep(0.2)
                     return 0
                 fixture_variable = (
-                    "EVC_IMAGE_ANCHOR_FIXTURE"
+                    "EVC_IMAGE_FILE_FIXTURE"
+                    if args.image_files
+                    else "EVC_IMAGE_ANCHOR_FIXTURE"
                     if args.image_anchors
                     else "EVC_LOCATION_FIXTURE"
                     if args.presence_locations
@@ -352,7 +365,9 @@ path = "{temp / "relay-data"}"
                     else "EVC_MANAGED_FIXTURE"
                 )
                 test_file = (
-                    "__tests__/collaboration/realImageAnchorStack.test.ts"
+                    "__tests__/collaboration/realImageFileStack.test.ts"
+                    if args.image_files
+                    else "__tests__/collaboration/realImageAnchorStack.test.ts"
                     if args.image_anchors
                     else "__tests__/presence/realLocationStack.test.ts"
                     if args.presence_locations
