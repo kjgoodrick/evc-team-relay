@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -100,6 +100,37 @@ def scope_for(db: Session, ctx: Context) -> m.DiscussionScope | None:
             m.DiscussionScope.share_id == ctx.share.id, m.DiscussionScope.entry_id == ctx.entry.id
         )
     )
+
+
+def participants(db, token, share_id, entry_id, *, after=None, limit=50):
+    """Names only for active members who can read this discussion's actual note."""
+    ctx = context(db, token, share_id, entry_id)
+    query = select(m.User).where(
+        m.User.is_active.is_(True),
+        or_(
+            m.User.id == ctx.share.owner_user_id,
+            m.User.id.in_(
+                select(m.ShareMember.user_id).where(m.ShareMember.share_id == ctx.share.id)
+            ),
+        ),
+    )
+    if after is not None:
+        query = query.where(m.User.id > after)
+    people = []
+    for user in db.scalars(query.order_by(m.User.id)).yield_per(100):
+        if managed_service.permission(
+            ctx.share, user, ctx.entry.path, managed_service.rules_for(db, ctx.share, user)
+        ) not in {"read", "write"}:
+            continue
+        people.append({"id": str(user.id), "name": user.email.split("@")[0]})
+        if len(people) > limit:
+            break
+    page = people[:limit]
+    return {
+        "participants": page,
+        "has_more": len(people) > limit,
+        "next_after": page[-1]["id"] if page else (str(after) if after else None),
+    }
 
 
 def thread_for(

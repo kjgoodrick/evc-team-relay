@@ -131,6 +131,53 @@ def count(db, model):
     return db.scalar(select(func.count()).select_from(model))
 
 
+def test_participant_directory_is_entry_authorized_and_pages_without_hidden_members(
+    client, db_session, world
+):
+    w = world
+    private_user = m.User(email="private@discussion.test", password_hash="", is_active=True)
+    db_session.add(private_user)
+    db_session.flush()
+    db_session.add(
+        m.ShareMember(share_id=w.share.id, user_id=private_user.id, role=m.ShareMemberRole.VIEWER)
+    )
+    db_session.add(
+        m.ManagedRule(
+            share_id=w.share.id,
+            user_id=private_user.id,
+            path="Private",
+            recursive=True,
+            permission="read",
+        )
+    )
+    db_session.commit()
+    seen, after = [], None
+    while True:
+        response = client.get(
+            base(w) + "/participants",
+            params={"limit": 1, **({"after": after} if after else {})},
+            headers=headers(w.tokens["reviewer"]),
+        )
+        assert response.status_code == 200
+        page = response.json()
+        seen.extend(page["participants"])
+        after = page["next_after"]
+        if not page["has_more"]:
+            break
+    assert {person["id"] for person in seen} == {
+        str(w.owner.id),
+        str(w.reviewer.id),
+        str(w.reader.id),
+    }
+    assert all(set(person) == {"id", "name"} and "@" not in person["name"] for person in seen)
+    assert (
+        client.get(
+            base(w, w.other.id) + "/participants", headers=headers(w.tokens["reviewer"])
+        ).status_code
+        == 404
+    )
+
+
 def test_targeted_message_read_tracks_edits_reactions_and_tombstones(client, world):
     w = world
     payload = create(w)

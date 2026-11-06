@@ -85,6 +85,18 @@ def threads(
     return service.list_threads(db, token, share_id, entry_id, after=after, limit=limit)
 
 
+@router.get("/shares/{share_id}/entries/{entry_id}/participants")
+def participants(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    after: uuid.UUID | None = None,
+    limit: int = Query(50, ge=1, le=100),
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.participants(db, token, share_id, entry_id, after=after, limit=limit)
+
+
 @router.get("/shares/{share_id}/entries/{entry_id}/threads/{thread_id}")
 def thread(
     share_id: uuid.UUID,

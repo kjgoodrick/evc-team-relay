@@ -123,6 +123,10 @@ All paths below start with
 `/v1/collaboration/shares/{share_id}/entries/{entry_id}`:
 
 - `GET /threads?after=0&limit=50`: nonremoved threads, ordered by creation.
+- `GET /participants?after={user_id}&limit=50`: active members who can read this
+  exact note, with names and stable IDs for mentions. Keyset pages expose only
+  eligible participants and their IDs; no email addresses are returned. Every
+  page rechecks current actor/session/note access.
 - `GET /threads/{thread_id}?after=0&limit=50`: current thread/anchor and message
   page, including current bodies, revisions, and reaction aggregates.
 - `GET /threads/{thread_id}/state`: current state/anchor without message bodies;
