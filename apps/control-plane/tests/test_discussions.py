@@ -1433,3 +1433,49 @@ def test_text_anchor_envelope_limits_are_separate_and_disabled_by_default(
         ).status_code
         == 413
     )
+
+
+def test_discussion_dates_include_utc_offset_after_database_round_trip(client, world):
+    from datetime import datetime, timedelta
+
+    w = world
+    result = send(client, w, create(w, "Timestamp fixture"))
+    tid, mid = result["thread_id"], result["message_id"]
+    send(
+        client,
+        w,
+        envelope(
+            w,
+            {
+                "type": "message.edit",
+                "thread_id": tid,
+                "message_id": mid,
+                "expected_revision": 1,
+                "body": body("Edited timestamp fixture"),
+            },
+        ),
+    )
+
+    def read(path):
+        response = client.get(base(w) + path, headers=headers(w.tokens["reviewer"]))
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    listing = read("/threads")
+    discussion = read(f"/threads/{tid}")
+    message = read(f"/threads/{tid}/messages/{mid}")["message"]
+    history = read(f"/threads/{tid}/messages/{mid}/history")
+    targets = read(f"/threads/{tid}/anchor-history")
+    timestamps = [
+        listing["threads"][0]["created_at"],
+        discussion["thread"]["created_at"],
+        discussion["messages"][0]["created_at"],
+        message["created_at"],
+        message["edited_at"],
+        *[r["created_at"] for r in history["revisions"]],
+        *[r["created_at"] for r in targets["revisions"]],
+    ]
+    assert len(timestamps) == 8
+    for value in timestamps:
+        parsed = datetime.fromisoformat(value)
+        assert parsed.utcoffset() == timedelta(0), value

@@ -12,6 +12,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
@@ -673,6 +674,17 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
     return result
 
 
+def utc_timestamp(value: datetime | None) -> datetime | None:
+    """Database timestamps are UTC; SQLite drops their timezone on reload."""
+    if value is None:
+        return None
+    return (
+        value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None
+        else value.astimezone(timezone.utc)
+    )
+
+
 def thread_data(thread):
     return {
         "id": str(thread.id),
@@ -683,7 +695,7 @@ def thread_data(thread):
         "removed": thread.deleted,
         "created_sequence": thread.created_sequence,
         "activity_sequence": thread.activity_sequence,
-        "created_at": thread.created_at,
+        "created_at": utc_timestamp(thread.created_at),
     }
 
 
@@ -803,8 +815,8 @@ def message_data(db, ctx, rows):
             "deleted": message.deleted,
             "body": revision.body,
             "created_sequence": message.created_sequence,
-            "created_at": message.created_at,
-            "edited_at": message.edited_at,
+            "created_at": utc_timestamp(message.created_at),
+            "edited_at": utc_timestamp(message.edited_at),
             "reactions": [] if message.deleted else reactions.get(message.id, []),
         }
         for message, revision in rows
@@ -856,7 +868,7 @@ def anchor_history(db, token, share_id, entry_id, thread_id, *, after=0, limit=1
             {
                 "revision": row.revision,
                 "actor_id": str(row.actor_id) if row.actor_id else None,
-                "created_at": row.created_at,
+                "created_at": utc_timestamp(row.created_at),
                 "anchor": anchor.model_dump(mode="json") if available else None,
                 "unavailable": not available,
             }
@@ -929,7 +941,7 @@ def history(db, token, share_id, entry_id, thread_id, message_id, *, after=0, li
                 "revision": r.revision,
                 "body": r.body,
                 "actor_id": str(r.actor_id) if r.actor_id else None,
-                "created_at": r.created_at,
+                "created_at": utc_timestamp(r.created_at),
                 "reason": r.reason,
             }
             for r in page

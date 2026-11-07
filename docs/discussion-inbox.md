@@ -2,8 +2,10 @@
 
 The server and Obsidian client preview are implemented, including local cache,
 queued preference/read changes, foreground refresh and original-target navigation.
-Native desktop/mobile acceptance and the remaining resource/query measurements
-are pending. This is not a production enablement recommendation.
+Native desktop mention/read/follow/mute/dismiss, reconnect and exact-reply
+navigation checks now pass in a disposable actual-service fixture. The remaining
+desktop/mobile matrix and resource/query measurements are pending. This is not
+a production enablement recommendation.
 
 ## Enablement and migration
 
@@ -182,5 +184,15 @@ It uses synthetic accounts and no production service.
 Plugin store/protocol/DOM/host tests cover multiwindow leases, delayed responses,
 read-version races, persisted retry delays, reader-only preferences, bounded older
 windows, filters, keyboard focus, account changes, local file identity and saved
-view navigation. Native Obsidian and mobile acceptance remain pending; automated
-tests do not establish host rendering, touch, battery or OS-notification behavior.
+view navigation. The [native desktop record](../../evc-team-relay-obsidian/docs/comment-inbox-native-preview.md)
+describes the verified subset and limits. Automated tests do not establish touch,
+battery or OS-notification behavior.
+
+The November 7 native run found that SQLite discussion/history timestamps lost
+their UTC offset after a database round trip; inbox timestamps were already
+normalized. Discussion thread/message/history/target-history serialization now
+returns explicit UTC, preserving correct local display. The new HTTP regression
+checks eight timestamps through all affected read routes and failed before the
+fix. The discussion, inbox, search and reattachment set passes 152 tests; changed
+Python files pass Ruff. No schema change is needed. The native fixture used the
+old running server module, so corrected native date rendering remains to verify.
