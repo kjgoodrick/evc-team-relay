@@ -529,7 +529,9 @@ Legacy downgrade happens after authorization and before serialization.
 
 Native member-backed group/lane capture, projection and navigation now have
 client host evidence through table/cards/list and Time & Line adapters. Native
-date-range positions and complete desktop/mobile acceptance remain unfinished.
+date-range capture, projection and Jump/Follow now also have real Time & Line
+source/client interoperability evidence. Complete desktop/mobile acceptance and
+additional group adapters remain unfinished.
 Server-side automated checks cover read-only handling, legacy downgrade, denied dependencies,
 idle revocation with preserved roster, obsolete axes/grouping, strict input and
 full-room output budgets, and concurrent target changes. The actual client/service
