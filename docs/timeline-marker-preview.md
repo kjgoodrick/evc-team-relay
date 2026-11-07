@@ -107,10 +107,19 @@ marker cases**, plus the complete PostgreSQL Bases/group/range/marker runner.
 Changed-source lint, formatting and whitespace checks also pass. The disposable
 database and synthetic accounts were removed after verification.
 
-Remaining work includes strict client decoding, account-isolated cache/outbox and
-offline marker comments; current metadata change delivery/refresh; local marker
-IDs and explicit promotion/matching/edit/archive UI; rendering/capture/navigation
-of shared markers in Time & Line; captured-versus-current context display; actual
-HTTP/client recovery and native desktop/mobile/accessibility/resource acceptance.
+The matching client now decodes exact marker anchors, reads revision-pinned saved-
+view catalogs and retains verified metadata in its account-isolated cache.
+Marker captures use its existing durable drafts/outbox; historical status retains
+the captured label/position. The disposable `base_content_client.py` runner now
+also checks the actual client against HTTP for calendar and exact-decimal markers,
+including offline capture after reopen, a lost accepted response, edits/archive
+before exact retry, historical replies and stale new-capture rejection. The test
+fixture explicitly enables both timeline flags; production defaults are unchanged.
+
+Remaining work includes current metadata change delivery/refresh; local marker
+IDs and explicit promotion/matching/edit/archive UI; native selection and
+rendering/navigation of shared markers in Time & Line; captured-versus-current
+position display; server-restart/client and native desktop/mobile/accessibility/
+resource acceptance.
 Management uses online guarded commands; queued comments must reuse verified
 cached marker/axis evidence. Do not enable this preview before those paths exist.

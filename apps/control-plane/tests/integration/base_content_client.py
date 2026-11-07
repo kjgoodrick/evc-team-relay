@@ -36,6 +36,8 @@ def main():
             COLLABORATION_BASES_DISCUSSIONS_ENABLED="true",
             COLLABORATION_BASES_DEFINITION_TARGETS_ENABLED="true",
             COLLABORATION_BASES_FORMULA_CELLS_ENABLED="true",
+            COLLABORATION_BASES_TIMELINE_RANGES_ENABLED="true",
+            COLLABORATION_BASES_TIMELINE_MARKERS_ENABLED="true",
             LOG_LEVEL="WARNING",
             CONTROL_PLANE_PUBLIC_URL=f"http://127.0.0.1:{number}",
         )
@@ -67,6 +69,7 @@ def main():
             discussion_entry_id, record_id = str(uuid.uuid4()), str(uuid.uuid4())
             session_entry_id = str(uuid.uuid4())
             definitions_entry_id = str(uuid.uuid4())
+            markers_entry_id = str(uuid.uuid4())
             image_record_id = str(uuid.uuid4())
             db.add_all(
                 [
@@ -107,6 +110,7 @@ def main():
                 (discussion_entry_id, "Discussions.base", "file"),
                 (session_entry_id, "Sessions.base", "file"),
                 (definitions_entry_id, "Definitions.base", "file"),
+                (markers_entry_id, "Markers.base", "file"),
                 (record_id, "Record.md", "markdown"),
                 (image_record_id, "Image.png", "image"),
             ]:
@@ -130,6 +134,7 @@ def main():
                 discussionEntry=discussion_entry_id,
                 sessionEntry=session_entry_id,
                 definitionsEntry=definitions_entry_id,
+                markersEntry=markers_entry_id,
                 record=record_id,
                 imageRecord=image_record_id,
                 owner=str(owner.id),
@@ -176,6 +181,7 @@ def main():
                         "__tests__/bases/realBaseRegistry.test.ts",
                         "__tests__/collaboration/realBaseDiscussionStack.test.ts",
                         "__tests__/collaboration/realBaseDefinitionStack.test.ts",
+                        "__tests__/collaboration/realTimelineMarkerStack.test.ts",
                     ],
                     cwd=args.plugin.resolve(),
                     env={**os.environ, "EVC_BASE_CONTENT_FIXTURE": str(fixture_path)},
