@@ -144,10 +144,53 @@ class InvalidMetadata(ValueError):
 class MetadataLoader(bases_definition.DefinitionLoader):
     """Use the bounded, non-executable YAML subset; never silently drop errors."""
 
+    # Frontmatter uses YAML 1.2 core scalars. The .base definition parser has a
+    # narrower scalar grammar; sharing its resolver would turn 0123/0o17/0x1f
+    # into text even though the host exposes numeric groups.
+    yaml_implicit_resolvers = {}
+
     def compose_node(self, parent, index):
         if self.depth >= 16 or self.nodes >= 4096:
             raise InvalidMetadata("Source metadata exceeds structural limits")
         return super().compose_node(parent, index)
+
+
+_core_patterns = {
+    "null": re.compile(r"^(?:~|null|Null|NULL|)$"),
+    "bool": re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    "int": re.compile(r"^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$"),
+    "float": re.compile(
+        r"^(?:[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+"
+        r"|[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)"
+        r"|[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$"
+    ),
+}
+
+
+def _core_scalar(loader, node):
+    kind = node.tag.rsplit(":", 1)[-1]
+    value = loader.construct_scalar(node)
+    if not _core_patterns[kind].fullmatch(value):
+        raise InvalidMetadata("Unsupported scalar encoding")
+    if kind == "null":
+        return None
+    if kind == "bool":
+        return value.lower() == "true"
+    if kind == "int":
+        return (
+            int(value[2:], 8 if value[1] == "o" else 16)
+            if value.startswith(("0o", "0x"))
+            else int(value, 10)
+        )
+    if value.lower().endswith((".inf", ".nan")):
+        raise InvalidMetadata("Unsupported property number")
+    return float(value)
+
+
+for _kind, _pattern in _core_patterns.items():
+    _tag = "tag:yaml.org,2002:" + _kind
+    MetadataLoader.add_implicit_resolver(_tag, _pattern, None)
+    MetadataLoader.add_constructor(_tag, _core_scalar)
 
 
 def _check_metadata(value):
@@ -212,7 +255,9 @@ def property_value(observation: SourceObservation, name: str):
     except UnicodeError:
         raise InvalidMetadata("Invalid property name") from None
     values = metadata(observation.source_prefix, complete=observation.source_complete)
-    matches = [value for key, value in values.items() if key.casefold() == name.casefold()]
-    if len(matches) > 1:
-        raise InvalidMetadata("Ambiguous property name")
-    return matches[0] if matches else None
+    # Native getInsensitive prefers exact spelling, then the first lowercase
+    # match in source order. Unicode casefold is stronger (Straße != STRASSE in
+    # this API) and would incorrectly prove a different group's value.
+    if name in values:
+        return values[name]
+    return next((value for key, value in values.items() if key.lower() == name.lower()), None)

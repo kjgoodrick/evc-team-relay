@@ -74,12 +74,14 @@ this ceiling as completed large-note support or silently treat it as no metadata
 
 The Python metadata helper recognizes the host's opening/closing `---` fence
 shape and never treats a truncated prefix boundary as EOF. It rejects malformed,
-ambiguous, aliased, non-JSON, overly deep or oversized metadata, unsupported tags and
+aliased, non-JSON, overly deep or oversized metadata, unsupported tags and
 unsupported numbers instead of silently dropping them. Limits are 16 levels and
 4,096 nodes. A complete note with no closing fence has no frontmatter, matching
-the inspected host fence behavior. The YAML/type conversion is a conservative
-subset: native property types, dates, links and other scalar semantics still need
-parity work before any group-value proof can be minted.
+the inspected host fence behavior. Native observations subsequently established
+YAML 1.2 core numbers (including leading-zero decimal, octal and hex), exact-name
+then lowercase property lookup, and typed note-property conversion. See the
+[typed value adapter and remaining compatibility limits](base-group-values.md).
+This is still a bounded subset and does not itself mint a group-value proof.
 
 ## Verification and next integration
 
@@ -108,7 +110,7 @@ checks; no native/mobile, PostgreSQL migration or performance acceptance is
 claimed for this increment. No schema migration or plugin runtime change was
 needed.
 
-Still required: native metadata normalization; durable value identity and
+Still required: the remaining native metadata cases; durable value identity and
 verified input records; read/write/history/picture/receipt/mention authorization;
 group wire anchors and client negotiation; cached offline capture and explicit
 stale-value recovery; native sidebar and marker integration; group summaries and

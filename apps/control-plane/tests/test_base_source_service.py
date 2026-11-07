@@ -291,7 +291,7 @@ def test_unsupported_metadata_cannot_silently_supply_a_value(raw):
     assert raw not in str(caught.value)
 
 
-def test_property_lookup_is_unambiguous_and_validates_names(identity, monkeypatch):
+def test_property_lookup_matches_native_exact_then_lowercase_order(identity, monkeypatch):
     relay(monkeypatch, prefix="---\nStatus: Planned\n---\n")
     observed = service.observe(*identity)
     assert service.property_value(observed, "STATUS") == "Planned"
@@ -300,5 +300,8 @@ def test_property_lookup_is_unambiguous_and_validates_names(identity, monkeypatc
         with pytest.raises(service.InvalidMetadata):
             service.property_value(observed, name)
     ambiguous = replace(observed, source_prefix="---\nStatus: Planned\nstatus: Done\n---\n")
-    with pytest.raises(service.InvalidMetadata, match="Ambiguous"):
-        service.property_value(ambiguous, "status")
+    assert service.property_value(ambiguous, "status") == "Done"
+    assert service.property_value(ambiguous, "Status") == "Planned"
+    assert service.property_value(ambiguous, "STATUS") == "Planned"
+    unicode = replace(observed, source_prefix="---\nStraße: Planned\n---\n")
+    assert service.property_value(unicode, "STRASSE") is None

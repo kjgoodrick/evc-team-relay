@@ -1,0 +1,568 @@
+{
+  "host": "1.13.7",
+  "timeZone": "America/Denver",
+  "sourcePath": "Team/A.md",
+  "cases": [
+    {
+      "id": "text",
+      "source": "---\nstatus: Planned\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "Planned"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"Planned\"]"
+    },
+    {
+      "id": "blank",
+      "source": "---\nstatus: \"\"\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": ""
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"\"]"
+    },
+    {
+      "id": "null",
+      "source": "---\nstatus: null\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": null
+      },
+      "nativeType": "Null",
+      "groupKey": "[\"empty\"]"
+    },
+    {
+      "id": "yes",
+      "source": "---\nstatus: yes\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "yes"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"yes\"]"
+    },
+    {
+      "id": "boolean",
+      "source": "---\nstatus: true\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": true
+      },
+      "nativeType": "Boolean",
+      "groupKey": "[\"boolean\",true]"
+    },
+    {
+      "id": "number",
+      "source": "---\nstatus: 1\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": 1
+      },
+      "nativeType": "Number",
+      "groupKey": "[\"number\",1]"
+    },
+    {
+      "id": "numeric_text",
+      "source": "---\nstatus: \"1\"\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "1"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"1\"]"
+    },
+    {
+      "id": "leading_zero",
+      "source": "---\nstatus: 0123\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": 123
+      },
+      "nativeType": "Number",
+      "groupKey": "[\"number\",123]"
+    },
+    {
+      "id": "octal",
+      "source": "---\nstatus: 0o17\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": 15
+      },
+      "nativeType": "Number",
+      "groupKey": "[\"number\",15]"
+    },
+    {
+      "id": "hex",
+      "source": "---\nstatus: 0x1f\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": 31
+      },
+      "nativeType": "Number",
+      "groupKey": "[\"number\",31]"
+    },
+    {
+      "id": "signed_hex",
+      "source": "---\nstatus: -0x1f\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "-0x1f"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"-0x1f\"]"
+    },
+    {
+      "id": "underscore",
+      "source": "---\nstatus: 1_000\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "1_000"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"1_000\"]"
+    },
+    {
+      "id": "negative_zero",
+      "source": "---\nstatus: -0\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": 0
+      },
+      "nativeType": "Number",
+      "groupKey": "[\"number\",0]"
+    },
+    {
+      "id": "exponent",
+      "source": "---\nstatus: 1e3\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": 1000
+      },
+      "nativeType": "Number",
+      "groupKey": "[\"number\",1000]"
+    },
+    {
+      "id": "dot_float",
+      "source": "---\nstatus: .5\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": 0.5
+      },
+      "nativeType": "Number",
+      "groupKey": "[\"number\",0.5]"
+    },
+    {
+      "id": "inf",
+      "source": "---\nstatus: .inf\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": {
+          "nonfinite": "Infinity"
+        }
+      },
+      "nativeType": "Number",
+      "groupKey": null
+    },
+    {
+      "id": "nan",
+      "source": "---\nstatus: .NaN\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": {
+          "nonfinite": "NaN"
+        }
+      },
+      "nativeType": "Number",
+      "groupKey": null
+    },
+    {
+      "id": "large_integer",
+      "source": "---\nstatus: 9007199254740993\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": 9007199254740992
+      },
+      "nativeType": "Number",
+      "groupKey": "[\"number\",9007199254740992]"
+    },
+    {
+      "id": "date",
+      "source": "---\nstatus: 2026-11-06\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "2026-11-06"
+      },
+      "nativeType": "Date",
+      "groupKey": "[\"date\",\"2026-11-06\"]"
+    },
+    {
+      "id": "rollover_date",
+      "source": "---\nstatus: 2026-02-31\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "2026-02-31"
+      },
+      "nativeType": "Date",
+      "groupKey": "[\"date\",\"2026-03-03\"]"
+    },
+    {
+      "id": "invalid_date",
+      "source": "---\nstatus: 2026-13-01\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "2026-13-01"
+      },
+      "nativeType": "Date",
+      "groupKey": null
+    },
+    {
+      "id": "year_zero",
+      "source": "---\nstatus: 0000-01-01\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "0000-01-01"
+      },
+      "nativeType": "Date",
+      "groupKey": "[\"date\",\"0000-01-01\"]"
+    },
+    {
+      "id": "instant",
+      "source": "---\nstatus: 2026-11-06T22:30:00Z\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "2026-11-06T22:30:00Z"
+      },
+      "nativeType": "Date",
+      "groupKey": "[\"instant\",\"2026-11-06T22:30:00.000Z\"]"
+    },
+    {
+      "id": "offset",
+      "source": "---\nstatus: 2026-11-06T15:30:00-07:00\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "2026-11-06T15:30:00-07:00"
+      },
+      "nativeType": "Date",
+      "groupKey": "[\"instant\",\"2026-11-06T22:30:00.000Z\"]"
+    },
+    {
+      "id": "fractional",
+      "source": "---\nstatus: 2026-11-06T22:30:00.123456789Z\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "2026-11-06T22:30:00.123456789Z"
+      },
+      "nativeType": "Date",
+      "groupKey": "[\"instant\",\"2026-11-06T22:30:00.123Z\"]"
+    },
+    {
+      "id": "local_fold",
+      "source": "---\nstatus: 2026-11-01T01:30:00\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "2026-11-01T01:30:00"
+      },
+      "nativeType": "Date",
+      "groupKey": "[\"instant\",\"2026-11-01T07:30:00.000Z\"]"
+    },
+    {
+      "id": "local_gap",
+      "source": "---\nstatus: 2026-03-08T02:30:00\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "2026-03-08T02:30:00"
+      },
+      "nativeType": "Date",
+      "groupKey": "[\"instant\",\"2026-03-08T09:30:00.000Z\"]"
+    },
+    {
+      "id": "url",
+      "source": "---\nstatus: https://example.test/path\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "https://example.test/path"
+      },
+      "nativeType": "URL",
+      "groupKey": "[\"url\",\"https://example.test/path\"]"
+    },
+    {
+      "id": "url_opaque",
+      "source": "---\nstatus: mailto:hello@example.test\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "mailto:hello@example.test"
+      },
+      "nativeType": "URL",
+      "groupKey": "[\"url\",\"mailto:hello@example.test\"]"
+    },
+    {
+      "id": "url_spaces",
+      "source": "---\nstatus: \"https://example.test/a b\"\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "https://example.test/a b"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"https://example.test/a b\"]"
+    },
+    {
+      "id": "url_invalid",
+      "source": "---\nstatus: \"http://[bad\"\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "http://[bad"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"http://[bad\"]"
+    },
+    {
+      "id": "link",
+      "source": "---\nstatus: \"[[B|Alias]]\"\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "[[B|Alias]]"
+      },
+      "nativeType": "Link",
+      "groupKey": "[\"link\",\"Team/B.md\",\"\"]"
+    },
+    {
+      "id": "link_section",
+      "source": "---\nstatus: \"[[B#Section|Alias]]\"\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "[[B#Section|Alias]]"
+      },
+      "nativeType": "Link",
+      "groupKey": "[\"link\",\"Team/B.md\",\"#Section\"]"
+    },
+    {
+      "id": "link_unresolved",
+      "source": "---\nstatus: \"[[Absent]]\"\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "[[Absent]]"
+      },
+      "nativeType": "Link",
+      "groupKey": "[\"unresolved_link\",\"Absent\",\"Team/A.md\"]"
+    },
+    {
+      "id": "list",
+      "source": "---\nstatus: [Planned, 1, true, null, \"2026-11-06\", \"https://example.test\"]\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": [
+          "Planned",
+          1,
+          true,
+          null,
+          "2026-11-06",
+          "https://example.test"
+        ]
+      },
+      "nativeType": "List",
+      "groupKey": "[\"list\",[[\"text\",\"Planned\"],[\"number\",1],[\"boolean\",true],[\"empty\"],[\"date\",\"2026-11-06\"],[\"url\",\"https://example.test\"]]]"
+    },
+    {
+      "id": "object",
+      "source": "---\nstatus: {x: 1}\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": {
+          "x": 1
+        }
+      },
+      "nativeType": "Object",
+      "groupKey": null
+    },
+    {
+      "id": "empty_list",
+      "source": "---\nstatus: []\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": []
+      },
+      "nativeType": "List",
+      "groupKey": "[\"list\",[]]"
+    },
+    {
+      "id": "missing",
+      "source": "---\nprice: 1\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "price": 1
+      },
+      "nativeType": "Null",
+      "groupKey": "[\"empty\"]"
+    },
+    {
+      "id": "case_exact",
+      "source": "---\nStatus: Planned\nstatus: Done\n---\nBody",
+      "property": "Status",
+      "parse_status": "ok",
+      "raw": {
+        "Status": "Planned",
+        "status": "Done"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"Planned\"]"
+    },
+    {
+      "id": "case_other",
+      "source": "---\nStatus: Planned\nstatus: Done\n---\nBody",
+      "property": "STATUS",
+      "parse_status": "ok",
+      "raw": {
+        "Status": "Planned",
+        "status": "Done"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"Planned\"]"
+    },
+    {
+      "id": "unicode_case",
+      "source": "---\nStraße: Planned\n---\nBody",
+      "property": "STRASSE",
+      "parse_status": "ok",
+      "raw": {
+        "Straße": "Planned"
+      },
+      "nativeType": "Null",
+      "groupKey": "[\"empty\"]"
+    },
+    {
+      "id": "tags",
+      "source": "---\ntags: [one, \"#Two\", \"2026-11-06\"]\n---\nBody",
+      "property": "tags",
+      "parse_status": "ok",
+      "raw": {
+        "tags": [
+          "one",
+          "#Two",
+          "2026-11-06"
+        ]
+      },
+      "nativeType": "List",
+      "groupKey": "[\"list\",[[\"tag\",\"#one\"],[\"tag\",\"#Two\"],[\"tag\",\"#2026-11-06\"]]]"
+    },
+    {
+      "id": "tags_empty",
+      "source": "---\ntags: []\n---\nBody",
+      "property": "tags",
+      "parse_status": "ok",
+      "raw": {
+        "tags": []
+      },
+      "nativeType": "List",
+      "groupKey": "[\"list\",[]]"
+    },
+    {
+      "id": "tags_scalar",
+      "source": "---\ntags: one\n---\nBody",
+      "property": "tags",
+      "parse_status": "ok",
+      "raw": {
+        "tags": "one"
+      },
+      "nativeType": "List",
+      "groupKey": "[\"list\",[[\"tag\",\"#one\"]]]"
+    },
+    {
+      "id": "tags_mixed",
+      "source": "---\ntags: [one, 1]\n---\nBody",
+      "property": "tags",
+      "parse_status": "ok",
+      "raw": {
+        "tags": [
+          "one",
+          1
+        ]
+      },
+      "nativeType": "List",
+      "groupKey": "[\"list\",[[\"text\",\"one\"],[\"number\",1]]]"
+    },
+    {
+      "id": "alias",
+      "source": "---\nstatus: &a [Planned]\ncopy: *a\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": [
+          "Planned"
+        ],
+        "copy": [
+          "Planned"
+        ]
+      },
+      "nativeType": "List",
+      "groupKey": "[\"list\",[[\"text\",\"Planned\"]]]"
+    },
+    {
+      "id": "explicit_string",
+      "source": "---\nstatus: !!str 1\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "1"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"1\"]"
+    },
+    {
+      "id": "duplicate",
+      "source": "---\nstatus: Planned\nstatus: Done\n---\nBody",
+      "property": "status",
+      "parse_status": "error"
+    },
+    {
+      "id": "literal",
+      "source": "---\nstatus: |\n  ---\n  inner\n---\nBody",
+      "property": "status",
+      "parse_status": "ok",
+      "raw": {
+        "status": "---\ninner\n"
+      },
+      "nativeType": "String",
+      "groupKey": "[\"text\",\"---\\ninner\\n\"]"
+    }
+  ]
+}
