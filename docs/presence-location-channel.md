@@ -6,8 +6,9 @@ preview now connects to this channel and follows participants across notes;
 precise positions and current-note Jump/Follow still use managed Yjs awareness.
 The server and plugin transport also support explicitly negotiated version-two
 image-file and saved Bases-view locations and authorized surface rosters. The
-native host still uses version one until its non-note adapters are connected;
-image/Bases display controls, pointers and native navigation remain unfinished.
+native host now opts in for directly opened managed images, with participant
+controls and whole-image Jump/Follow sharing its note socket. Native image
+acceptance, image pointers/embeds and Bases/timeline bindings remain unfinished.
 No production service or live vault has been changed by this work.
 
 Enable locally with `COLLABORATION_PRESENCE_ENABLED=true`. The share capability
@@ -45,6 +46,21 @@ UUID. It connects an already authenticated note participant to this channel's
 account/session/instance tuple; the gateway continues to replace account and
 session identity. Older awareness states without this field remain valid but
 cannot establish cross-note continuity.
+
+## Current image context
+
+`GET /v1/collaboration/image-location?share_id=UUID&entry_id=UUID` is advertised
+by `presence_image_context_preview` when presence is enabled. It requires a live
+normal session and current managed-entry read access, independently of discussion
+flags or comment permission. Scoped/sessionless credentials are rejected. It
+returns only `{protocol_version: 1, location: ImageLocation}` with
+`Cache-Control: no-store`; no paths, URLs, content bytes or comment data are read
+or returned. Deleted/non-image entries and invalid current hashes are rejected.
+Replacement returns the current generation/hash for local verification.
+
+This endpoint does not authorize future publication or delivery: the socket
+continues to check the descriptor and both parties' current access independently.
+The client must also verify its actual local rendered image before publishing.
 
 ## Publishing and following
 
@@ -216,7 +232,9 @@ production PostgreSQL load benchmark or native Obsidian acceptance.
 The version-two location/roster tests cover negotiation, read-only/hidden
 observation, saved-view isolation, replacement/revocation, stale unwatch,
 disconnect cleanup, delayed authorization/socket writes and membership
-coalescing. **179 tests** pass across the location, managed-awareness protocol,
+coalescing. Image-context cases verify read-only access with discussion features
+disabled, current replacement metadata, cache headers, malformed metadata and
+revoked/deleted/scoped/sessionless rejection. **191 tests** pass across the location, managed-awareness protocol,
 collaboration-policy and Bases-registry suites. Changed Python files pass lint/format checks. The regression set is
 scoped, not a claim that the complete control-plane suite was run; existing
 test-fixture/library warnings remain. No database migration changed.
@@ -243,7 +261,8 @@ credential refresh, inaccessible destinations and idle permission revocation.
 The native desktop run also verified cross-note Follow in Source, Live Preview
 and Reading, interruption, hidden-peer removal and reload, using a disposable
 vault and a protocol peer. Two-native-client/mobile acceptance, reconnect UX
-polish, image/Bases adapters and measured resource budgets remain unfinished.
+polish, native image acceptance, image pointers/embeds, Bases/timeline adapters
+and measured resource budgets remain unfinished.
 The single-process deployment constraint above remains in force.
 
 The actual image/Bases client transport fixture runs with:
@@ -255,6 +274,7 @@ python tests/integration/base_content_client.py --plugin ../../../evc-team-relay
 Alongside the existing Bases HTTP cases, this exercises real WebSocket roster
 discovery, image-to-Bases Follow, saved-view separation, hidden observation,
 same-socket renewal, reconnect, explicit Follow restart and idle read revocation.
+It also verifies fresh image-context reads and denial after read revocation.
 It seeds synthetic identity metadata in a separate share and removes its
 disposable loopback service/database afterward. This is not a native surface or
 production resource benchmark.

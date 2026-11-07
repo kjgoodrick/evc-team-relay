@@ -549,6 +549,91 @@ def test_v2_follows_note_image_and_saved_views_with_read_permission(client, team
                 assert recv(viewer) == available(subscription, location)
 
 
+def image_context(client, team, entry, token=None):
+    return client.get(
+        "/v1/collaboration/image-location",
+        params={"share_id": str(team.share.id), "entry_id": entry.id},
+        headers={"Authorization": "Bearer " + (token or team.tokens["viewer"])},
+    )
+
+
+def test_image_context_requires_only_read_access_and_returns_current_version(
+    client, db_session, team, surface_team, monkeypatch
+):
+    for setting in (
+        "collaboration_policy_enabled",
+        "collaboration_discussions_enabled",
+        "collaboration_image_files_enabled",
+    ):
+        monkeypatch.setattr(get_settings(), setting, False)
+    response = image_context(client, team, surface_team.image)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"protocol_version": 1, "location": surface_team.locations[0]}
+    surface_team.image.record = {"type": "image", "hash": "d" * 64}
+    surface_team.image.collaboration_generation = uuid.uuid4()
+    db_session.commit()
+    fresh = image_context(client, team, surface_team.image)
+    assert fresh.status_code == 200
+    assert fresh.json()["location"] == {
+        **surface_team.locations[0],
+        "content_sha256": "d" * 64,
+        "generation": str(surface_team.image.collaboration_generation),
+    }
+
+
+@pytest.mark.parametrize("loss", ["permission", "membership", "session", "deleted", "type", "hash"])
+def test_image_context_rechecks_access_and_live_image_metadata(
+    client, db_session, team, surface_team, loss
+):
+    assert image_context(client, team, surface_team.image).status_code == 200
+    if loss == "permission":
+        team.rule.permission = "none"
+    elif loss == "membership":
+        db_session.delete(team.member)
+    elif loss == "session":
+        db_session.delete(team.sessions["viewer"])
+    elif loss == "deleted":
+        surface_team.image.deleted = True
+    else:
+        surface_team.image.record = {"type": "markdown"} if loss == "type" else {"type": "image"}
+    db_session.commit()
+    response = image_context(client, team, surface_team.image)
+    assert response.status_code in (401, 403, 404), response.text
+    assert "location" not in response.json()
+    assert surface_team.image.path not in response.text
+
+
+@pytest.mark.parametrize("credential", ["missing", "invalid", "sessionless", "scoped"])
+def test_image_context_requires_normal_session_credentials(client, team, surface_team, credential):
+    claims = security.decode_access_token(team.tokens["viewer"])
+    claims["scope"] = "managed"
+    token = {
+        "invalid": "invalid",
+        "sessionless": security.create_access_token(str(team.viewer.id)),
+        "scoped": jwt.encode(
+            claims, get_settings().jwt_secret, algorithm=get_settings().jwt_algorithm
+        ),
+        "missing": None,
+    }[credential]
+    response = client.get(
+        "/v1/collaboration/image-location",
+        params={"share_id": str(team.share.id), "entry_id": surface_team.image.id},
+        headers={"Authorization": "Bearer " + token} if token else {},
+    )
+    assert response.status_code in (401, 403), response.text
+    assert "location" not in response.json()
+
+
+def test_image_context_is_disabled_with_presence_and_rejects_non_image(
+    client, team, surface_team, monkeypatch
+):
+    assert image_context(client, team, team.notes["first"]).status_code == 403
+    assert image_context(client, team, surface_team.base).status_code == 403
+    monkeypatch.setattr(get_settings(), "collaboration_presence_enabled", False)
+    assert image_context(client, team, surface_team.image).status_code == 404
+
+
 @pytest.mark.parametrize("index", [0, 1])
 def test_legacy_follower_gets_no_new_surface_identifiers_and_does_not_resume(
     client, team, surface_team, index

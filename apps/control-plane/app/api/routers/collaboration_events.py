@@ -8,7 +8,15 @@ import uuid
 from collections.abc import Callable
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
@@ -26,6 +34,22 @@ def enabled() -> bool:
 
 def broker(request: Request | WebSocket) -> presence.PresenceBroker:
     return request.app.state.collaboration_presence
+
+
+@router.get("/image-location")
+async def image_location(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    response: Response,
+    token: str | None = Depends(deps.oauth2_scheme),
+):
+    if not enabled():
+        raise HTTPException(404, "Collaboration location channel disabled")
+    if not token:
+        raise HTTPException(401, "Missing credentials")
+    location = await run_in_threadpool(presence.image_location, token, share_id, entry_id)
+    response.headers["Cache-Control"] = "no-store"
+    return {"protocol_version": 1, "location": location.model_dump(mode="json")}
 
 
 @router.post("/socket-ticket")

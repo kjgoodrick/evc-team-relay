@@ -172,6 +172,28 @@ def authorize_delivery(viewer_token: str, publisher_token: str, location: Surfac
     authenticate(publisher_token, location)
 
 
+def image_location(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> ImageLocation:
+    # Presence identity discovery does not depend on discussion capabilities or
+    # comment permission. Return no filename, asset URL or content bytes.
+    authenticate(token)
+    with get_sessionmaker()() as db:
+        user = deps._get_user_from_token(db, token)
+        share = share_service.get_share(db, share_id)
+        entry = managed_service.authorize_entry(db, share, user, str(entry_id))
+        if entry.record.get("type") != "image":
+            raise HTTPException(403, "Location unavailable")
+        try:
+            return ImageLocation(
+                kind="image",
+                share_id=share_id,
+                entry_id=entry_id,
+                generation=entry.collaboration_generation,
+                content_sha256=entry.record.get("hash"),
+            )
+        except ValueError:
+            raise HTTPException(403, "Location unavailable") from None
+
+
 def roster_snapshot(
     viewer_token: str, location: SurfaceLocation, publishers: list[tuple[PeerKey, str]]
 ) -> list[dict]:
