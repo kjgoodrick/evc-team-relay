@@ -7,8 +7,11 @@ precise positions and current-note Jump/Follow still use managed Yjs awareness.
 The server and plugin transport also support explicitly negotiated version-two
 image-file and saved Bases-view locations and authorized surface rosters. The
 native host now opts in for directly opened managed images, with participant
-controls and whole-image Jump/Follow sharing its note socket. Native image
-acceptance, visible split-pane image observation and Bases/timeline host integration remain unfinished.
+controls and whole-image Jump/Follow sharing its note socket. The foreground host
+also connects verified saved Bases views, participant controls and transient
+whole-view navigation through the existing native and Time & Line adapters.
+Native acceptance, visible split-pane image observation and fine-grained
+Bases/timeline movement remain unfinished.
 Direct images now have a separate authorized pointer/viewport stream. Embedded
 images also have a negotiated transport and exact source anchors; the foreground
 plugin host now connects capture, overlays and image-aware navigation with
@@ -88,8 +91,8 @@ Normal Bases sync/identity management must establish the registry first.
 The client negotiates this capability independently, validates/freezes the result,
 and fences late HTTP results after channel shutdown/replacement. Its native
 adapter verifies local disk bytes, runtime configuration and saved-view slots.
-This is the foundation for host integration; it does not yet enable Bases
-participants or fine-grained movement in Obsidian. Socket publication/delivery
+The foreground host now uses this for Bases participants and whole-view
+Jump/Follow; fine-grained movement remains unfinished. Socket publication/delivery
 still rechecks both users' current permissions and exact saved-view identity.
 
 ## Publishing and following
@@ -174,7 +177,7 @@ isolation, image replacement, registry/view identity changes, idle revocation an
 read-only access against the actual ASGI application and disposable database.
 This is not native or production-load evidence.
 
-Bases/timeline surface bindings, cell/row/group/lane targets, visible split-pane
+Fine-grained Bases/timeline cell/row/group/lane targets, visible split-pane
 image observation and native desktop/mobile acceptance remain outstanding. Direct image coordinates use
 the separate stream below and do not change the room identity.
 
@@ -183,7 +186,7 @@ the separate stream below and do not change the room identity.
 `features.presence_surface_roster_preview: true` additionally advertises roster
 commands on version-two connections. The plugin's `LocationChannel` selects
 version two only when its caller opts in with `surfaceLocations: true` and the
-server advertises support. The current native note/image host opts in.
+server advertises support. The current native note/image/Bases host opts in.
 Older servers retain note publication and Follow; non-note locations are
 withdrawn and roster commands are not sent.
 
@@ -327,7 +330,7 @@ credential refresh, inaccessible destinations and idle permission revocation.
 The native desktop run also verified cross-note Follow in Source, Live Preview
 and Reading, interruption, hidden-peer removal and reload, using a disposable
 vault and a protocol peer. Two-native-client/mobile acceptance, reconnect UX
-polish, native image/embedded-image acceptance, Bases/timeline host integration
+polish, native image/embedded-image acceptance, fine-grained Bases/timeline presence
 and measured resource budgets remain unfinished.
 The single-process deployment constraint above remains in force.
 
