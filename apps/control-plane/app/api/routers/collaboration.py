@@ -6,7 +6,13 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
-from app.schemas.collaboration import CommentRuleSet, CommentRuleUpdate, EntryCapabilities
+from app.schemas.collaboration import (
+    CommentRuleSet,
+    CommentRuleUpdate,
+    EntryCapabilities,
+    PermissionPolicy,
+    PermissionPolicyUpdate,
+)
 from app.schemas.discussions import REACTION_KEYS
 from app.services import (
     anchor_service,
@@ -19,6 +25,7 @@ from app.services import (
     discussion_pictures,
     discussion_search,
     managed_service,
+    permission_editor,
     share_service,
     timeline_markers,
 )
@@ -55,6 +62,7 @@ def capabilities(
             "presence_image_states_preview": get_settings().collaboration_presence_enabled,
             "presence_embedded_images_preview": get_settings().collaboration_presence_enabled,
             "comment_permissions": get_settings().collaboration_policy_enabled,
+            "permission_editor_v1": get_settings().collaboration_policy_enabled,
             "comments": False,
             "bases": False,
             "bases_registry": bases_registry.enabled(),
@@ -180,4 +188,34 @@ def put_rules(
         share_service.get_share(db, share_id),
         user,
         payload,
+    )
+
+
+@router.get(
+    "/shares/{share_id}/permissions",
+    response_model=PermissionPolicy,
+    dependencies=[Depends(require_policy_preview)],
+)
+def get_permission_policy(
+    share_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(collaboration_auth.get_actor),
+):
+    return permission_editor.get_policy(db, share_service.get_share(db, share_id), user, actor_id)
+
+
+@router.put(
+    "/shares/{share_id}/permissions",
+    response_model=PermissionPolicy,
+    dependencies=[Depends(require_policy_preview)],
+)
+def put_permission_policy(
+    share_id: uuid.UUID,
+    payload: PermissionPolicyUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(collaboration_auth.get_actor),
+):
+    return permission_editor.replace_policy(
+        db, share_service.get_share(db, share_id), user, payload
     )
