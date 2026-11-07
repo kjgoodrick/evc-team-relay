@@ -527,8 +527,10 @@ Existing rate/coalescing/connection limits apply. Changed fingerprints, referenc
 axes, dates or lanes invalidate a pending authorized send; offsets are coalesced.
 Legacy downgrade happens after authorization and before serialization.
 
-Native group/lane/range capture, projection and navigation remain unfinished.
-Automated checks cover read-only handling, legacy downgrade, denied dependencies,
+Native member-backed group/lane capture, projection and navigation now have
+client host evidence through table/cards/list and Time & Line adapters. Native
+date-range positions and complete desktop/mobile acceptance remain unfinished.
+Server-side automated checks cover read-only handling, legacy downgrade, denied dependencies,
 idle revocation with preserved roster, obsolete axes/grouping, strict input and
 full-room output budgets, and concurrent target changes. The actual client/service
 fixture exchanges groups and lane ranges without roster churn. No migration or
