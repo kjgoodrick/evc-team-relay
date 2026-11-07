@@ -10,8 +10,9 @@ native host now opts in for directly opened managed images, with participant
 controls and whole-image Jump/Follow sharing its note socket. The foreground host
 also connects verified saved Bases views, participant controls and transient
 whole-view navigation through the existing native and Time & Line adapters.
-Native acceptance, visible split-pane image observation and fine-grained
-Bases/timeline movement remain unfinished.
+Precise cell/record/header pointers and navigation are now connected through
+those adapters with automated host evidence. Native acceptance, visible
+split-pane image observation and group/lane/range movement remain unfinished.
 Direct images now have a separate authorized pointer/viewport stream. Embedded
 images also have a negotiated transport and exact source anchors; the foreground
 plugin host now connects capture, overlays and image-aware navigation with
@@ -91,8 +92,8 @@ Normal Bases sync/identity management must establish the registry first.
 The client negotiates this capability independently, validates/freezes the result,
 and fences late HTTP results after channel shutdown/replacement. Its native
 adapter verifies local disk bytes, runtime configuration and saved-view slots.
-The foreground host now uses this for Bases participants and whole-view
-Jump/Follow; fine-grained movement remains unfinished. Socket publication/delivery
+The foreground host now uses this for Bases participants, whole-view navigation
+and the precise cell/record/header stream below. Socket publication/delivery
 still rechecks both users' current permissions and exact saved-view identity.
 
 ## Publishing and following
@@ -178,7 +179,7 @@ isolation, image replacement, registry/view identity changes, idle revocation an
 read-only access against the actual ASGI application and disposable database.
 This is not native or production-load evidence.
 
-Fine-grained Bases/timeline cell/row/group/lane targets, visible split-pane
+Fine-grained Bases/timeline group/lane/range targets, visible split-pane
 image observation and native desktop/mobile acceptance remain outstanding. Direct image coordinates use
 the separate stream below and do not change the room identity.
 
@@ -487,5 +488,8 @@ Transport checks include actual client/server cell delivery, normal credential
 lookup, independent idle record revocation with preserved Base roster, clearing,
 controlled delayed sends after semantic changes, and 1,001 geometry updates
 without roster work. **Native capture, overlays and position-aware Jump/Follow
-are not yet connected to this stream.** Group/lane/range extensions and native
+are now connected to this stream**, with table/cards/list and Time & Line bridge
+host tests against simulated native layout. The client bounds record lookups,
+checks local access/generation, materializes virtualized cells and cancels stale
+navigation. Group/lane/range extensions and native
 Obsidian desktop/mobile, accessibility and resource acceptance remain required.
