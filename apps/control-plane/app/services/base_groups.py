@@ -15,6 +15,7 @@ from app.db import models as m
 from app.schemas import discussions as s
 from app.services import (
     base_discussions,
+    base_file_group_values,
     base_group_values,
     base_source_service,
     base_target_definitions,
@@ -35,10 +36,14 @@ def _references(db, ctx, evidence, *, user=None):
     if (
         type(evidence.get("version")) is not int
         or evidence["version"] != 1
-        or evidence.get("adapter") != "note_property_v1"
+        or evidence.get("adapter") not in {"note_property_v1", "file_inventory_v1"}
         or not isinstance(raw, list)
         or not 1 <= len(raw) <= 256
     ):
+        error(404, "target_unavailable")
+    prop = evidence.get("property")
+    file_source = evidence["adapter"] == "file_inventory_v1"
+    if not isinstance(prop, dict) or prop.get("source") != ("file" if file_source else "note"):
         error(404, "target_unavailable")
     try:
         refs = {
@@ -72,6 +77,7 @@ def _references(db, ctx, evidence, *, user=None):
         if (
             row.record.get("type") not in base_discussions.RECORD_TYPES
             or row.id == origin["record_id"]
+            and not file_source
             and row.record.get("type") != "markdown"
             or row.collaboration_generation != refs[row.id]
             or managed_service.permission(ctx.share, user, row.path, rules) not in {"read", "write"}
@@ -101,7 +107,7 @@ def _request_hash(share_id, entry_id, payload):
         {
             "share_id": str(share_id),
             "entry_id": str(entry_id),
-            "request": payload.model_dump(mode="json"),
+            "request": payload.model_dump(mode="json", exclude_none=True),
         }
     )
 
@@ -146,7 +152,10 @@ def _capture_context(db, ctx, payload):
     ):
         error(409, "base_target_definition_changed")
     prop = grouping.descriptor.get("property", {})
-    if prop.get("source") != "note" or set(view.descriptor.get("groupBy", {})) - {
+    file_source = payload.source_kind == "file"
+    if prop.get("source") != ("file" if file_source else "note") or set(
+        view.descriptor.get("groupBy", {})
+    ) - {
         "property",
         "direction",
     }:
@@ -154,7 +163,12 @@ def _capture_context(db, ctx, payload):
     source = base_discussions.record_for(db, ctx, payload.record_id)
     if source.collaboration_generation != payload.record_generation:
         error(409, "anchor_generation_mismatch")
-    if source.record.get("type") != "markdown":
+    if file_source:
+        if prop.get("name", "").lower() not in base_file_group_values.PROPERTIES:
+            error(409, "base_group_adapter_unavailable")
+        if hashlib.sha256(source.path.encode()).hexdigest() != payload.source_path_sha256:
+            error(409, "base_group_source_changed")
+    elif source.record.get("type") != "markdown":
         error(409, "base_group_adapter_unavailable")
     return definition, grouping, source
 
@@ -235,8 +249,13 @@ def capture(db, token, share_id, entry_id, payload):
         # the private network request is in progress.
         source_path = source.path
         db.commit()
-        observed = base_source_service.observe(
-            share_id, payload.record_id, payload.record_generation, payload.dependency
+        file_source = payload.source_kind == "file"
+        observed = (
+            None
+            if file_source
+            else base_source_service.observe(
+                share_id, payload.record_id, payload.record_generation, payload.dependency
+            )
         )
         ctx = discussion_service.context(
             db, token, share_id, entry_id, write=True, entry_types={"file"}
@@ -249,16 +268,24 @@ def capture(db, token, share_id, entry_id, payload):
         if source.path != source_path:
             error(409, "base_group_source_changed")
         try:
-            derived = base_group_values.derive_note_value(
-                observed,
-                grouping.descriptor["property"]["name"],
-                base_group_values.RecordIdentity(payload.record_id, payload.record_generation),
-                share_id=share_id,
-                dependency=payload.dependency,
-                source_path=source_path,
-                time_zone=payload.time_zone,
-                resolve_link=_link_resolver(db, ctx),
+            identity = base_group_values.RecordIdentity(
+                payload.record_id, payload.record_generation
             )
+            if file_source:
+                derived = base_file_group_values.derive(
+                    grouping.descriptor["property"]["name"], source_path, identity
+                )
+            else:
+                derived = base_group_values.derive_note_value(
+                    observed,
+                    grouping.descriptor["property"]["name"],
+                    identity,
+                    share_id=share_id,
+                    dependency=payload.dependency,
+                    source_path=source_path,
+                    time_zone=payload.time_zone,
+                    resolve_link=_link_resolver(db, ctx),
+                )
         except base_group_values.UnavailableValue:
             error(409, "base_group_value_unavailable")
         if derived.value != payload.value:
@@ -268,14 +295,14 @@ def capture(db, token, share_id, entry_id, payload):
         )
         evidence = {
             "version": 1,
-            "adapter": "note_property_v1",
+            "adapter": "file_inventory_v1" if file_source else "note_property_v1",
             "property": grouping.descriptor["property"],
             "source": {
                 "record_id": str(payload.record_id),
                 "record_generation": str(payload.record_generation),
             },
             "source_path_sha256": hashlib.sha256(source_path.encode()).hexdigest(),
-            "time_zone": payload.time_zone,
+            **({} if file_source else {"time_zone": payload.time_zone}),
             "references": references,
         }
         _references(db, ctx, evidence)
@@ -324,9 +351,22 @@ def capture(db, token, share_id, entry_id, payload):
                 fingerprint=witness_hash,
                 evidence={
                     **evidence,
-                    "source_identity_sha256": observed.identity_sha256,
-                    "source_snapshot_sha256": observed.observed_snapshot_sha256,
-                    "source_prefix_sha256": observed.source_prefix_sha256,
+                    **(
+                        {
+                            "source_inventory_sha256": bases_definition.fingerprint(
+                                {
+                                    "path": source_path,
+                                    "record": source.record,
+                                }
+                            )
+                        }
+                        if file_source
+                        else {
+                            "source_identity_sha256": observed.identity_sha256,
+                            "source_snapshot_sha256": observed.observed_snapshot_sha256,
+                            "source_prefix_sha256": observed.source_prefix_sha256,
+                        }
+                    ),
                 },
             )
             db.add(witness)
@@ -364,7 +404,10 @@ def capture(db, token, share_id, entry_id, payload):
             )
         )
         # No expired evidence can be turned into a durable capture receipt.
-        observed.check(share_id, payload.record_id, payload.record_generation, payload.dependency)
+        if observed is not None:
+            observed.check(
+                share_id, payload.record_id, payload.record_generation, payload.dependency
+            )
         db.commit()
         return result
     except IntegrityError:

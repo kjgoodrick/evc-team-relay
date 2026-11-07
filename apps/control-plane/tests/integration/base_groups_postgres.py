@@ -43,14 +43,14 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
     settings.collaboration_bases_groups_enabled = True
     settings.collaboration_anchor_relay_token = SecretStr("synthetic-observation-only")
 
-    def publish(group=True):
+    def publish(group=True, property_name="status"):
         raw = json.dumps(
             {
                 "views": [
                     {
                         "name": "Table",
                         "type": "table",
-                        **({"groupBy": {"property": "status"}} if group else {}),
+                        **({"groupBy": {"property": property_name}} if group else {}),
                     },
                     {"name": "Cards", "type": "cards"},
                 ]
@@ -116,9 +116,16 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
     thread_state = threading.local()
     real_context = discussion_service.context
     barrier, entered, release = None, None, None
+    file_boundary = False
 
     def track(db, *args, **kwargs):
         thread_state.db = db
+        if file_boundary:
+            thread_state.context_calls = getattr(thread_state, "context_calls", 0) + 1
+            if thread_state.context_calls == 2:
+                assert not db.in_transaction()
+                entered.set()
+                assert release.wait(timeout=10)
         return real_context(db, *args, **kwargs)
 
     def observe(share, record, generation, dependency):
@@ -315,4 +322,92 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
         print(
             "PASS: populated group migration refuses downgrade "
             "without losing values, witnesses or receipts"
+        )
+
+        publish(property_name="file.ext")
+
+        def file_request():
+            payload = request().model_dump(mode="json", exclude_none=True)
+            payload.pop("dependency")
+            payload.pop("time_zone")
+            with Session(engine) as db:
+                path = db.get(m.ManagedEntry, str(record_id)).path
+            payload.update(
+                source_kind="file",
+                source_path_sha256=hashlib.sha256(path.encode()).hexdigest(),
+                value={"type": "text", "value": path.rsplit(".", 1)[-1]},
+            )
+            return CaptureBaseGroup.model_validate(payload)
+
+        before = totals()
+        file_payload = file_request()
+        with patch.object(
+            base_source_service,
+            "observe",
+            side_effect=AssertionError("File groups must not read a CRDT"),
+        ):
+            start = threading.Barrier(2)
+
+            def simultaneous():
+                start.wait(timeout=10)
+                return capture(file_payload)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                left, right = pool.submit(simultaneous), pool.submit(simultaneous)
+                assert left.result(timeout=15) == right.result(timeout=15)
+        assert totals() == tuple(count + 1 for count in before)
+        print("PASS: concurrent inventory group capture commits one exact receipt without note I/O")
+
+        # Pause precisely between the two authoritative reads. A capture must
+        # recheck a rename, lineage change or revocation committed in that gap.
+        for change in ("path", "generation", "permission"):
+            pending = file_request()
+            before = totals()
+            entered, release = threading.Event(), threading.Event()
+            file_boundary = True
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(capture, pending)
+                try:
+                    assert entered.wait(timeout=10)
+                    with Session(engine) as db:
+                        db.execute(
+                            select(m.Share.id)
+                            .where(m.Share.id == share_id)
+                            .with_for_update(nowait=True)
+                        )
+                        record = db.get(m.ManagedEntry, str(record_id))
+                        if change == "path":
+                            record.path = "Notes/Inventory renamed.md"
+                        elif change == "generation":
+                            record.collaboration_generation = uuid.uuid4()
+                        else:
+                            rule = m.ManagedRule(
+                                share_id=share_id,
+                                user_id=reviewer_id,
+                                path=record.path,
+                                recursive=False,
+                                permission="none",
+                            )
+                            db.add(rule)
+                            db.flush()
+                            rule_id = rule.id
+                        db.commit()
+                finally:
+                    release.set()
+                try:
+                    future.result(timeout=10)
+                except HTTPException as exc:
+                    assert exc.status_code == (404 if change == "permission" else 409), exc.detail
+                else:
+                    raise AssertionError(f"File capture ignored concurrent {change}")
+            file_boundary = False
+            entered, release = None, None
+            assert totals() == before
+            if change == "permission":
+                with Session(engine) as db:
+                    db.delete(db.get(m.ManagedRule, rule_id))
+                    db.commit()
+        print(
+            "PASS: inventory source rename, lineage change and revocation "
+            "prevent stale capture commit"
         )

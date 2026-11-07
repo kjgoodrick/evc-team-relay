@@ -1,6 +1,7 @@
 import base64
 import binascii
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -18,13 +19,19 @@ class CaptureBaseGroup(BaseModel):
     group_definition_revision: int = Field(ge=1, le=9007199254740991, strict=True)
     record_id: uuid.UUID
     record_generation: uuid.UUID
-    dependency: str = Field(max_length=87384)
-    time_zone: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_+/-]+$")
+    dependency: str | None = Field(default=None, max_length=87384)
+    time_zone: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_+/-]+$"
+    )
+    source_kind: Literal["file"] | None = None
+    source_path_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     value: GroupValue
 
     @field_validator("dependency")
     @classmethod
     def valid_dependency(cls, value):
+        if value is None:
+            return None
         try:
             raw = base64.b64decode(value, validate=True)
             if not raw or len(raw) > 65536 or base64.b64encode(raw).decode() != value:
@@ -32,6 +39,24 @@ class CaptureBaseGroup(BaseModel):
         except (ValueError, binascii.Error):
             raise ValueError("Invalid source dependency") from None
         return value
+
+    @model_validator(mode="after")
+    def source_evidence(self):
+        # Preserve the original note request shape and hash. Inventory captures
+        # have an explicit discriminator and cannot smuggle a note dependency.
+        if self.source_kind == "file":
+            if self.source_path_sha256 is None or self.model_fields_set & {
+                "dependency",
+                "time_zone",
+            }:
+                raise ValueError("File groups require only inventory source evidence")
+        elif (
+            self.dependency is None
+            or self.time_zone is None
+            or self.model_fields_set & {"source_kind", "source_path_sha256"}
+        ):
+            raise ValueError("Note groups require snapshot and timezone evidence")
+        return self
 
 
 class InspectBase(BaseModel):

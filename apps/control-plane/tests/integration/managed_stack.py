@@ -288,7 +288,7 @@ allowed_token_types = ["server"]
                 ),
             )
             image_id = str(uuid.uuid4())
-            if args.image_anchors or args.image_files:
+            if args.image_anchors or args.image_files or args.base_groups:
                 managed_service.apply_batch(
                     db,
                     share,
@@ -326,7 +326,9 @@ allowed_token_types = ["server"]
                 "note": note,
                 "secret": secret,
                 "second": second if args.presence_locations else None,
-                "image": image_id if args.image_anchors or args.image_files else None,
+                "image": image_id
+                if args.image_anchors or args.image_files or args.base_groups
+                else None,
                 "baseEntry": base_id if args.base_groups else None,
                 "bobId": str(bob.id),
                 "ownerId": str(owner.id),

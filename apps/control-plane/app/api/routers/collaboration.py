@@ -11,6 +11,7 @@ from app.schemas.discussions import REACTION_KEYS
 from app.services import (
     anchor_service,
     base_discussions,
+    base_file_group_values,
     bases_registry,
     collaboration_auth,
     collaboration_policy,
@@ -86,6 +87,9 @@ def capabilities(
         + (["formula_cell"] if base_discussions.formula_cells_enabled() else [])
         + (["group"] if base_discussions.groups_enabled() else [])
         if base_discussions.enabled()
+        else [],
+        "discussion_base_file_group_properties": list(base_file_group_values.PROPERTIES)
+        if base_discussions.groups_enabled()
         else [],
         "discussion_base_record_types": list(base_discussions.RECORD_TYPES)
         if base_discussions.enabled()

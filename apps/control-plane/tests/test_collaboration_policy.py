@@ -249,6 +249,7 @@ def test_preview_disabled_and_no_unimplemented_feature_advertised(client, team, 
         bases_registry=False,
         discussion_bases=False,
         discussion_base_definition_catalog=False,
+        discussion_base_groups=False,
         bases_sync=False,
         discussion_commands=False,
         discussion_text_anchors=False,
@@ -257,6 +258,10 @@ def test_preview_disabled_and_no_unimplemented_feature_advertised(client, team, 
         discussion_image_files=False,
         discussion_pictures=False,
         discussion_recovery=False,
+    )
+    assert (
+        client.get(url, headers=auth(reviewer)).json()["discussion_base_file_group_properties"]
+        == []
     )
     monkeypatch.setattr(get_settings(), "collaboration_policy_enabled", False)
     assert (

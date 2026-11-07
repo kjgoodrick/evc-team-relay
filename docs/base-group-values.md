@@ -3,9 +3,11 @@
 Status: November 6, 2026. `base_group_values.derive_note_value` derives typed
 values and their source references from a private source observation. A gated
 capture endpoint, durable group authorization and client protocol now have
-PostgreSQL and actual Python/Rust/Yjs integration evidence. Native group capture,
-sidebar/marker integration and new offline capture intents remain unfinished.
-Group comments are **not ready for native testing**.
+PostgreSQL and actual Python/Rust/Yjs integration evidence. The plugin now has
+typed native controls, markers/navigation, durable offline capture intents and
+authorized retained-source loading. Integrated native group-comment acceptance
+remains pending. Inventory-backed file-property groups now have server/client
+and actual-service evidence; remaining file properties and formulas are unfinished.
 
 ## Group capture and authorization
 
@@ -32,8 +34,9 @@ creation disablement, subject to current permission and lineage checks.
 The first adapter supports managed note-property sources in one share, with a
 bounded conservative link resolver. Ambiguous links, missing target lineage and
 unsupported property adapters fail explicitly. It does not evaluate filters or
-prove that a historical group is currently rendered. Formula/file-property
-groups and aggregate dependency closure remain unfinished.
+prove that a historical group is currently rendered. The inventory adapter below
+adds a separate set of file properties. Formula groups, the remaining file
+properties and aggregate dependency closure remain unfinished.
 
 Migration `202611060006` adds group values, source witnesses and capture receipts;
 downgrade refuses populated tables. The 34 focused tests cover duplicate capture,
@@ -50,8 +53,9 @@ The plugin's actual HTTP/Rust/Yjs test verifies delete-only dependency waiting,
 lost capture-response recovery, historical group access after a property change,
 source access denial, fresh capture after relay restart and unchanged witness
 identity. Verified anchors, drafts and queued comments survive a local database
-reopen. This does not yet implement capturing a previously unverified group while
-offline. Cache version 13 preserves earlier work and fences older protocol workers.
+reopen. New group selections can remain local pending intents while offline and
+obtain a server witness during delivery. Cache version 15 preserves earlier work
+while fencing workers that cannot retain inventory-backed capture intents.
 
 The client validates and copies bounded typed values before asynchronous
 credential lookup, binds capture responses to the requested identity/revision/
@@ -64,6 +68,53 @@ Enablement remains opt-in through `COLLABORATION_BASES_GROUPS_ENABLED`, existing
 Bases definition/discussion gates and the private source credential. The relay
 must have its private collaboration source/barrier support enabled. No production
 flag or service changed. Upgrade clients before enabling group creation.
+
+## Inventory-backed file properties
+
+`name`, `basename`, `fullname`, `ext`, `path`, `folder` and `file` now use a
+distinct inventory capture shape: the common identity/value fields plus
+`source_kind: "file"` and `source_path_sha256`, with no snapshot dependency or
+timezone. Note and file shapes are disjoint, including explicit null fields.
+Legacy note request hashes are unchanged. Explicit
+`discussion_base_file_group_properties` capability negotiation controls creation;
+the client caches that capability for offline use and clears it on downgrade.
+
+The server derives values from current authorized managed inventory without
+reading a note, attachment or relay document. It rechecks source path, generation,
+permissions and grouping definition before committing. Immutable
+`file_inventory_v1` witnesses still bind each thread to its exact source; another
+readable file with the same value cannot unlock protected history. Existing
+threads and exact accepted retries survive renames subject to current access;
+new captures with an old path digest are rejected without silently retargeting.
+
+Path and folder values are share-relative on the wire. Native capture verifies
+the displayed local path and removes only the known share mount; navigation
+reapplies the receiving vault's mount. The share-root folder is an explicit empty
+text value on the wire. `file.file` uses managed identity/generation. This works
+for every supported file record type, without adding PDF or Canvas content
+annotations. All comment metadata remains outside source files.
+
+The [official property reference](https://obsidian.md/help/bases/syntax) distinguishes
+file properties from note/formula properties. Local inspection of the installed
+1.13.7 app source additionally verifies its name projection: `name` hides only an
+exact lowercase `.md` extension; attachment names retain theirs. `basename` and
+`fullname` are explicit alternatives. This is source evidence, not native runtime
+acceptance. A downloaded 1.15.0 app bundle has the same projection, but its native
+controls have not been validated or added to the supported surface-version gate.
+
+Timestamps, sizes, tags, links, embeds, backlinks and property objects still need
+their own source/dependency handling. The inventory contains no authoritative
+creation/modified times or size; `synctime` must not be substituted. Unsupported
+properties are refused rather than becoming empty or whole-view targets.
+
+Validation includes source/type projection, disjoint request shapes, legacy
+receipt hashes, exact retry after disablement, source permission intersection,
+historical rename/lineage behavior and same-value witness isolation. Actual
+PostgreSQL verifies concurrent exact file capture and changes to source path,
+generation and access between authoritative reads. The Python/Rust/client fixture
+creates an image-file group with no note CRDT and recovers both lost accepted
+responses through a reopened outbox. The plugin regression passes 2,141 tests;
+native/mobile/version acceptance remains pending. No production flags changed.
 
 ## Native evidence and interpretation
 
@@ -139,21 +190,20 @@ bounded subset; Python's URL parser is not treated as a full WHATWG equivalent.
 The fixture records native behavior for deferred cases too. Do not claim full
 YAML/date/URL compatibility or silently replace these targets with view comments.
 
-File-property projection, formula/duration evaluation and cross-file dependency
-closure remain separate adapters. Group summaries require membership/aggregate
+The remaining file-property projections, formula/duration evaluation and cross-file
+dependency closure require separate adapters. Group summaries require membership/aggregate
 authorization rather than the single-source semantics used here.
 
 ## Next integration
 
-1. Wire native capture, explicit mixed-type choices,
-   sidebar, markers and offline drafts/outbox. Changed/unprovable values need
-   actionable retained-draft recovery. Existing group identity survives members
-   leaving and reappearing.
-2. Add durable capture intents for groups first selected while offline; preserve
-   the exact dependency/value and obtain server evidence before sending a thread.
-   Never silently replace a thread's selected witness during repair/reattachment.
-3. Complete the deferred value adapters and native/mobile acceptance, then group
-   summaries and Time & Line targets. This checkpoint does not reduce that scope.
+1. Complete integrated native controls, changed/unprovable-value recovery and
+   desktop/mobile/version acceptance, including different local share mounts.
+2. Complete remaining file properties, formula/duration and cross-file dependency
+   adapters, then group summaries and Time & Line targets. This checkpoint does
+   not reduce that scope.
+3. Add provisional first-use offline identities. Existing verified-context
+   offline intents already retain the exact evidence/value and obtain server
+   authority before sending; repair must never silently replace a witness.
 
 ## Earlier typed-value checkpoint verification
 
