@@ -13,7 +13,7 @@ import uuid
 from datetime import timedelta, timezone
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import or_, select, text
+from sqlalchemy import and_, case, or_, select, text
 
 from app.api import deps
 from app.core import security
@@ -123,13 +123,13 @@ def member(db, share, user):
     )
 
 
-def readable_context(db, share, user, thread):
+def readable_context(db, share, user, thread, *, scope=None, entry=None, rules=None):
     if thread is None or thread.deleted:
         return None
-    scope = db.get(m.DiscussionScope, thread.scope_id)
+    scope = scope if scope is not None else db.get(m.DiscussionScope, thread.scope_id)
     if scope is None or scope.share_id != share.id:
         return None
-    entry = db.get(m.ManagedEntry, scope.entry_id)
+    entry = entry if entry is not None else db.get(m.ManagedEntry, scope.entry_id)
     if (
         entry is None
         or entry.deleted
@@ -139,7 +139,10 @@ def readable_context(db, share, user, thread):
         return None
     ctx = discussions.Context(user, share, entry, user.is_admin or share.owner_user_id == user.id)
     if scope.kind != discussions.scope_kind(ctx) or managed_service.permission(
-        share, user, entry.path, managed_service.rules_for(db, share, user)
+        share,
+        user,
+        entry.path,
+        rules if rules is not None else managed_service.rules_for(db, share, user),
     ) not in {"read", "write"}:
         return None
     return ctx if base_discussions.can_read_thread(db, ctx, thread) else None
@@ -396,8 +399,45 @@ def list_items(
             before = value[4]
         except (InvalidToken, ValueError, TypeError, UnicodeError, IndexError):
             discussions.error(409, "inbox_cursor_reset")
-    query = select(m.DiscussionInboxItem).where(
-        m.DiscussionInboxItem.user_id == user.id, m.DiscussionInboxItem.share_id == share.id
+    # The share read lock above excludes inventory/rule writers. These rules
+    # belong only to this request, never a cross-request authorization cache.
+    rules = managed_service.rules_for(db, share, user)
+    participated = (
+        select(m.DiscussionMessage.id)
+        .where(
+            m.DiscussionMessage.thread_id == m.DiscussionThread.id,
+            m.DiscussionMessage.author_id == user.id,
+        )
+        .correlate(m.DiscussionThread)
+        .exists()
+    )
+    follows = case(
+        (m.DiscussionSubscription.thread_id.is_not(None), m.DiscussionSubscription.following),
+        else_=participated,
+    )
+    query = (
+        select(
+            m.DiscussionInboxItem,
+            m.DiscussionThread,
+            m.DiscussionScope,
+            m.ManagedEntry,
+            m.DiscussionMessage,
+            m.DiscussionSubscription,
+            follows,
+        )
+        .select_from(m.DiscussionInboxItem)
+        .join(m.DiscussionThread, m.DiscussionThread.id == m.DiscussionInboxItem.thread_id)
+        .join(m.DiscussionScope, m.DiscussionScope.id == m.DiscussionThread.scope_id)
+        .join(m.ManagedEntry, m.ManagedEntry.id == m.DiscussionScope.entry_id)
+        .outerjoin(m.DiscussionMessage, m.DiscussionMessage.id == m.DiscussionInboxItem.message_id)
+        .outerjoin(
+            m.DiscussionSubscription,
+            and_(
+                m.DiscussionSubscription.user_id == user.id,
+                m.DiscussionSubscription.thread_id == m.DiscussionThread.id,
+            ),
+        )
+        .where(m.DiscussionInboxItem.user_id == user.id, m.DiscussionInboxItem.share_id == share.id)
     )
     if before is not None:
         query = query.where(m.DiscussionInboxItem.last_sequence < before)
@@ -409,72 +449,75 @@ def list_items(
     # At most one thread entry, with current content only. Denied/deleted targets
     # contribute neither visible rows nor counts. Pagination is activity based;
     # a client refreshes the first page after draining older pages.
-    for item in db.scalars(query.order_by(m.DiscussionInboxItem.last_sequence.desc())).yield_per(
-        100
-    ):
-        thread = db.get(m.DiscussionThread, item.thread_id)
-        ctx = readable_context(db, share, user, thread)
-        if ctx is None:
-            continue
-        pref = preference_data(db, user.id, thread.id)
-        if pref["muted"] and not include_muted:
-            continue
-        message = db.get(m.DiscussionMessage, item.message_id)
-        reason = item.reason
-        if not message or message.deleted or message.thread_id != thread.id:
-            # Removing the newest message must not erase older discussion
-            # activity. Only previously delivered candidates can supply it.
-            fallback = db.execute(
-                select(m.DiscussionMessage, m.DiscussionNotification.reason)
-                .join(
-                    m.DiscussionNotification,
-                    m.DiscussionNotification.message_id == m.DiscussionMessage.id,
-                )
-                .where(
-                    m.DiscussionNotification.thread_id == thread.id,
-                    m.DiscussionNotification.user_id == user.id,
-                    m.DiscussionNotification.share_id == share.id,
-                    m.DiscussionNotification.delivered.is_(True),
-                    m.DiscussionMessage.thread_id == thread.id,
-                    m.DiscussionMessage.deleted.is_(False),
-                )
-                .order_by(m.DiscussionNotification.sequence.desc())
-                .limit(1)
-            ).first()
-            if fallback is None:
+    has_more = False
+    with db.execute(
+        query.order_by(m.DiscussionInboxItem.last_sequence.desc()).execution_options(yield_per=100)
+    ) as rows:
+        for item, thread, scope, entry, message, subscription, follows in rows:
+            ctx = readable_context(db, share, user, thread, scope=scope, entry=entry, rules=rules)
+            if ctx is None:
                 continue
-            message, reason = fallback
-        if len(items) == limit:
-            break
-        # No copied snippet: use the current, already-authorized message and
-        # scope identifiers. The client fetches its body through the normal API.
-        items.append(
-            {
-                "thread_id": str(thread.id),
-                "entry_id": ctx.entry.id,
-                "scope_id": str(thread.scope_id),
-                "kind": discussions.scope_kind(ctx),
-                "path": ctx.entry.path,
-                "message_id": str(message.id),
-                "message_revision": message.revision,
-                "reason": reason,
-                "last_sequence": item.last_sequence,
-                "activity_at": aware(item.activity_at),
-                "view_id": str(base_discussions.authorize_thread(db, ctx, thread).view_id)
-                if ctx.entry.record.get("type") == "file"
-                else None,
-                "subscription": pref,
-                **item_state(item),
+            pref = {
+                "version": subscription.version if subscription else 0,
+                "following": bool(follows),
+                "muted": bool(subscription and subscription.muted),
             }
-        )
-    else:
-        result = {"items": items, "next_cursor": None}
-        db.commit()
-        return result
+            if pref["muted"] and not include_muted:
+                continue
+            reason = item.reason
+            if not message or message.deleted or message.thread_id != thread.id:
+                # Removing the newest message must not erase older discussion
+                # activity. Only previously delivered candidates can supply it.
+                fallback = db.execute(
+                    select(m.DiscussionMessage, m.DiscussionNotification.reason)
+                    .join(
+                        m.DiscussionNotification,
+                        m.DiscussionNotification.message_id == m.DiscussionMessage.id,
+                    )
+                    .where(
+                        m.DiscussionNotification.thread_id == thread.id,
+                        m.DiscussionNotification.user_id == user.id,
+                        m.DiscussionNotification.share_id == share.id,
+                        m.DiscussionNotification.delivered.is_(True),
+                        m.DiscussionMessage.thread_id == thread.id,
+                        m.DiscussionMessage.deleted.is_(False),
+                    )
+                    .order_by(m.DiscussionNotification.sequence.desc())
+                    .limit(1)
+                ).first()
+                if fallback is None:
+                    continue
+                message, reason = fallback
+            if len(items) == limit:
+                has_more = True
+                break
+            # No copied snippet: use the current, already-authorized message and
+            # scope identifiers. The client fetches its body through the normal API.
+            items.append(
+                {
+                    "thread_id": str(thread.id),
+                    "entry_id": ctx.entry.id,
+                    "scope_id": str(thread.scope_id),
+                    "kind": discussions.scope_kind(ctx),
+                    "path": ctx.entry.path,
+                    "message_id": str(message.id),
+                    "message_revision": message.revision,
+                    "reason": reason,
+                    "last_sequence": item.last_sequence,
+                    "activity_at": aware(item.activity_at),
+                    "view_id": str(base_discussions.authorize_thread(db, ctx, thread).view_id)
+                    if ctx.entry.record.get("type") == "file"
+                    else None,
+                    "subscription": pref,
+                    **item_state(item),
+                }
+            )
     next_cursor = (
         discussions.cursor_codec()
         .encrypt(json.dumps([*identity, items[-1]["last_sequence"]]).encode())
         .decode()
+        if has_more
+        else None
     )
     db.commit()
     return {"items": items, "next_cursor": next_cursor}

@@ -3,8 +3,9 @@
 The server and Obsidian client preview are implemented, including local cache,
 queued preference/read changes, foreground refresh and original-target navigation.
 Native desktop mention/read/follow/mute/dismiss, reconnect and exact-reply
-navigation checks now pass in a disposable actual-service fixture. The remaining
-desktop/mobile matrix and resource/query measurements are pending. This is not
+navigation checks now pass in a disposable actual-service fixture. Initial
+small-group query measurements and PostgreSQL streaming checks also pass. The
+remaining desktop/mobile and resource matrix is pending. This is not
 a production enablement recommendation.
 
 ## Enablement and migration
@@ -121,10 +122,15 @@ Shutdown signals the worker and drains its active database task. A stopped batch
 may leave a claim to expire; it does not discard queued notifications.
 
 Indexes support pending jobs, recipient/share activity, thread followers and
-delivered-message fallback. The current permission-filtered page scan uses
-bounded fetch batches but can inspect many previously accessible entries; bulk
-authorization/query-count and large-backlog performance measurement remain
-release work. Bodies and pictures are loaded separately. There is no email,
+delivered-message fallback. Inbox reads join thread/scope/file/message/subscription
+metadata in one streamed query, with a correlated participation check only when
+there is no explicit subscription. File rules load once per request after the
+share read lock. Every target still passes its ordinary authorization checks;
+Bases dependencies and deleted-message fallbacks may require additional queries.
+Rows stream in batches of 100, and the cursor closes before transaction commit.
+The permission-filtered scan can still inspect many previously accessible
+entries. Large denied backlogs, long-thread participation scans and Bases query
+cost remain release work. Bodies and pictures are loaded separately. There is no email,
 native OS notification adapter, mobile background promise or custom push system.
 
 The new tables must be included in coherent backups. Downgrade refuses to remove
@@ -196,3 +202,33 @@ checks eight timestamps through all affected read routes and failed before the
 fix. The discussion, inbox, search and reattachment set passes 152 tests; changed
 Python files pass Ruff. No schema change is needed. The native fixture used the
 old running server module, so corrected native date rendering remains to verify.
+
+## Small-group query measurements, November 7
+
+The original list endpoint repeated metadata, permission and subscription reads
+per item. `tests/test_discussion_inbox_resources.py` measures the full HTTP route
+as a non-owner reader, using three reads per synthetic case. It enforces a
+20-SELECT ceiling for ordinary Markdown pages and verifies that no message
+revision bodies are queried. Timings are observations, not CI pass thresholds.
+
+| Notifications | Before SELECTs | After SELECTs | Before median | After median |
+| --- | ---: | ---: | ---: | ---: |
+| 1, one note | 17 | 11 | 5.02 ms | 3.11 ms |
+| 10, one note | 71 | 11 | 9.50 ms | 4.26 ms |
+| 50, one note | 311 | 11 | 34.78 ms | 5.88 ms |
+| 50, separate notes | Not measured | 11 | Not measured | 9.28 ms |
+
+These are local in-memory SQLite/TestClient measurements, not Pi/network/mobile
+performance claims. A disposable PostgreSQL container limited to one CPU and
+256 MiB also returned 50 rows with 11 SELECTs in each of three samples (median
+8.22 ms for the service call over localhost). Its test asserts use of a named
+server-side cursor, verifies the remaining older page, and holds a permission
+writer's share lock while an inbox read waits. That read sees the committed
+denial; the next request sees a restored grant rather than cached rules.
+
+The 40-test inbox/Bases/resource set passes. The expanded PostgreSQL runner also
+passes its existing migration, projection, concurrency, revocation and downgrade
+checks. The actual HTTP client/startup-worker/offline-recovery scenario passes.
+Logs: `/private/tmp/inbox-query-{before,regression,postgres,real-stack}.log`.
+The temporary PostgreSQL container was stopped and removed. No schema or client
+wire-format change is needed.

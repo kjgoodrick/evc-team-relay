@@ -1,8 +1,10 @@
 """Inbox migration, lease, transaction and read races on disposable PostgreSQL."""
 
 import os
+import statistics
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -277,6 +279,73 @@ def main():
         with ThreadPoolExecutor(2) as pool:
             assert sorted(pool.map(choose, [True, False])) == [200, 409]
         print("PASS: conflicting subscription updates do not silently overwrite each other")
+
+        for _ in range(50):
+            send(message())
+        for _ in range(50):
+            assert inbox.project(factory, inbox.claim(factory))
+        counts, timings = [], []
+        for _ in range(3):
+            statements = []
+
+            def count_query(_connection, cursor, sql, _params, _context, _many):
+                if sql.lstrip().upper().startswith("SELECT"):
+                    statements.append(sql)
+                if "JOIN discussion_threads" in sql and "discussion_inbox_items" in sql:
+                    assert getattr(cursor, "name", None), "Expected a streamed PostgreSQL cursor"
+
+            event.listen(engine, "before_cursor_execute", count_query)
+            start = time.perf_counter()
+            try:
+                result = page()
+            finally:
+                timings.append(time.perf_counter() - start)
+                event.remove(engine, "before_cursor_execute", count_query)
+            assert len(result["items"]) == 50 and result["next_cursor"]
+            assert len(statements) <= 20
+            assert not any("discussion_message_revisions" in sql for sql in statements)
+            counts.append(len(statements))
+        with factory() as db:
+            older = inbox.list_items(
+                db, tokens[recipient_id], share_id, cursor=result["next_cursor"]
+            )
+        assert len(older["items"]) == 1 and older["next_cursor"] is None
+        assert older["items"][0]["thread_id"] == str(tid)
+        print(
+            f"PASS: streamed 50-row page uses {counts} SELECTs, "
+            f"median {statistics.median(timings) * 1000:.2f} ms; older-page boundary is intact"
+        )
+
+        # Request-scoped rule reuse must start after the share read lock. A
+        # waiting inbox request must see a committed permission denial.
+        read_pids = Queue()
+
+        def read_backend_pid(connection, _record, _proxy):
+            read_pids.put(connection.info.backend_pid)
+
+        with factory.begin() as guard:
+            guard.scalar(select(m.Share).where(m.Share.id == share_id).with_for_update())
+            event.listen(engine, "checkout", read_backend_pid)
+            read_pool = ThreadPoolExecutor(1)
+            read_future = read_pool.submit(page)
+            pid = read_pids.get(timeout=5)
+            event.remove(engine, "checkout", read_backend_pid)
+            wait_for_lock(engine, pid)
+            rule = guard.scalar(select(m.ManagedRule).where(m.ManagedRule.user_id == recipient_id))
+            rule.permission = "none"
+        try:
+            assert read_future.result(timeout=15) == {"items": [], "next_cursor": None}
+        finally:
+            read_pool.shutdown()
+        with factory.begin() as db:
+            db.scalar(select(m.Share).where(m.Share.id == share_id).with_for_update())
+            db.scalar(
+                select(m.ManagedRule).where(m.ManagedRule.user_id == recipient_id)
+            ).permission = "read"
+        assert len(page()["items"]) == 50
+        print(
+            "PASS: inbox listing waits for permission edits and refreshes rules on the next request"
+        )
 
         send(message(tid))
         claim = inbox.claim(factory)
