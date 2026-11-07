@@ -156,6 +156,11 @@ recovery controls, current-marker overlays independent of discussions, and
 automatic refresh driven by the opt-in revision hint. Current marker labels and
 captured discussion positions remain distinct. Native acceptance is still pending.
 
+The client now offers a read-only captured-versus-current comparison with explicit
+fresh/cached status and separate guarded navigation. Its unit/sidebar and actual
+Time & Line source interoperability checks pass; native acceptance remains. See
+the [client comparison record](../../evc-team-relay-obsidian/docs/timeline-marker-client-preview.md).
+
 Remaining work includes base-wide placement/matching and local marker promotion;
 direct point picking; captured-versus-current position comparison and overlap
 polish; broader recovery; server-restart/client and native desktop/mobile/
