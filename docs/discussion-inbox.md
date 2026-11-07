@@ -1,9 +1,9 @@
 # Discussion inbox preview
 
-The server portion of the in-app inbox is implemented. The Obsidian inbox UI,
-local cache, queued preference/read changes, foreground refresh and navigation
-are not connected yet. This is not a complete end-user feature or a production
-enablement recommendation.
+The server and Obsidian client preview are implemented, including local cache,
+queued preference/read changes, foreground refresh and original-target navigation.
+Native desktop/mobile acceptance and the remaining resource/query measurements
+are pending. This is not a production enablement recommendation.
 
 ## Enablement and migration
 
@@ -84,10 +84,9 @@ global inbox. The client can aggregate its configured shares using `activity_at`
 and stable share/thread identifiers. Cursors are encrypted, expire after one day,
 and are bound to recipient, share and filters. Invalid/changed cursors return
 `inbox_cursor_reset`. Every page rechecks access; there are no unfiltered totals.
-Activity pagination is not an immutable snapshot: refresh the first page after
-draining older pages, and reconcile changes rather than permanently appending
-cached rows. A later authorization/cache protocol must also remove denied rows
-that disappear from refreshed results.
+Activity pagination is not an immutable snapshot: reconcile refreshed windows
+rather than permanently appending cached rows. The client replaces each loaded
+window with freshly authorized pages, removing denied references that disappear.
 
 ## Read and dismissal semantics
 
@@ -129,7 +128,34 @@ native OS notification adapter, mobile background promise or custom push system.
 The new tables must be included in coherent backups. Downgrade refuses to remove
 populated notification, subscription or inbox tables; export/migration is
 required first. Completed candidate retention, full backup/export/restore and
-client cache reconciliation remain part of the broader implementation plan.
+cache controls remain part of the broader implementation plan.
+
+## Obsidian client preview
+
+The plugin's Comment inbox command and sidebar aggregate configured shared
+folders. Filters cover unread, all, mentions, muted and dismissed entries.
+Read/unread, dismiss/restore and follow/mute choices persist locally while
+offline. Readers may follow a discussion without receiving a notification first.
+Opening an entry does not mark it read. References resolve through the current
+managed inventory, then the original saved Bases view; a stale display path or
+different active view cannot redirect navigation. Thread content is fetched
+through the ordinary authorized route without advancing the event replay cursor.
+
+The cache holds at most 500 entries and 500 separately loaded subscription
+preferences per account/vault/share. Paging beyond that budget starts an explicit
+older window with a return-to-latest control. Its start cursor survives refresh
+and restart; expiry returns to the latest authorized page. At most 200 pending
+choices are retained, independently of notification cache eviction.
+
+Foreground refresh runs every 30 seconds, reauthorizing at most ten 50-entry
+pages; background work stops. An IndexedDB lease serializes inbox delivery across
+windows. Retry-After persists across restart, and ambiguous requests retain their
+exact payload. Preference conflicts retain rejected choices for explicit review;
+later dependent choices cannot overwrite another device's accepted preference.
+Read acknowledgments cannot expose a newly arrived unseen notification version
+for an accidental subsequent mark-read. Known access loss removes cached
+references and fences delayed responses while retaining identifier-only queued
+choices. Cache version 16 closes older workers lacking this cleanup behavior.
 
 ## Verification
 
@@ -146,5 +172,15 @@ conflicting subscription changes, recipient revocation while a projector waits,
 and refusal to downgrade populated state. It removes its synthetic schema on
 completion. The existing Bases PostgreSQL suite also passes with the new head.
 
-These checks prove the server increment. They do not prove the absent Obsidian
-inbox interface, native/mobile lifecycle, local cache or end-user navigation.
+`tests/integration/discussions_client.py --plugin <plugin checkout> --inbox`
+starts a disposable actual HTTP application with its startup/shutdown projector.
+The plugin fixture checks mention delivery, duplicate-command deduplication,
+targeted thread retrieval, offline read/follow, lost acknowledgment and database
+reopen recovery, a concurrent subscribed reply, and current-access revocation.
+It uses synthetic accounts and no production service.
+
+Plugin store/protocol/DOM/host tests cover multiwindow leases, delayed responses,
+read-version races, persisted retry delays, reader-only preferences, bounded older
+windows, filters, keyboard focus, account changes, local file identity and saved
+view navigation. Native Obsidian and mobile acceptance remain pending; automated
+tests do not establish host rendering, touch, battery or OS-notification behavior.

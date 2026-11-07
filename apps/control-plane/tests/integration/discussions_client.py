@@ -27,10 +27,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", type=Path, required=True)
     parser.add_argument(
+        "--inbox",
+        action="store_true",
+        help="Run inbox projection and client recovery with application lifecycle enabled",
+    )
+    parser.add_argument(
         "--pictures-endpoint",
         help="Disposable MinIO at 127.0.0.1:<port>, using synthetic picture-test credentials",
     )
     args = parser.parse_args()
+    if args.inbox and args.pictures_endpoint:
+        parser.error("Choose one disposable integration scenario")
     if args.pictures_endpoint:
         match = re.fullmatch(r"127\.0\.0\.1:(\d+)", args.pictures_endpoint)
         if not match or not 1024 <= int(match[1]) <= 65535:
@@ -56,6 +63,19 @@ def main():
             )
         from app.core import security
         from app.core.config import get_settings
+
+        if args.inbox:
+            private_key, _ = security.generate_ed25519_keypair()
+            os.environ.update(
+                COLLABORATION_INBOX_ENABLED="true",
+                RELAY_PRIVATE_KEY=private_key,
+                RELAY_PUBLIC_URL="ws://127.0.0.1:9",
+                MINIO_ENDPOINT="127.0.0.1:9",
+                MINIO_ACCESS_KEY="inbox-test",
+                MINIO_SECRET_KEY="disposable-inbox-test",
+                BOOTSTRAP_ADMIN_EMAIL="bootstrap@inbox.fixture",
+                BOOTSTRAP_ADMIN_PASSWORD=secrets.token_hex(32),
+            )
 
         get_settings.cache_clear()
         from app.db import models as m
@@ -182,7 +202,7 @@ def main():
                         str(number),
                         "--no-access-log",
                         "--lifespan",
-                        "off",
+                        "on" if args.inbox else "off",
                     ],
                     cwd=ROOT,
                     stdout=log,
@@ -195,14 +215,18 @@ def main():
                         "test",
                         "--",
                         "--runInBand",
-                        "__tests__/collaboration/realPictureStack.test.ts"
+                        "__tests__/collaboration/realInboxStack.test.ts"
+                        if args.inbox
+                        else "__tests__/collaboration/realPictureStack.test.ts"
                         if args.pictures_endpoint
                         else "__tests__/collaboration/realDiscussionStack.test.ts",
                     ],
                     cwd=args.plugin.resolve(),
                     env={
                         **os.environ,
-                        "EVC_PICTURE_FIXTURE"
+                        "EVC_INBOX_FIXTURE"
+                        if args.inbox
+                        else "EVC_PICTURE_FIXTURE"
                         if args.pictures_endpoint
                         else "EVC_DISCUSSION_FIXTURE": str(fixture_path),
                     },
@@ -219,7 +243,9 @@ def main():
                     picture_store.remove_object(bucket, obj.object_name)
                 picture_store.remove_bucket(bucket)
     print(
-        "PASS: real picture HTTP/outbox and MinIO proof"
+        "PASS: actual application inbox worker, HTTP client and offline recovery"
+        if args.inbox
+        else "PASS: real picture HTTP/outbox and MinIO proof"
         if args.pictures_endpoint
         else "PASS: real HTTP outbox retry, replies/history/reactions, revocation and recovery"
     )
