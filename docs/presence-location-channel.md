@@ -8,10 +8,11 @@ The server and plugin transport also support explicitly negotiated version-two
 image-file and saved Bases-view locations and authorized surface rosters. The
 native host now opts in for directly opened managed images, with participant
 controls and whole-image Jump/Follow sharing its note socket. Native image
-acceptance, embedded-image presence and Bases/timeline bindings remain unfinished.
+acceptance, visible split-pane image observation and Bases/timeline bindings remain unfinished.
 Direct images now have a separate authorized pointer/viewport stream. Embedded
-images have a negotiated transport and source-anchor foundation; their native
-host, overlays and navigation are not connected yet.
+images also have a negotiated transport and exact source anchors; the foreground
+plugin host now connects capture, overlays and image-aware navigation with
+automated host evidence. Native desktop/mobile acceptance remains unfinished.
 No production service or live vault has been changed by this work.
 
 Enable locally with `COLLABORATION_PRESENCE_ENABLED=true`. The share capability
@@ -147,8 +148,8 @@ isolation, image replacement, registry/view identity changes, idle revocation an
 read-only access against the actual ASGI application and disposable database.
 This is not native or production-load evidence.
 
-Native embedded-image presence, Bases/timeline surface bindings, cell/row/group/lane
-targets and native acceptance remain outstanding. Direct image coordinates use
+Bases/timeline surface bindings, cell/row/group/lane targets, visible split-pane
+image observation and native desktop/mobile acceptance remain outstanding. Direct image coordinates use
 the separate stream below and do not change the room identity.
 
 ## Authorized surface rosters
@@ -376,6 +377,8 @@ limits apply. This is not measured mobile or production-load evidence.
 
 Validation at this checkpoint adds permission/version/repeated-occurrence and
 controlled delayed-write tests, plus real client-to-server WebSocket delivery
-and asset-denial checks. Native embedding and source/render verification remain
-client integration work; this capability is a protocol preview, not a claim that
-all note-image pointer UI is implemented.
+and asset-denial checks. The foreground plugin host now integrates native source/
+render verification, pointer capture, overlays and Jump/Follow, with automated
+CodeMirror/Reading host tests. Native desktop/mobile, split-pane and performance
+acceptance remain required. This protocol capability does not advertise complete
+release acceptance.
