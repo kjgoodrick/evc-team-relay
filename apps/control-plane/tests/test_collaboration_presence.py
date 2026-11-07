@@ -1279,7 +1279,7 @@ def test_image_context_rechecks_access_and_live_image_metadata(
 
 
 @pytest.mark.parametrize("credential", ["missing", "invalid", "sessionless", "scoped"])
-@pytest.mark.parametrize("endpoint", ["image-location", "base-context"])
+@pytest.mark.parametrize("endpoint", ["image-location", "base-context", "base-record-context"])
 def test_surface_context_requires_normal_session_credentials(
     client, team, surface_team, credential, endpoint
 ):
@@ -2066,3 +2066,422 @@ def test_slow_viewer_receives_latest_location_without_accumulating_movements(mon
             await asyncio.gather(task, return_exceptions=True)
 
     asyncio.run(scenario())
+
+
+def base_position(record=None, *, kind="cell", source="note", name="status", x=0.5):
+    target = {"type": kind}
+    if kind != "property":
+        target.update(
+            record_id=record.id if record else guid(),
+            record_generation=str(record.collaboration_generation) if record else guid(),
+        )
+    if kind != "item":
+        target["property"] = {"source": source, "name": name}
+    return {"target": target, "offset": {"x": x, "y": 0.5}}
+
+
+def base_state(record=None, **changes):
+    return {"version": 1, "pointer": base_position(record), "viewport": None, **changes}
+
+
+def move_base(socket, location, state):
+    socket.send_json({"type": "base_state", "location": location, "state": state})
+    socket.send_json({"type": "ping"})
+    assert recv(socket) == {"type": "pong"}
+
+
+def watch_base(socket, location):
+    subscription = guid()
+    socket.send_json(
+        {
+            "type": "watch",
+            "subscription_id": subscription,
+            "location": location,
+            "base_states": True,
+        }
+    )
+    initial = [recv(socket), recv(socket)]
+    assert {value["type"] for value in initial} == {"roster", "base_states"}
+    assert all(value["status"] == "available" for value in initial)
+    return subscription
+
+
+def test_base_positions_include_cells_records_headers_without_roster_churn(
+    client, team, surface_team, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "collaboration_discussions_enabled", False)
+    location = surface_team.locations[1]
+    with connected(client, team.tokens["viewer"], protocol_version=2) as (publisher, ready):
+        publish(publisher, location)
+        with connected(client, team.tokens["owner"], protocol_version=2) as (viewer, _):
+            subscription = watch_base(viewer, location)
+            for kind in ("cell", "item", "property"):
+                state = base_state(pointer=base_position(team.notes["first"], kind=kind))
+                move_base(publisher, location, state)
+                assert recv(viewer) == {
+                    "type": "base_states",
+                    "subscription_id": subscription,
+                    "status": "available",
+                    "peers": [
+                        {
+                            "target": {
+                                "user_id": str(team.viewer.id),
+                                "session_id": ready["session_id"],
+                                "instance_id": ready["instance_id"],
+                            },
+                            "state": state,
+                        }
+                    ],
+                }
+            move_base(publisher, location, None)
+            assert recv(viewer)["peers"] == []
+            move_base(publisher, location, state)
+            assert recv(viewer)["peers"]
+            publish(publisher, surface_team.locations[2])
+            cleared = [recv(viewer), recv(viewer)]
+            assert {value["type"] for value in cleared} == {"roster", "base_states"}
+            assert all(not value["peers"] for value in cleared)
+
+
+@pytest.mark.parametrize("party", ["publisher", "viewer"])
+def test_base_position_idle_record_revocation_preserves_view_roster(
+    client, db_session, team, surface_team, monkeypatch, party
+):
+    monkeypatch.setattr(presence, "CHECK_SECONDS", 0.04)
+    publisher_name, viewer_name = (
+        ("viewer", "owner") if party == "publisher" else ("owner", "viewer")
+    )
+    location = surface_team.locations[1]
+    with connected(client, team.tokens[publisher_name], protocol_version=2) as (publisher, _):
+        publish(publisher, location)
+        with connected(client, team.tokens[viewer_name], protocol_version=2) as (viewer, _):
+            watch_base(viewer, location)
+            move_base(publisher, location, base_state(team.notes["first"]))
+            assert recv(viewer)["peers"]
+            db_session.add(
+                models.ManagedRule(
+                    share_id=team.share.id,
+                    user_id=team.viewer.id,
+                    path="First.md",
+                    recursive=False,
+                    permission="none",
+                )
+            )
+            db_session.commit()
+            result = recv(viewer)
+            assert (
+                result["type"] == "base_states"
+                and result["status"] == "available"
+                and result["peers"] == []
+            )
+            # The participant is still authorized to read the saved Base view.
+            watch(viewer, location)
+            assert len(recv(viewer)["peers"]) == 1
+            viewer.send_json({"type": "ping"})
+            assert recv(viewer) == {"type": "pong"}
+
+
+def test_base_snapshot_omits_restricted_viewport_and_pointer_metadata(client, team, surface_team):
+    location = presence.BaseLocation.model_validate(surface_team.locations[1])
+    publisher = presence.authenticate(team.tokens["owner"])
+    for field in ("pointer", "viewport"):
+        state = presence.BaseState.model_validate(
+            base_state(team.notes["first"], **{field: base_position(team.notes["private"])})
+        )
+        assert (
+            presence.base_state_snapshot(
+                team.tokens["viewer"],
+                location,
+                [(publisher.key(guid()), team.tokens["owner"], state)],
+            )
+            == []
+        )
+
+
+@pytest.mark.parametrize("change", ["generation", "deleted", "type", "private", "view", "hidden"])
+def test_base_publication_rejects_stale_or_unreadable_record(
+    client, db_session, team, surface_team, change
+):
+    location = surface_team.locations[1]
+    state = base_state(team.notes["first"])
+    if change == "generation":
+        state["pointer"]["target"]["record_generation"] = guid()
+    elif change in ("deleted", "type"):
+        entry = team.notes["first"]
+        if change == "deleted":
+            entry.deleted = True
+        else:
+            entry.record = {"type": "image"}  # A note-property cell cannot refer to an image.
+        db_session.commit()
+    elif change == "private":
+        state = base_state(team.notes["private"])
+    with connected(client, team.tokens["viewer"], protocol_version=2) as (publisher, _):
+        if change != "hidden":
+            publish(publisher, location)
+        publisher.send_json(
+            {
+                "type": "base_state",
+                "location": surface_team.locations[2] if change == "view" else location,
+                "state": state,
+            }
+        )
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(publisher)
+        assert error.value.code == (4400 if change in ("view", "hidden") else 4403)
+
+
+def test_base_record_context_is_read_only_and_never_repairs_lineage(
+    client, db_session, engine, team, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "collaboration_discussions_enabled", False)
+    monkeypatch.setattr(get_settings(), "collaboration_policy_enabled", True)
+    monkeypatch.setattr(get_settings(), "collaboration_bases_registry_enabled", True)
+    entry = team.notes["first"]
+    statements = []
+
+    def capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    def read():
+        return client.get(
+            "/v1/collaboration/base-record-context",
+            params={"share_id": str(team.share.id), "entry_id": entry.id},
+            headers={"Authorization": "Bearer " + team.tokens["viewer"]},
+        )
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        response = read()
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "protocol_version": 1,
+        "share_id": str(team.share.id),
+        "entry_id": entry.id,
+        "generation": str(entry.collaboration_generation),
+        "type": "markdown",
+    }
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    entry.collaboration_generation = None
+    db_session.commit()
+    assert read().status_code == 403
+    db_session.refresh(entry)
+    assert entry.collaboration_generation is None
+    entry.collaboration_generation = uuid.uuid4()
+    db_session.commit()
+    assert read().json()["generation"] == str(entry.collaboration_generation)
+    entry.deleted = True
+    db_session.commit()
+    assert read().status_code in (403, 404)
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "collaboration_presence_enabled",
+        "collaboration_policy_enabled",
+        "collaboration_bases_registry_enabled",
+    ],
+)
+def test_base_position_discovery_feature_gate(client, team, surface_team, monkeypatch, setting):
+    monkeypatch.setattr(get_settings(), setting, False)
+    response = client.get(
+        "/v1/collaboration/base-record-context",
+        params={"share_id": str(team.share.id), "entry_id": team.notes["first"].id},
+        headers={"Authorization": "Bearer " + team.tokens["viewer"]},
+    )
+    assert response.status_code == 404
+    features = client.get(
+        "/v1/collaboration/capabilities",
+        params={"share_id": str(team.share.id)},
+        headers={"Authorization": "Bearer " + team.tokens["viewer"]},
+    ).json()["features"]
+    assert features["presence_base_states_preview"] is False
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"version": True},
+        {"version": 2},
+        {"path": "private"},
+        {"pointer": {}},
+        {"viewport": {"x": 1}},
+        *[
+            {"pointer": {"target": base_position()["target"], "offset": offset}}
+            for offset in (
+                {"x": -1, "y": 0},
+                {"x": 1.1, "y": 0},
+                {"x": True, "y": 0},
+                {"x": "0", "y": 0},
+                {"x": float("nan"), "y": 0},
+                {"x": 0, "y": 0, "extra": 1},
+            )
+        ],
+        *[
+            {"pointer": base_position(kind="property", name=name)}
+            for name in ("", "x" * 129, "😀" * 65, "bad\nname", "\ud800")
+        ],
+        {
+            "pointer": {
+                "target": {**base_position()["target"], "value": "private"},
+                "offset": {"x": 0, "y": 0},
+            }
+        },
+    ],
+)
+def test_base_positions_reject_unbounded_geometry_values_and_identity_fields(patch):
+    with pytest.raises(ValueError):
+        presence.BaseState.model_validate(base_state(**patch))
+
+
+@pytest.mark.parametrize("change", ["record", "property", "generation", "hidden", "token", "watch"])
+def test_base_semantic_change_fences_pending_socket_send(monkeypatch, change):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.BaseLocation(
+            kind="base",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            definition_id=guid(),
+            view_id=guid(),
+            registry_revision=1,
+        )
+        original = presence.BaseState.model_validate(base_state())
+        owner.publish(publisher, location)
+        owner.move_base(publisher, location, original)
+        owner.watch(viewer, presence.Watch(guid(), location, base_states=True))
+        checked, sent = asyncio.Event(), []
+
+        async def authorize(_fn, _token, _location, peers):
+            checked.set()
+            return [
+                {
+                    "target": dict(zip(("user_id", "session_id", "instance_id"), key)),
+                    "state": state.model_dump(mode="json"),
+                }
+                for key, _, state in peers
+            ]
+
+        async def emit(value):
+            sent.append(value)
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        monkeypatch.setattr(presence, "IMAGE_STATE_INTERVAL", 0)
+        await viewer.send_lock.acquire()
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer, True)
+        )
+        try:
+            await asyncio.wait_for(checked.wait(), 1)
+            if change in ("record", "property", "generation"):
+                data = original.model_dump(mode="json")
+                target = data["pointer"]["target"]
+                if change == "property":
+                    target["property"]["name"] = "different"
+                else:
+                    target["record_id" if change == "record" else "record_generation"] = guid()
+                owner.move_base(publisher, location, presence.BaseState.model_validate(data))
+            elif change == "hidden":
+                owner.publish(publisher, None)
+            elif change == "token":
+                publisher.token = "replaced"
+            else:
+                owner.watch(viewer, presence.Watch(guid(), location, base_states=True))
+
+            async def denied(*_):
+                return []
+
+            monkeypatch.setattr(events, "run_in_threadpool", denied)
+            viewer.send_lock.release()
+            async with asyncio.timeout(1):
+                while not sent:
+                    await asyncio.sleep(0.001)
+            assert sent == [
+                {
+                    "type": "base_states",
+                    "subscription_id": viewer.watch.subscription_id,
+                    "status": "available",
+                    "peers": [],
+                }
+            ]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(publisher)
+            owner.remove(viewer)
+        assert not owner.rooms and not owner.watchers and publisher.base_state is None
+
+    asyncio.run(run())
+
+
+def test_base_geometry_coalesces_without_roster_rebuild_or_authorization_starvation(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.BaseLocation(
+            kind="base",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            definition_id=guid(),
+            view_id=guid(),
+            registry_revision=1,
+        )
+        original = base_state()
+        owner.publish(publisher, location)
+        owner.move_base(publisher, location, presence.BaseState.model_validate(original))
+        for peer in (viewer, publisher):
+            owner.watch(peer, presence.Watch(guid(), location, base_states=True))
+            peer.roster_dirty.clear()
+            peer.image_dirty.clear()
+        viewer.image_dirty.set()
+        revision, sent = publisher.base_revision, []
+
+        async def authorize(_fn, _token, _location, peers):
+            for x in range(1001):
+                state = {
+                    **original,
+                    "pointer": {**original["pointer"], "offset": {"x": x / 1000, "y": 0.5}},
+                }
+                owner.move_base(publisher, location, presence.BaseState.model_validate(state))
+            return [
+                {
+                    "target": dict(zip(("user_id", "session_id", "instance_id"), key)),
+                    "state": state.model_dump(mode="json"),
+                }
+                for key, _, state in peers
+            ]
+
+        async def emit(value):
+            sent.append(value)
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        monkeypatch.setattr(presence, "IMAGE_STATE_INTERVAL", 0)
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer, True)
+        )
+        try:
+            async with asyncio.timeout(1):
+                while not sent:
+                    await asyncio.sleep(0.001)
+            assert sent[0]["peers"][0]["state"]["pointer"]["offset"]["x"] == 1
+            assert publisher.base_revision == revision
+            assert not publisher.image_dirty.is_set() and not viewer.roster_dirty.is_set()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(publisher)
+            owner.remove(viewer)
+
+    asyncio.run(run())

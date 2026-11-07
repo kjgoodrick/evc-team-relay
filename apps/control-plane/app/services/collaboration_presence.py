@@ -140,6 +140,75 @@ class BaseLocation(BaseModel):
     registry_revision: int = Field(strict=True, ge=1, le=9007199254740991)
 
 
+class BasePresenceProperty(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    source: Literal["note", "file", "formula"]
+    name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("name")
+    @classmethod
+    def safe_name(cls, value):
+        if any(ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise ValueError("Invalid property name")
+        if len(value.encode("utf-8")) > 256:
+            raise ValueError("Property name too large")
+        return value
+
+
+class BasePresenceItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    type: Literal["item"]
+    record_id: uuid.UUID
+    record_generation: uuid.UUID
+
+
+class BasePresenceCell(BasePresenceItem):
+    type: Literal["cell"]
+    property: BasePresenceProperty
+
+
+class BasePresenceHeader(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    type: Literal["property"]
+    property: BasePresenceProperty
+
+
+class BasePosition(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    target: Annotated[
+        BasePresenceItem | BasePresenceCell | BasePresenceHeader, Field(discriminator="type")
+    ]
+    offset: ImagePoint
+
+
+class BaseState(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    version: int = Field(strict=True, ge=1, le=1)
+    pointer: BasePosition | None
+    viewport: BasePosition | None
+
+    def semantic_key(self) -> str:
+        # Pointer movement within one cell is replaceable geometry. A different
+        # cell/record/header must invalidate pending authorization and sends.
+        return json.dumps(
+            {
+                key: value.target.model_dump(mode="json") if value else None
+                for key, value in (("pointer", self.pointer), ("viewport", self.viewport))
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+class BaseRecordContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    protocol_version: Literal[1] = 1
+    share_id: uuid.UUID
+    entry_id: uuid.UUID
+    generation: uuid.UUID
+    type: Literal["markdown", "image", "file"]
+
+
 class BasePresenceView(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: uuid.UUID
@@ -285,8 +354,33 @@ def authorize_embed(db, user, location: Location, embed: EmbeddedImage) -> None:
         )
 
 
+def authorize_base_state(db, user, location: BaseLocation, state: BaseState) -> None:
+    share = share_service.get_share(db, location.share_id)
+    records = {}
+    for position in (state.pointer, state.viewport):
+        if not position or not isinstance(position.target, BasePresenceItem):
+            continue
+        target = position.target
+        if target.record_id not in records:
+            records[target.record_id] = managed_service.authorize_entry(
+                db, share, user, str(target.record_id)
+            )
+        entry = records[target.record_id]
+        if (
+            entry.record.get("type") not in ("markdown", "image", "file")
+            or entry.collaboration_generation != target.record_generation
+            or isinstance(target, BasePresenceCell)
+            and target.property.source == "note"
+            and entry.record.get("type") != "markdown"
+        ):
+            raise HTTPException(403, "Position unavailable")
+
+
 def authenticate(
-    token: str, location: SurfaceLocation | None = None, embed: EmbeddedImage | None = None
+    token: str,
+    location: SurfaceLocation | None = None,
+    embed: EmbeddedImage | None = None,
+    base_state: BaseState | None = None,
 ) -> Actor:
     with get_sessionmaker()() as db:
         user = deps._get_user_from_token(db, token)
@@ -302,6 +396,10 @@ def authenticate(
             if not isinstance(location, Location):
                 raise HTTPException(403, "Location unavailable")
             authorize_embed(db, user, location, embed)
+        if base_state:
+            if not isinstance(location, BaseLocation):
+                raise HTTPException(403, "Location unavailable")
+            authorize_base_state(db, user, location, base_state)
         return Actor(identity_for(db, user, claims), int(claims["exp"]))
 
 
@@ -392,6 +490,49 @@ def base_context(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> BasePr
             raise HTTPException(403, "Location unavailable") from None
 
 
+def base_record_context(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> BaseRecordContext:
+    # Presence never initializes missing lineage or requires comment permission.
+    authenticate(token)
+    with get_sessionmaker()() as db:
+        user = deps._get_user_from_token(db, token)
+        share = share_service.get_share(db, share_id)
+        entry = managed_service.authorize_entry(db, share, user, str(entry_id))
+        try:
+            return BaseRecordContext(
+                share_id=share_id,
+                entry_id=entry_id,
+                generation=entry.collaboration_generation,
+                type=entry.record.get("type"),
+            )
+        except ValueError:
+            raise HTTPException(403, "Position unavailable") from None
+
+
+def base_state_snapshot(
+    viewer_token: str, location: BaseLocation, publishers: list[tuple[PeerKey, str, BaseState]]
+) -> list[dict]:
+    # Reading a Base does not grant access to every record in its results.
+    # Denied precise state is omitted without removing the saved-view roster.
+    authenticate(viewer_token, location)
+    result = []
+    with get_sessionmaker()() as db:
+        viewer = deps._get_user_from_token(db, viewer_token)
+        for key, token, state in publishers:
+            try:
+                actor = authenticate(token, location, base_state=state)
+                authorize_base_state(db, viewer, location, state)
+            except HTTPException:
+                continue
+            if actor.key(key[2]) == key:
+                result.append(
+                    {
+                        "target": {"user_id": key[0], "session_id": key[1], "instance_id": key[2]},
+                        "state": state.model_dump(mode="json"),
+                    }
+                )
+    return result
+
+
 def roster_snapshot(
     viewer_token: str, location: SurfaceLocation, publishers: list[tuple[PeerKey, str]]
 ) -> list[dict]:
@@ -461,6 +602,7 @@ class Watch:
     location: SurfaceLocation
     image_states: bool = False
     embedded_images: bool = False
+    base_states: bool = False
 
 
 @dataclass(eq=False)
@@ -473,6 +615,8 @@ class Connection:
     image_state: ImageState | None = None
     image_embed: EmbeddedImage | None = None
     embed_revision: int = 0
+    base_state: BaseState | None = None
+    base_revision: int = 0
     follow: Follow | None = None
     watch: Watch | None = None
     revision: int = 0
@@ -567,6 +711,8 @@ class PresenceBroker:
         connection.image_state = None
         connection.image_embed = None
         connection.embed_revision += 1
+        connection.base_state = None
+        connection.base_revision += 1
         if location:
             self.rooms.setdefault(room_location(location), set()).add(connection)
             self.notify_room(location)
@@ -584,7 +730,11 @@ class PresenceBroker:
         for viewer in self.watchers.get(room_location(location), ()):
             if viewer.watch and not viewer.watch.embedded_images:
                 viewer.roster_dirty.set()
-            if viewer.watch and (viewer.watch.image_states or viewer.watch.embedded_images):
+            if viewer.watch and (
+                viewer.watch.image_states
+                or viewer.watch.embedded_images
+                or viewer.watch.base_states
+            ):
                 viewer.image_dirty.set()
 
     def move(
@@ -608,6 +758,23 @@ class PresenceBroker:
             (peer for peer in self.rooms.get(room_location(location), ()) if peer is not viewer),
             key=lambda peer: peer.key,
         )
+
+    def move_base(
+        self, connection: Connection, location: BaseLocation, state: BaseState | None
+    ) -> None:
+        if connection.closed or self.connections.get(connection.key) is not connection:
+            return
+        if connection.location != location:
+            raise ValueError("Bases position requires matching visible publication")
+        if connection.base_state == state:
+            return
+        previous = connection.base_state
+        if not previous or not state or previous.semantic_key() != state.semantic_key():
+            connection.base_revision += 1
+        connection.base_state = state
+        for viewer in self.watchers.get(location, ()):
+            if viewer is not connection and viewer.watch and viewer.watch.base_states:
+                viewer.image_dirty.set()
 
     def move_embed(
         self, connection: Connection, location: Location, embed: EmbeddedImage | None
@@ -640,7 +807,7 @@ class PresenceBroker:
             self.watchers.setdefault(room_location(watch.location), set()).add(connection)
             if not watch.embedded_images:
                 connection.roster_dirty.set()
-            if watch.image_states or watch.embedded_images:
+            if watch.image_states or watch.embedded_images or watch.base_states:
                 connection.image_dirty.set()
 
     def subscribe(self, connection: Connection, follow: Follow | None) -> None:

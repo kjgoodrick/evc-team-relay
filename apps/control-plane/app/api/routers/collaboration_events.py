@@ -83,6 +83,22 @@ async def socket_ticket(request: Request, token: str | None = Depends(deps.oauth
     }
 
 
+@router.get("/base-record-context")
+async def base_record_context(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    response: Response,
+    token: str | None = Depends(deps.oauth2_scheme),
+):
+    if not enabled() or not presence.bases_registry.enabled():
+        raise HTTPException(404, "Bases presence context disabled")
+    if not token:
+        raise HTTPException(401, "Missing credentials")
+    context = await run_in_threadpool(presence.base_record_context, token, share_id, entry_id)
+    response.headers["Cache-Control"] = "no-store"
+    return context.model_dump(mode="json")
+
+
 async def receive(websocket: WebSocket) -> dict:
     raw = await websocket.receive_text()
     if len(raw.encode("utf-8")) > presence.MAX_MESSAGE_BYTES:
@@ -149,7 +165,7 @@ async def handle(
         else:
             # Refresh the identity/session even for unpublish and subscription
             # control frames; possession of an old socket is not authorization.
-            image_location, image_state, embed = None, None, None
+            image_location, image_state, embed, base_state = None, None, None, None
             if kind == "image_state" and connection.protocol_version == 2:
                 fields(message, {"type", "location", "state"})
                 image_location = presence.ImageLocation.model_validate(message["location"])
@@ -166,11 +182,24 @@ async def handle(
                     if message["embed"] is not None
                     else None
                 )
+            elif kind == "base_state" and connection.protocol_version == 2:
+                fields(message, {"type", "location", "state"})
+                image_location = presence.BaseLocation.model_validate(message["location"])
+                base_state = (
+                    presence.BaseState.model_validate(message["state"])
+                    if message["state"] is not None
+                    else None
+                )
             # A movement frame performs identity and entry authorization in one
             # fresh database session rather than repeating session lookup.
-            actor = await run_in_threadpool(
-                presence.authenticate, connection.token, image_location, embed
-            )
+            if kind == "base_state" and connection.protocol_version == 2:
+                actor = await run_in_threadpool(
+                    presence.authenticate, connection.token, image_location, None, base_state
+                )
+            else:
+                actor = await run_in_threadpool(
+                    presence.authenticate, connection.token, image_location, embed
+                )
             connection.actor = actor
             if kind == "presence":
                 fields(message, {"type", "location"})
@@ -186,6 +215,8 @@ async def handle(
                 owner.move(connection, image_location, image_state)
             elif kind == "image_embed" and connection.protocol_version == 2:
                 owner.move_embed(connection, image_location, embed)
+            elif kind == "base_state" and connection.protocol_version == 2:
+                owner.move_base(connection, image_location, base_state)
             elif kind == "follow":
                 fields(message, {"type", "subscription_id", "target", "from"})
                 subscription = identifier(message["subscription_id"])
@@ -237,21 +268,32 @@ async def handle(
                 fields(
                     message,
                     {"type", "subscription_id", "location"}
-                    | ({"image_states"} if "image_states" in message else set()),
+                    | ({"image_states"} if "image_states" in message else set())
+                    | ({"base_states"} if "base_states" in message else set()),
                 )
                 subscription = identifier(message["subscription_id"])
                 location = presence.parse_location(message["location"], 2)
                 if isinstance(location, presence.Location):
                     raise ValueError("Notes use managed awareness")
                 image_states = message.get("image_states", False)
+                base_states = message.get("base_states", False)
                 if (
                     type(image_states) is not bool
                     or image_states
                     and not isinstance(location, presence.ImageLocation)
                 ):
                     raise ValueError("Invalid image observation")
+                if (
+                    type(base_states) is not bool
+                    or base_states
+                    and not isinstance(location, presence.BaseLocation)
+                ):
+                    raise ValueError("Invalid Bases observation")
                 await run_in_threadpool(presence.authenticate, connection.token, location)
-                owner.watch(connection, presence.Watch(subscription, location, image_states))
+                owner.watch(
+                    connection,
+                    presence.Watch(subscription, location, image_states, base_states=base_states),
+                )
             elif kind == "watch_embeds" and connection.protocol_version == 2:
                 fields(message, {"type", "subscription_id", "location"})
                 subscription = identifier(message["subscription_id"])
@@ -365,7 +407,10 @@ async def deliver_roster(
         watch, token = viewer.watch, viewer.token
         if (
             not watch
-            or (image_states and not (watch.image_states or watch.embedded_images))
+            or (
+                image_states
+                and not (watch.image_states or watch.embedded_images or watch.base_states)
+            )
             or (not image_states and watch.embedded_images)
         ):
             continue
@@ -374,9 +419,13 @@ async def deliver_roster(
         embed_revisions = (
             {peer: peer.embed_revision for peer in peers} if watch.embedded_images else {}
         )
+        base_states = image_states and watch.base_states
+        base_revisions = {peer: peer.base_revision for peer in peers} if base_states else {}
         result = {
             "type": "image_embeds"
             if watch.embedded_images
+            else "base_states"
+            if base_states
             else "image_states"
             if image_states
             else "roster",
@@ -384,7 +433,27 @@ async def deliver_roster(
             "status": "unavailable",
         }
         try:
-            if watch.embedded_images:
+            if base_states:
+                identities = await run_in_threadpool(
+                    presence.base_state_snapshot,
+                    token,
+                    watch.location,
+                    [
+                        (peer.key, saved_token, peer.base_state)
+                        for peer, _, saved_token in captured
+                        if peer.base_state is not None
+                    ],
+                )
+                latest = {peer.key: peer.base_state for peer in peers}
+                for item in identities:
+                    value = latest.get(
+                        tuple(
+                            item["target"][key] for key in ("user_id", "session_id", "instance_id")
+                        )
+                    )
+                    if value:
+                        item["state"] = value.model_dump(mode="json")
+            elif watch.embedded_images:
                 identities = await run_in_threadpool(
                     presence.embed_snapshot,
                     token,
@@ -411,7 +480,7 @@ async def deliver_roster(
                     watch.location,
                     [(peer.key, saved_token) for peer, _, saved_token in captured],
                 )
-            if image_states and not watch.embedded_images:
+            if image_states and not watch.embedded_images and not base_states:
                 authorized = {
                     tuple(item["target"][key] for key in ("user_id", "session_id", "instance_id"))
                     for item in identities
@@ -443,6 +512,7 @@ async def deliver_roster(
                 for peer, revision, saved_token in captured
             )
             or any(peer.embed_revision != revision for peer, revision in embed_revisions.items())
+            or any(peer.base_revision != revision for peer, revision in base_revisions.items())
         ):
             dirty.set()
             continue
@@ -463,6 +533,9 @@ async def deliver_roster(
                     and all(
                         peer.embed_revision == revision
                         for peer, revision in embed_revisions.items()
+                    )
+                    and all(
+                        peer.base_revision == revision for peer, revision in base_revisions.items()
                     )
                 )
 
@@ -513,9 +586,24 @@ async def check_live(owner: presence.PresenceBroker, connection: presence.Connec
                     owner.move_embed(connection, location, None)
         if connection.follow:
             connection.dirty.set()  # Recheck destination access even when both peers idle.
+        base_state, base_revision = connection.base_state, connection.base_revision
+        if base_state and isinstance(location, presence.BaseLocation):
+            try:
+                await run_in_threadpool(presence.authenticate, token, location, None, base_state)
+            except HTTPException:
+                if (
+                    connection.token == token
+                    and connection.revision == revision
+                    and connection.base_revision == base_revision
+                ):
+                    owner.move_base(connection, location, None)
         if connection.watch:
             connection.roster_dirty.set()
-            if connection.watch.image_states or connection.watch.embedded_images:
+            if (
+                connection.watch.image_states
+                or connection.watch.embedded_images
+                or connection.watch.base_states
+            ):
                 connection.image_dirty.set()
 
 

@@ -154,7 +154,8 @@ No title, path, external URL, cell value, formula output, pointer or arbitrary
 target object is accepted. The server reads authorization/identity metadata; it
 does not fetch image bytes, parse a base or evaluate a formula for presence.
 Embedded-image occurrences use the separate negotiated stream below. Fine-grained
-Bases/timeline targets still need adapters and negotiated schemas.
+Bases cell/record/header positions use the separate negotiated stream below;
+groups, lanes and timeline ranges still need their target extensions and adapters.
 
 Initial Follow must reference the same kind and context as the publisher. Notes
 may differ in editor/Reading mode; images must reference the same generation and
@@ -194,7 +195,8 @@ withdrawn and roster commands are not sent.
   saved-view descriptor). Each connection observes at most one context. Notes
   retain their existing managed-awareness room. A new watch replaces the old one.
   The separately negotiated image stream additionally allows `image_states: true`
-  only on an image watch. Old watchers receive no unsolicited movement frames.
+  only on an image watch. Bases positions similarly require `base_states: true`
+  on a saved-view watch. Old watchers receive no unsolicited movement frames.
 - `unwatch` has exactly `type` and `subscription_id`. A stale ID cannot cancel a
   newer watch. Observing and publishing are independent: a hidden viewer can see
   authorized participants without appearing in their roster.
@@ -418,3 +420,72 @@ render verification, pointer capture, overlays and Jump/Follow, with automated
 CodeMirror/Reading host tests. Native desktop/mobile, split-pane and performance
 acceptance remain required. This protocol capability does not advertise complete
 release acceptance.
+
+## Precise Bases position transport
+
+`presence_base_states_preview` is enabled only with presence and the Bases
+registry. Version-two `watch` can request `base_states: true` for an exact saved
+view. The separate `base_state` publication has `type`, `location` (the current
+Base descriptor) and `state` (null or the shape below). A `base_states` snapshot
+has `subscription_id`, `status` and, when available, `peers: [{target, state}]`.
+The peer `target` is the authenticated user/session/instance tuple. Names remain
+in the independent roster; movement does not rebuild its controls.
+
+```json
+{
+  "version": 1,
+  "pointer": {
+    "target": {
+      "type": "cell",
+      "record_id": "<UUID>",
+      "record_generation": "<UUID>",
+      "property": {"source": "note", "name": "status"}
+    },
+    "offset": {"x": 0.25, "y": 0.5}
+  },
+  "viewport": null
+}
+```
+
+Both pointer and viewport are optional positions (explicit null); the viewport
+represents a semantic point near its center rather than a pixel scroll offset.
+Offsets are finite normalized fractions of the locally verified target bounds.
+Targets are record `item`, record `cell`, or `property` header. Items/cells pin
+record ID and generation. Cells/headers carry a property namespace (`note`,
+`file`, `formula`) and bounded name (128 code points, 256 UTF-8 bytes). No cell
+values, formula results, filenames, contents or client identity are accepted.
+This schema describes where someone is pointing, not the formula's output or
+permission to evaluate any dependencies. Native adapters must resolve and prove
+the target against the current saved view before rendering/navigation.
+
+`GET /v1/collaboration/base-record-context?share_id=UUID&entry_id=UUID` returns
+only `{protocol_version: 1, share_id, entry_id, generation, type}` with no-store.
+It requires a current session and record read access; it returns existing
+lineage without initializing missing IDs, reading note/object bytes, requiring
+comments or writing to the database. Supported record types are markdown, image
+and file. Missing lineage is unavailable until normal identity management
+establishes it. A host must bound/reuse these reads rather than fetch on movement.
+
+The server independently checks the saved Base and every referenced record for
+both publisher and viewer. It requires the current record generation; note
+properties require a Markdown record. A record denial omits the publisher's
+entire precise state, including IDs/property names/offsets, while its authorized
+saved-view roster presence remains. Publisher ingress denial closes the channel;
+idle record revocation withdraws its position without removing a still-readable
+Base location. Both surfaces and positions are rechecked on delivery and during
+the five-second idle pass. Record IDs must belong to the Base's share.
+
+Record/property/generation changes fence pending authorization and socket sends.
+Geometry changes within the same targets coalesce to the latest state without
+invalidating an in-flight authorization or marking the roster dirty. The existing
+single socket, movement worker, 125 ms client coalescing, 16 ms server batch,
+128-connection limit, 4 KiB ingress and 192 KiB snapshot limits apply. No position
+is persisted or replayed after reconnect; hiding, surface departure and unload
+clear it. Old watchers never receive unsolicited position frames.
+
+Transport checks include actual client/server cell delivery, normal credential
+lookup, independent idle record revocation with preserved Base roster, clearing,
+controlled delayed sends after semantic changes, and 1,001 geometry updates
+without roster work. **Native capture, overlays and position-aware Jump/Follow
+are not yet connected to this stream.** Group/lane/range extensions and native
+Obsidian desktop/mobile, accessibility and resource acceptance remain required.
