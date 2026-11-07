@@ -967,6 +967,61 @@ class BaseTargetDefinition(Base):
     descriptor: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class BaseGroupValue(Base):
+    __tablename__ = "collaboration_base_group_values"
+    __table_args__ = (
+        UniqueConstraint(
+            "definition_id", "definition_revision", "fingerprint", name="uq_base_group_value"
+        ),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    definition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_base_target_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    definition_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BaseGroupWitness(Base):
+    """Immutable source evidence, selected by each thread, never a group ACL."""
+
+    __tablename__ = "collaboration_base_group_witnesses"
+    __table_args__ = (UniqueConstraint("group_id", "fingerprint", name="uq_base_group_witness"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_base_group_values.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class BaseGroupCaptureReceipt(Base):
+    __tablename__ = "collaboration_base_group_capture_receipts"
+    actor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    operation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    witness_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_base_group_witnesses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class ManagedRule(Base):
     __tablename__ = "managed_rules"
     __table_args__ = (

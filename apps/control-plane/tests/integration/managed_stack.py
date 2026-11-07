@@ -68,6 +68,11 @@ def main():
         help="Also verify the private Bases source reader against the restarted relay",
     )
     parser.add_argument(
+        "--base-groups",
+        action="store_true",
+        help="Run public group capture through the actual private relay source reader",
+    )
+    parser.add_argument(
         "--image-anchors",
         action="store_true",
         help="Run image occurrence comments through the private relay barrier",
@@ -87,12 +92,17 @@ def main():
         help="Hold a disposable desktop smoke-test server open instead of running Jest",
     )
     args = parser.parse_args()
-    if args.image_anchors or args.base_sources:
+    if args.image_anchors or args.base_sources or args.base_groups:
         args.text_anchors = True
-    if args.base_sources and (
-        args.image_anchors or args.image_files or args.presence or args.presence_locations
+    if (args.base_sources or args.base_groups) and (
+        args.image_anchors
+        or args.image_files
+        or args.presence
+        or args.presence_locations
+        or args.base_sources
+        and args.base_groups
     ):
-        parser.error("--base-sources uses the selected-text fixture only")
+        parser.error("Choose a single Bases source/group fixture")
     processes = []
     with tempfile.TemporaryDirectory(prefix="evc-managed-integration-") as temporary:
         temp = Path(temporary)
@@ -171,6 +181,14 @@ allowed_token_types = ["server"]
                 COLLABORATION_POLICY_ENABLED="true",
                 COLLABORATION_DISCUSSIONS_ENABLED="true",
                 COLLABORATION_IMAGE_FILES_ENABLED="true",
+            )
+        if args.base_groups:
+            os.environ.update(
+                COLLABORATION_BASES_REGISTRY_ENABLED="true",
+                COLLABORATION_BASES_DISCUSSIONS_ENABLED="true",
+                COLLABORATION_BASES_DEFINITION_TARGETS_ENABLED="true",
+                COLLABORATION_BASES_GROUPS_ENABLED="true",
+                MANAGED_BASES_SYNC_ENABLED="true",
             )
 
         get_settings.cache_clear()
@@ -289,6 +307,17 @@ allowed_token_types = ["server"]
                 )
             owner_session, _ = session_service.create_session(db, owner.id)
             bob_session, _ = session_service.create_session(db, bob.id)
+            base_id = str(uuid.uuid4())
+            if args.base_groups:
+                db.add(
+                    models.ManagedEntry(
+                        id=base_id,
+                        share_id=share.id,
+                        path="Groups.base",
+                        deleted=False,
+                        record={"id": base_id, "type": "file", "version": 0},
+                    )
+                )
             db.commit()
             fixture = {
                 "base": f"http://127.0.0.1:{cp_port}",
@@ -298,6 +327,7 @@ allowed_token_types = ["server"]
                 "secret": secret,
                 "second": second if args.presence_locations else None,
                 "image": image_id if args.image_anchors or args.image_files else None,
+                "baseEntry": base_id if args.base_groups else None,
                 "bobId": str(bob.id),
                 "ownerId": str(owner.id),
                 "ownerToken": security.create_access_token(
@@ -361,7 +391,9 @@ path = "{temp / "relay-data"}"
                         time.sleep(0.2)
                     return 0
                 fixture_variable = (
-                    "EVC_IMAGE_FILE_FIXTURE"
+                    "EVC_BASE_GROUP_FIXTURE"
+                    if args.base_groups
+                    else "EVC_IMAGE_FILE_FIXTURE"
                     if args.image_files
                     else "EVC_IMAGE_ANCHOR_FIXTURE"
                     if args.image_anchors
@@ -374,7 +406,9 @@ path = "{temp / "relay-data"}"
                     else "EVC_MANAGED_FIXTURE"
                 )
                 test_file = (
-                    "__tests__/collaboration/realImageFileStack.test.ts"
+                    "__tests__/collaboration/realBaseGroupStack.test.ts"
+                    if args.base_groups
+                    else "__tests__/collaboration/realImageFileStack.test.ts"
                     if args.image_files
                     else "__tests__/collaboration/realImageAnchorStack.test.ts"
                     if args.image_anchors

@@ -63,6 +63,13 @@ class Settings(BaseSettings):
         default=False,
         description="Preview Bases formula cell discussions; requires upgraded clients",
     )
+    collaboration_bases_groups_enabled: bool = Field(
+        default=False,
+        description=(
+            "Preview verified Bases group discussions; requires upgraded clients "
+            "and private source observations"
+        ),
+    )
     managed_bases_sync_enabled: bool = Field(
         default=False,
         description="Preview conditional Bases file publication; requires upgraded clients",

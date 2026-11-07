@@ -25,11 +25,17 @@ class BoundedDiscussionRoute(APIRoute):
             if request.method != "POST":
                 return await handler(request)
             body = bytearray()
+            # Exact accepted retries retain their original body limit even
+            # when new group creation has been disabled.
+            group_capture = request.url.path.endswith("/bases/group-targets")
             # Recovery must still retire an old text request after creation is
             # disabled. It never validates the anchor through the private relay.
             limit = (
                 256 * 1024
-                if anchor_service.enabled() or request.url.path.endswith("/commands/withdraw")
+                if anchor_service.enabled()
+                or group_capture
+                or request.url.path.endswith("/commands")
+                or request.url.path.endswith("/commands/withdraw")
                 else 65536
             )
             async for chunk in request.stream():
@@ -41,10 +47,15 @@ class BoundedDiscussionRoute(APIRoute):
                     value = json.loads(body)
                     command = value.get("command") if isinstance(value, dict) else None
                     anchor = command.get("anchor") if isinstance(command, dict) else None
-                    is_text = isinstance(anchor, dict) and anchor.get("type") in {"text", "image"}
-                except (ValueError, UnicodeError):
-                    is_text = False
-                if not is_text:
+                    is_anchor = isinstance(anchor, dict) and (
+                        anchor.get("type") in {"text", "image"}
+                        or anchor.get("type") == "base"
+                        and isinstance(anchor.get("target"), dict)
+                        and anchor["target"].get("type") == "group"
+                    )
+                except (ValueError, UnicodeError, RecursionError):
+                    is_anchor = False
+                if not is_anchor and not group_capture:
                     raise HTTPException(413, {"code": "command_too_large"})
             delivered = False
 
@@ -57,7 +68,7 @@ class BoundedDiscussionRoute(APIRoute):
 
             try:
                 return await handler(StarletteRequest(request.scope, receive=receive))
-            except RequestValidationError:
+            except (RequestValidationError, RecursionError):
                 # The application-wide formatter echoes validation inputs.
                 # Keep comment bodies out of errors, including invalid Unicode.
                 raise HTTPException(422, {"code": "invalid_command"}) from None

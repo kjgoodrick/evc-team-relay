@@ -411,7 +411,12 @@ def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
             isinstance(envelope.command, s.ThreadCreate)
             and s.source_anchor(envelope.command.anchor) is not None
         )
-        limit = 256 * 1024 if text else 65536
+        group = (
+            isinstance(envelope.command, s.ThreadCreate)
+            and isinstance(envelope.command.anchor, s.BaseAnchor)
+            and isinstance(envelope.command.anchor.target, s.BaseGroupTarget)
+        )
+        limit = 256 * 1024 if text or group else 65536
         if len(envelope.canonical_json().encode("utf-8")) > limit:
             error(413, "command_too_large")
         proof = prepare_text_anchor(db, token, envelope) if text else None

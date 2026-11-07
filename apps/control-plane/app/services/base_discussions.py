@@ -43,6 +43,16 @@ def formula_cells_enabled():
     return definitions_enabled() and get_settings().collaboration_bases_formula_cells_enabled
 
 
+def groups_enabled():
+    settings = get_settings()
+    return bool(
+        definitions_enabled()
+        and settings.collaboration_bases_groups_enabled
+        and settings.collaboration_anchor_relay_token
+        and settings.collaboration_anchor_relay_token.get_secret_value()
+    )
+
+
 def definition_for(db, ctx):
     definition = db.scalar(
         select(m.BaseDefinition).where(m.BaseDefinition.entry_id == ctx.entry.id)
@@ -127,6 +137,8 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
                 error(409, "base_definition_targets_disabled")
             if isinstance(anchor.target, s.BaseFormulaCellTarget) and not formula_cells_enabled():
                 error(409, "base_formula_cells_disabled")
+            if isinstance(anchor.target, s.BaseGroupTarget) and not groups_enabled():
+                error(409, "base_groups_disabled")
             if not base_target_definitions.synchronize(db, definition):
                 error(409, "base_definition_targets_limit")
         target = db.get(m.BaseTargetDefinition, anchor.target.definition_id)
@@ -152,10 +164,14 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
             ):
                 error(422, "invalid_anchor")
         # Existing discussions retain their captured definition after edits,
-        # removal or disablement. They contain no evaluated result or record
-        # values. Definition-only authority is the view; formula cells also
-        # require the record authority and lineage checked above. Neither target
-        # grants access to the formula's evaluated output or external inputs.
+        # removal or disablement. Definition-only authority is the view;
+        # formula cells also require record authority and lineage above.
+        # Group values additionally require their exact source witness below.
+        # None of these targets grants access to a formula's evaluated output.
+    if isinstance(anchor.target, s.BaseGroupTarget):
+        from app.services import base_groups
+
+        base_groups.authorize(db, ctx, anchor, user=user)
 
 
 def stored_anchor(payload):

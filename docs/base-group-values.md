@@ -1,9 +1,69 @@
 # Typed Bases group values from verified source
 
-Status: November 6, 2026. `base_group_values.derive_note_value` now derives typed
-values and their source references from a private source observation. **There is
-no public group-target endpoint or group-comment capability yet.** This adapter
-does not replace the durable registry or authorize discussion access.
+Status: November 6, 2026. `base_group_values.derive_note_value` derives typed
+values and their source references from a private source observation. A gated
+capture endpoint, durable group authorization and client protocol now have
+PostgreSQL and actual Python/Rust/Yjs integration evidence. Native group capture,
+sidebar/marker integration and new offline capture intents remain unfinished.
+Group comments are **not ready for native testing**.
+
+## Group capture and authorization
+
+`POST .../bases/group-targets` accepts a saved view/grouping-definition identity,
+managed source lineage, bounded snapshot dependency, timezone and proposed typed
+value. It checks scope comment/source read access, releases its SQL transaction
+for private source observation, then rechecks current authority and definition
+before deriving and comparing the value. Only server-derived references become
+evidence; no client source body or claimed dependency list is accepted.
+
+The registry separates a group value from immutable source witnesses. Each
+thread's anchor selects **one exact witness**. Every read/write/history/picture/
+mention/receipt path checks every reference of that witness. A second accessible
+record with the same value may share group identity, but cannot unlock a thread
+created from protected source evidence. Never authorize a thread through any
+alternative witness merely because its group ID matches.
+
+Historical source proof remains usable after membership changes while the
+original inputs retain their lineages and current read permission. New captures
+require current grouping-definition semantics; semantic edit/reversion creates
+a different group revision. Accepted exact retries preserve their result after
+creation disablement, subject to current permission and lineage checks.
+
+The first adapter supports managed note-property sources in one share, with a
+bounded conservative link resolver. Ambiguous links, missing target lineage and
+unsupported property adapters fail explicitly. It does not evaluate filters or
+prove that a historical group is currently rendered. Formula/file-property
+groups and aggregate dependency closure remain unfinished.
+
+Migration `202611060006` adds group values, source witnesses and capture receipts;
+downgrade refuses populated tables. The 34 focused tests cover duplicate capture,
+source revocation during unlocked I/O, per-thread isolation, linked dependencies,
+mentions/pictures, semantic revisions, request bounds and disabled retries.
+The broader discussion/source/definition regression run passes 402 tests.
+Actual PostgreSQL verifies ORM/migration parity, empty-table downgrade/upgrade,
+concurrent exact capture, matching-value isolation, revocation/lineage/definition
+changes during unlocked observation, populated downgrade refusal and cascading
+fixture cleanup. Private source observations are controlled in this concurrency
+fixture; the separate actual-service fixture uses the real source reader.
+
+The plugin's actual HTTP/Rust/Yjs test verifies delete-only dependency waiting,
+lost capture-response recovery, historical group access after a property change,
+source access denial, fresh capture after relay restart and unchanged witness
+identity. Verified anchors, drafts and queued comments survive a local database
+reopen. This does not yet implement capturing a previously unverified group while
+offline. Cache version 13 preserves earlier work and fences older protocol workers.
+
+The client validates and copies bounded typed values before asynchronous
+credential lookup, binds capture responses to the requested identity/revision/
+value, and negotiates explicit group support. Captures and group-create commands
+allow at most 256 KiB: a legitimate bounded list can exceed 64 KiB when it contains
+many managed references. Ordinary commands retain their 64 KiB limit. Both
+transport and service limits retain accepted retries after creation disablement.
+
+Enablement remains opt-in through `COLLABORATION_BASES_GROUPS_ENABLED`, existing
+Bases definition/discussion gates and the private source credential. The relay
+must have its private collaboration source/barrier support enabled. No production
+flag or service changed. Upgrade clients before enabling group creation.
 
 ## Native evidence and interpretation
 
@@ -85,20 +145,17 @@ authorization rather than the single-source semantics used here.
 
 ## Next integration
 
-1. Add durable group identity and multiple verified source witnesses, separate
-   from current members. Recheck current access to a complete witness on every
-   read/write/history/picture/mention/receipt path; hidden witnesses must not leak.
-2. Add the authorized capture command with pre-I/O checks, unlocked private
-   observation, and final share/session/record/definition revalidation. Preserve
-   exact retry behavior and never publish a proof after expiry or revocation.
-3. Negotiate group anchors and wire native capture, explicit mixed-type choices,
+1. Wire native capture, explicit mixed-type choices,
    sidebar, markers and offline drafts/outbox. Changed/unprovable values need
    actionable retained-draft recovery. Existing group identity survives members
    leaving and reappearing.
-4. Complete the deferred value adapters and native/mobile acceptance, then group
+2. Add durable capture intents for groups first selected while offline; preserve
+   the exact dependency/value and obtain server evidence before sending a thread.
+   Never silently replace a thread's selected witness during repair/reattachment.
+3. Complete the deferred value adapters and native/mobile acceptance, then group
    summaries and Time & Line targets. This checkpoint does not reduce that scope.
 
-## Checkpoint verification
+## Earlier typed-value checkpoint verification
 
 The broader Python run passed **240 tests**, including existing registry and
 definition behavior. The final source/value run passed **205 tests** after the

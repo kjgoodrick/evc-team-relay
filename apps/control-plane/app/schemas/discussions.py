@@ -19,6 +19,8 @@ from pydantic import (
 )
 from pydantic_core import PydanticSerializationError
 
+from app.schemas.base_values import GroupValue
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -376,6 +378,14 @@ class BaseFormulaCellTarget(BaseDefinedTarget, BaseItemTarget):
     property: BaseFormulaProperty
 
 
+class BaseGroupTarget(BaseDefinedTarget):
+    type: Literal["group"]
+    property: BaseDefinitionProperty
+    group_id: uuid.UUID
+    witness_id: uuid.UUID
+    value: GroupValue
+
+
 class BaseAnchor(StrictModel):
     version: Literal[1]
     type: Literal["base"]
@@ -390,7 +400,8 @@ class BaseAnchor(StrictModel):
         | BasePropertyTarget
         | BaseFormulaTarget
         | BaseSummaryTarget
-        | BaseFormulaCellTarget,
+        | BaseFormulaCellTarget
+        | BaseGroupTarget,
         Field(discriminator="type"),
     ]
 

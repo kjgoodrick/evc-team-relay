@@ -1,6 +1,37 @@
+import base64
+import binascii
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.schemas.base_values import GroupValue
+
+
+class CaptureBaseGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: uuid.UUID
+    definition_id: uuid.UUID
+    view_id: uuid.UUID
+    generation: uuid.UUID
+    registry_revision: int = Field(ge=1, le=9007199254740991, strict=True)
+    group_definition_id: uuid.UUID
+    group_definition_revision: int = Field(ge=1, le=9007199254740991, strict=True)
+    record_id: uuid.UUID
+    record_generation: uuid.UUID
+    dependency: str = Field(max_length=87384)
+    time_zone: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_+/-]+$")
+    value: GroupValue
+
+    @field_validator("dependency")
+    @classmethod
+    def valid_dependency(cls, value):
+        try:
+            raw = base64.b64decode(value, validate=True)
+            if not raw or len(raw) > 65536 or base64.b64encode(raw).decode() != value:
+                raise ValueError("Invalid source dependency")
+        except (ValueError, binascii.Error):
+            raise ValueError("Invalid source dependency") from None
+        return value
 
 
 class InspectBase(BaseModel):

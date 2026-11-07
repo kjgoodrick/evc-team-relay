@@ -19,7 +19,10 @@ from queue import Queue
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from alembic import command
+from alembic.autogenerate import compare_metadata
 from alembic.config import Config
+from alembic.migration import MigrationContext
+from base_groups_postgres import prove_groups
 from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
@@ -78,6 +81,13 @@ def main():
     settings.collaboration_bases_discussions_enabled = True
     settings.managed_bases_sync_enabled = True
     command.upgrade(Config("alembic.ini"), "head")
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060006"
+        drift = compare_metadata(MigrationContext.configure(connection), m.Base.metadata)
+        assert not [item for item in drift if "collaboration_base_group" in str(item)], drift
+    command.downgrade(Config("alembic.ini"), "202611060005")
+    command.upgrade(Config("alembic.ini"), "head")
+    print("PASS: group migration matches ORM metadata and empty-table downgrade/upgrade succeeds")
     users, share_id = [], None
     try:
         with Session(engine, autoflush=False) as db:
@@ -478,6 +488,7 @@ def main():
             "PASS: formula/summary/formula-cell retries serialize once; definition edits reject "
             "stale ORM capture without changing historical access or accepted receipts"
         )
+        prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewer_id)
     finally:
         with Session(engine) as db:
             if share_id is not None and (share := db.get(m.Share, share_id)):
@@ -488,6 +499,8 @@ def main():
             db.commit()
             assert db.scalar(select(func.count()).select_from(m.DiscussionThread)) == 0
             assert db.scalar(select(func.count()).select_from(m.BaseDefinition)) == 0
+            for model in (m.BaseGroupValue, m.BaseGroupWitness, m.BaseGroupCaptureReceipt):
+                assert db.scalar(select(func.count()).select_from(model)) == 0
         engine.dispose()
     print("PASS: synthetic accounts/share and their discussion/registry data removed")
 
