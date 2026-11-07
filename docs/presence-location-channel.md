@@ -4,10 +4,10 @@ The control plane now provides an opt-in, ephemeral channel for following an
 already visible participant between authorized Markdown notes. The Obsidian
 preview now connects to this channel and follows participants across notes;
 precise positions and current-note Jump/Follow still use managed Yjs awareness.
-The server also accepts explicitly negotiated version-two image-file and saved
-Bases-view locations. These are transport/authorization foundations; the plugin
-still uses version one, and image/Bases rosters, pointers and navigation adapters
-are not implemented by this change.
+The server and plugin transport also support explicitly negotiated version-two
+image-file and saved Bases-view locations and authorized surface rosters. The
+native host still uses version one until its non-note adapters are connected;
+image/Bases display controls, pointers and native navigation remain unfinished.
 No production service or live vault has been changed by this work.
 
 Enable locally with `COLLABORATION_PRESENCE_ENABLED=true`. The share capability
@@ -128,9 +128,58 @@ isolation, image replacement, registry/view identity changes, idle revocation an
 read-only access against the actual ASGI application and disposable database.
 This is not native or production-load evidence.
 
-Discovery of participants on non-note surfaces,
-client rendering/navigation, image coordinates, cell/row/group/lane targets and
-native acceptance remain outstanding.
+Client surface bindings/rendering/navigation, image coordinates,
+cell/row/group/lane targets and native acceptance remain outstanding.
+
+## Authorized surface rosters
+
+`features.presence_surface_roster_preview: true` additionally advertises roster
+commands on version-two connections. The plugin's `LocationChannel` selects
+version two only when its caller opts in with `surfaceLocations: true` and the
+server advertises support. The current native note host does not opt in yet.
+Older servers retain note publication and Follow; non-note locations are
+withdrawn and roster commands are not sent.
+
+- `watch` has exactly `type`, `subscription_id` (UUID) and `location` (an image or
+  saved-view descriptor). Each connection observes at most one context. Notes
+  retain their existing managed-awareness room. A new watch replaces the old one.
+- `unwatch` has exactly `type` and `subscription_id`. A stale ID cannot cancel a
+  newer watch. Observing and publishing are independent: a hidden viewer can see
+  authorized participants without appearing in their roster.
+- An available `roster` event has `type`, `subscription_id`, `status: "available"`
+  and `peers`. Each peer has only `target: {user_id, session_id, instance_id}` and
+  the authenticated display `name`. There are no paths, emails, avatars, cells,
+  URLs or client-supplied profiles. The receiving instance is omitted; another
+  session/instance of the same account remains distinct.
+- Only publishers in the exact watched image version or saved-view identity are
+  candidates. The server rechecks the viewer's access, then each publisher's live
+  session and access before delivery. The returned identity can initiate the
+  existing Follow flow from that context; observation alone never starts Follow.
+- Losing viewer access or the watched identity returns only `type`,
+  `subscription_id`, `status: "unavailable"` and ends that watch. Publisher
+  revocation/departure removes that peer. Idle authorization is rechecked every
+  five seconds, including current display names.
+
+The client clears peers immediately on unwatch, scope change, transport loss or
+shutdown. A transport reconnect re-observes the desired context with a fresh ID
+and fresh authorization; it never replays Follow. An unavailable watch stays
+ended until the scope changes or explicit Retry. Late events from an old socket
+or subscription cannot repopulate the current roster.
+
+Rooms and observers are bounded by the 128-connection global limit: each
+connection publishes to at most one room and watches at most one room. A roster
+has at most 127 peers, names of at most 255 code points and a 192 KiB frame budget.
+Other server/client frames retain the 4,096-byte limit. Clients reject duplicate
+identities and unknown fields. The broker keeps one replaceable dirty indication
+per viewer; 1,000 pending membership changes collapse to the latest snapshot.
+No roster or activity history is persisted.
+
+Roster and Follow work share one serialized socket writer, with a five-second
+combined lock/send deadline. Authorization snapshots are checked again after
+waiting for the writer; changed scopes, sessions and room members are discarded
+and recomputed. A completed old denial cannot cancel a newer subscription.
+This is membership transport, not a cursor-movement stream: fine-grained motion
+still needs typed state and measured update/authorization costs before release.
 
 ## Bounds and deployment constraint
 
@@ -164,11 +213,13 @@ tests cover concurrent destination replacement and slow-consumer coalescing.
 The test database is disposable file-backed SQLite; these tests are not a
 production PostgreSQL load benchmark or native Obsidian acceptance.
 
-The version-two server increment passes **167 tests** across the location,
-managed-awareness protocol, collaboration-policy and Bases-registry suites.
-Changed Python files pass lint/format checks. This is a scoped regression run,
-not a claim that the complete control-plane suite was run; the existing test
-fixture/library warnings remain. No plugin code or database migration changed.
+The version-two location/roster tests cover negotiation, read-only/hidden
+observation, saved-view isolation, replacement/revocation, stale unwatch,
+disconnect cleanup, delayed authorization/socket writes and membership
+coalescing. **179 tests** pass across the location, managed-awareness protocol,
+collaboration-policy and Bases-registry suites. Changed Python files pass lint/format checks. The regression set is
+scoped, not a claim that the complete control-plane suite was run; existing
+test-fixture/library warnings remain. No database migration changed.
 
 The plugin transport negotiates this capability, uses fresh session credentials,
 renews tickets on the same socket, bounds retries and pending sends, and withdraws
@@ -194,3 +245,16 @@ and Reading, interruption, hidden-peer removal and reload, using a disposable
 vault and a protocol peer. Two-native-client/mobile acceptance, reconnect UX
 polish, image/Bases adapters and measured resource budgets remain unfinished.
 The single-process deployment constraint above remains in force.
+
+The actual image/Bases client transport fixture runs with:
+
+```sh
+python tests/integration/base_content_client.py --plugin ../../../evc-team-relay-obsidian
+```
+
+Alongside the existing Bases HTTP cases, this exercises real WebSocket roster
+discovery, image-to-Bases Follow, saved-view separation, hidden observation,
+same-socket renewal, reconnect, explicit Follow restart and idle read revocation.
+It seeds synthetic identity metadata in a separate share and removes its
+disposable loopback service/database afterward. This is not a native surface or
+production resource benchmark.

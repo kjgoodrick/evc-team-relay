@@ -31,6 +31,7 @@ def main():
             JWT_SECRET=secrets.token_hex(32),
             MANAGED_BASES_SYNC_ENABLED="true",
             COLLABORATION_POLICY_ENABLED="true",
+            COLLABORATION_PRESENCE_ENABLED="true",
             COLLABORATION_BASES_REGISTRY_ENABLED="true",
             COLLABORATION_DISCUSSIONS_ENABLED="true",
             COLLABORATION_BASES_DISCUSSIONS_ENABLED="true",
@@ -125,6 +126,69 @@ def main():
                 )
             owner_session, _ = session_service.create_session(db, owner.id)
             reviewer_session, _ = session_service.create_session(db, reviewer.id)
+            presence_share = m.Share(
+                kind=m.ShareKind.FOLDER,
+                path="Presence",
+                managed=True,
+                visibility=m.ShareVisibility.PRIVATE,
+                owner_user_id=owner.id,
+            )
+            db.add(presence_share)
+            db.flush()
+            db.add_all(
+                [
+                    m.ShareMember(
+                        share_id=presence_share.id,
+                        user_id=reviewer.id,
+                        role=m.ShareMemberRole.VIEWER,
+                    ),
+                    m.ManagedRule(
+                        share_id=presence_share.id,
+                        user_id=reviewer.id,
+                        path="",
+                        recursive=True,
+                        permission="read",
+                    ),
+                ]
+            )
+            presence_image = m.ManagedEntry(
+                id=str(uuid.uuid4()),
+                share_id=presence_share.id,
+                path="Presence.png",
+                record={"type": "image", "hash": "a" * 64},
+            )
+            presence_base = m.ManagedEntry(
+                id=str(uuid.uuid4()),
+                share_id=presence_share.id,
+                path="Presence.base",
+                record={"type": "file", "hash": "b" * 64},
+            )
+            db.add_all([presence_image, presence_base])
+            db.flush()
+            presence_definition = m.BaseDefinition(
+                entry_id=presence_base.id,
+                generation=presence_base.collaboration_generation,
+                revision=1,
+                content_sha256="b" * 64,
+                configuration={
+                    "views": [
+                        {"type": "table", "name": "Table"},
+                        {"type": "cards", "name": "Cards"},
+                    ]
+                },
+            )
+            db.add(presence_definition)
+            db.flush()
+            presence_views = [
+                m.BaseView(
+                    definition_id=presence_definition.id,
+                    slot=slot,
+                    state="active",
+                    descriptor=descriptor,
+                )
+                for slot, descriptor in enumerate(presence_definition.configuration["views"])
+            ]
+            db.add_all(presence_views)
             db.commit()
             fixture = dict(
                 base=f"http://127.0.0.1:{number}",
@@ -144,6 +208,27 @@ def main():
                 ),
                 reviewerToken=security.create_access_token(
                     str(reviewer.id), session_id=str(reviewer_session.id)
+                ),
+                presence=dict(
+                    image=dict(
+                        kind="image",
+                        share_id=str(presence_share.id),
+                        entry_id=presence_image.id,
+                        generation=str(presence_image.collaboration_generation),
+                        content_sha256="a" * 64,
+                    ),
+                    views=[
+                        dict(
+                            kind="base",
+                            share_id=str(presence_share.id),
+                            entry_id=presence_base.id,
+                            generation=str(presence_base.collaboration_generation),
+                            definition_id=str(presence_definition.id),
+                            view_id=str(view.id),
+                            registry_revision=1,
+                        )
+                        for view in presence_views
+                    ],
                 ),
             )
         fixture_path = temp / "fixture.json"
@@ -182,16 +267,22 @@ def main():
                         "__tests__/collaboration/realBaseDiscussionStack.test.ts",
                         "__tests__/collaboration/realBaseDefinitionStack.test.ts",
                         "__tests__/collaboration/realTimelineMarkerStack.test.ts",
+                        "__tests__/presence/realSurfaceLocationStack.test.ts",
                     ],
                     cwd=args.plugin.resolve(),
-                    env={**os.environ, "EVC_BASE_CONTENT_FIXTURE": str(fixture_path)},
+                    env={
+                        **os.environ,
+                        "EVC_BASE_CONTENT_FIXTURE": str(fixture_path),
+                        "EVC_SURFACE_LOCATION_FIXTURE": str(fixture_path),
+                    },
                     timeout=90,
                 )
                 if result.returncode:
                     raise RuntimeError("Bases client HTTP proof failed")
                 print(
                     "PASS: actual Bases client HTTP, offline persistence, exact retry, "
-                    "conflicts, withdrawal, saved-view identity, repair recovery and discussions"
+                    "conflicts, withdrawal, saved-view identity, repair recovery, "
+                    "discussions and surface presence"
                 )
         finally:
             if process:

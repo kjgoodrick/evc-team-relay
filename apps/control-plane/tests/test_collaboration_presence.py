@@ -739,6 +739,287 @@ def actor():
     return presence.Actor(PresenceIdentity(guid(), "Member", "a" * 32), int(time.time()) + 60)
 
 
+def watch(socket, location, subscription=None):
+    subscription = subscription or guid()
+    socket.send_json({"type": "watch", "subscription_id": subscription, "location": location})
+    return subscription
+
+
+def roster(subscription, peers=None):
+    return {
+        "type": "roster",
+        "subscription_id": subscription,
+        "status": "available",
+        "peers": peers or [],
+    }
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_surface_roster_observation_is_private_and_authenticates_names(
+    client, team, surface_team, index
+):
+    location = surface_team.locations[index]
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, ready):
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, viewer_ready):
+            subscription = watch(viewer, location)
+            assert recv(viewer) == roster(subscription)
+            # Observing does not publish the viewer. The publisher sees nobody.
+            publisher_subscription = watch(publisher, location)
+            assert recv(publisher) == roster(publisher_subscription)
+            publish(publisher, location)
+            peers = [
+                {
+                    "target": {
+                        "user_id": str(team.owner.id),
+                        "session_id": ready["session_id"],
+                        "instance_id": ready["instance_id"],
+                    },
+                    "name": team.owner.email.split("@")[0],
+                }
+            ]
+            assert recv(viewer) == roster(subscription, peers)
+            # Roster identity is immediately usable for the existing Follow flow.
+            follow_id = follow(viewer, team.owner.id, ready, location)
+            assert recv(viewer)["type"] == "following"
+            assert recv(viewer) == available(follow_id, location)
+            viewer.send_json({"type": "unfollow", "subscription_id": follow_id})
+            viewer.send_json({"type": "ping"})
+            assert recv(viewer) == {"type": "pong"}
+            publish(publisher, None)
+            assert recv(viewer) == roster(subscription)
+    owner = client.app.state.collaboration_presence
+    assert not owner.rooms and not owner.watchers and not owner.followers
+
+
+def test_surface_roster_does_not_cross_saved_views_and_stale_unwatch_is_ignored(
+    client, team, surface_team
+):
+    first, second = surface_team.locations[1:]
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, _):
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            publish(publisher, second)
+            old = watch(viewer, first)
+            assert recv(viewer) == roster(old)
+            current = watch(viewer, second)
+            assert len(recv(viewer)["peers"]) == 1
+            viewer.send_json({"type": "unwatch", "subscription_id": old})
+            publish(publisher, first)
+            assert recv(viewer) == roster(current)
+            viewer.send_json({"type": "unwatch", "subscription_id": current})
+            viewer.send_json({"type": "ping"})
+            assert recv(viewer) == {"type": "pong"}
+            assert not client.app.state.collaboration_presence.watchers
+
+
+@pytest.mark.parametrize(
+    "loss", ["viewer-access", "publisher-access", "image-version", "disconnect"]
+)
+def test_surface_roster_clears_idle_revocation_replacement_and_departure(
+    client, db_session, team, surface_team, monkeypatch, loss
+):
+    monkeypatch.setattr(presence, "CHECK_SECONDS", 0.05)
+    location = surface_team.locations[0]
+    # The limited member publishes; the owner observes, except for viewer loss.
+    publisher_token = team.tokens["owner" if loss == "viewer-access" else "viewer"]
+    viewer_token = team.tokens["viewer" if loss == "viewer-access" else "owner"]
+    with connected(client, viewer_token, protocol_version=2) as (viewer, _):
+        with connected(client, publisher_token, protocol_version=2) as (publisher, _):
+            publish(publisher, location)
+            subscription = watch(viewer, location)
+            assert len(recv(viewer)["peers"]) == 1
+            if loss in {"viewer-access", "publisher-access"}:
+                team.rule.permission = "none"
+            elif loss == "image-version":
+                surface_team.image.record = {"type": "image", "hash": "c" * 64}
+            db_session.commit()
+            if loss != "disconnect":
+                result = recv(viewer)
+                assert result == (
+                    roster(subscription)
+                    if loss == "publisher-access"
+                    else {
+                        "type": "roster",
+                        "subscription_id": subscription,
+                        "status": "unavailable",
+                    }
+                )
+        if loss == "disconnect":
+            assert recv(viewer) == roster(subscription)
+
+
+@pytest.mark.parametrize("version,note", [(1, False), (2, True)])
+def test_surface_watch_rejects_legacy_protocol_and_note_rooms(
+    client, team, surface_team, version, note
+):
+    with connected(client, team.tokens["owner"], protocol_version=version) as (socket, _):
+        watch(socket, team.location() if note else surface_team.locations[0])
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == 4400
+
+
+def test_roster_snapshot_changed_while_waiting_for_socket_cannot_be_sent(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.ImageLocation(
+            kind="image",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            content_sha256="a" * 64,
+        )
+        owner.publish(publisher, location)
+        owner.watch(viewer, presence.Watch(guid(), location))
+        captured = asyncio.Event()
+
+        async def authorize(*_):
+            captured.set()
+            return [{"name": "Old participant"}]
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        sent = []
+
+        async def emit(value):
+            sent.append(value)
+
+        await viewer.send_lock.acquire()
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer)
+        )
+        try:
+            await asyncio.wait_for(captured.wait(), 1)
+            # Publication changed after database checks but before the socket
+            # lock is available. Old participant data must not escape.
+            owner.publish(publisher, None)
+
+            async def empty(*_):
+                return []
+
+            monkeypatch.setattr(events, "run_in_threadpool", empty)
+            viewer.send_lock.release()
+            for _ in range(20):
+                if sent:
+                    break
+                await asyncio.sleep(0.01)
+            assert sent == [roster(viewer.watch.subscription_id)]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(publisher)
+            owner.remove(viewer)
+
+    asyncio.run(run())
+
+
+def test_roster_slow_consumer_coalesces_changes_and_releases_room_ownership(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.ImageLocation(
+            kind="image",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            content_sha256="a" * 64,
+        )
+        owner.publish(publisher, location)
+        watch = presence.Watch(guid(), location)
+        owner.watch(viewer, watch)
+
+        async def authorize(_fn, _token, _location, peers):
+            return [{"name": "Member", "target": key} for key, _ in peers]
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        sent = []
+
+        async def emit(value):
+            sent.append(value)
+            if len(sent) == 1:
+                started.set()
+                await release.wait()
+            else:
+                finished.set()
+
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer)
+        )
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            for _ in range(1000):
+                owner.publish(publisher, None)
+                owner.publish(publisher, location)
+            owner.publish(publisher, None)
+            assert not viewer.controls and viewer.roster_dirty.is_set()
+            assert len(owner.watchers) == 1 and not owner.rooms
+            release.set()
+            await asyncio.wait_for(finished.wait(), 1)
+            assert len(sent) == 2 and sent[-1] == roster(watch.subscription_id)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(publisher)
+            owner.remove(viewer)
+        assert not owner.watchers and not owner.rooms and not owner.connections
+
+    asyncio.run(run())
+
+
+def test_sent_roster_denial_cannot_cancel_a_new_observation(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer = owner.add("viewer", actor(), guid(), 2)
+        location = presence.ImageLocation(
+            kind="image",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            content_sha256="a" * 64,
+        )
+        first, replacement = presence.Watch(guid(), location), presence.Watch(guid(), location)
+        owner.watch(viewer, first)
+        retried = asyncio.Event()
+        count = 0
+
+        async def authorize(*_):
+            nonlocal count
+            count += 1
+            if count == 1:
+                raise HTTPException(403)
+            retried.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+
+        async def emit(value):
+            assert (
+                value["subscription_id"] == first.subscription_id
+                and value["status"] == "unavailable"
+            )
+            # The user switches the observation while the prior write awaits.
+            owner.watch(viewer, replacement)
+
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer)
+        )
+        try:
+            await asyncio.wait_for(retried.wait(), 1)
+            assert viewer.watch == replacement and viewer.last_roster is None
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(viewer)
+
+    asyncio.run(run())
+
+
 def test_rate_control_queue_and_connection_limits_are_bounded(monkeypatch):
     owner = presence.PresenceBroker()
     connection = owner.add("token", actor(), guid())

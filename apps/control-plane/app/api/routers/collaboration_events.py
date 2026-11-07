@@ -5,6 +5,7 @@ import contextlib
 import json
 import time
 import uuid
+from collections.abc import Callable
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -167,12 +168,41 @@ async def handle(
                 subscription = identifier(message["subscription_id"])
                 if connection.follow and connection.follow.subscription_id == subscription:
                     owner.subscribe(connection, None)
+            elif kind == "watch" and connection.protocol_version == 2:
+                fields(message, {"type", "subscription_id", "location"})
+                subscription = identifier(message["subscription_id"])
+                location = presence.parse_location(message["location"], 2)
+                if isinstance(location, presence.Location):
+                    raise ValueError("Notes use managed awareness")
+                await run_in_threadpool(presence.authenticate, connection.token, location)
+                owner.watch(connection, presence.Watch(subscription, location))
+            elif kind == "unwatch" and connection.protocol_version == 2:
+                fields(message, {"type", "subscription_id"})
+                subscription = identifier(message["subscription_id"])
+                if connection.watch and connection.watch.subscription_id == subscription:
+                    owner.watch(connection, None)
             elif kind == "ping":
                 fields(message, {"type"})
                 connection.control({"type": "pong"})
             else:
                 raise ValueError("Unknown message")
         connection.last_seen = time.monotonic()
+
+
+async def send(
+    websocket: WebSocket,
+    connection: presence.Connection,
+    message: dict,
+    current: Callable[[], bool] | None = None,
+) -> bool:
+    # Roster and Follow have independent latest-state work, but serialize writes
+    # to the one socket and bound the combined wait/send time.
+    async with asyncio.timeout(5):
+        async with connection.send_lock:
+            if current and not current():
+                return False
+            await websocket.send_json(message)
+            return True
 
 
 async def deliver(
@@ -182,7 +212,7 @@ async def deliver(
         await viewer.dirty.wait()
         viewer.dirty.clear()
         while viewer.controls:
-            await asyncio.wait_for(websocket.send_json(viewer.controls.pop(0)), timeout=5)
+            await send(websocket, viewer, viewer.controls.pop(0))
         follow = viewer.follow
         if not follow:
             continue
@@ -217,10 +247,86 @@ async def deliver(
         if allowed:
             result.update(status="available", location=location.model_dump(mode="json"))
         if result != viewer.last_location:
-            await asyncio.wait_for(websocket.send_json(result), timeout=5)
-            viewer.last_location = result
-        if not allowed:
+
+            def current():
+                return (
+                    not viewer.closed
+                    and viewer.follow == follow
+                    and viewer.token == viewer_token
+                    and owner.connections.get(follow.target) is publisher
+                    and (not publisher or publisher.revision == revision)
+                )
+
+            if not await send(websocket, viewer, result, current):
+                viewer.dirty.set()
+                continue
+            if viewer.follow == follow:
+                viewer.last_location = result
+        if not allowed and viewer.follow == follow:
             owner.subscribe(viewer, None)  # No silent resumption after access/visibility loss.
+
+
+async def deliver_roster(
+    websocket: WebSocket, owner: presence.PresenceBroker, viewer: presence.Connection
+):
+    while True:
+        await viewer.roster_dirty.wait()
+        viewer.roster_dirty.clear()
+        watch, token = viewer.watch, viewer.token
+        if not watch:
+            continue
+        peers = owner.room_peers(watch.location, viewer)
+        captured = [(peer, peer.revision, peer.token) for peer in peers]
+        result = {
+            "type": "roster",
+            "subscription_id": watch.subscription_id,
+            "status": "unavailable",
+        }
+        try:
+            identities = await run_in_threadpool(
+                presence.roster_snapshot,
+                token,
+                watch.location,
+                [(peer.key, saved_token) for peer, _, saved_token in captured],
+            )
+            result.update(status="available", peers=identities)
+        except HTTPException:
+            pass
+        if viewer.closed or viewer.watch != watch:
+            continue
+        if (
+            viewer.token != token
+            or peers != owner.room_peers(watch.location, viewer)
+            or any(
+                peer.revision != revision or peer.token != saved_token
+                for peer, revision, saved_token in captured
+            )
+        ):
+            viewer.roster_dirty.set()
+            continue
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > presence.MAX_ROSTER_BYTES:
+            raise OverflowError("Presence roster too large")
+        if result != viewer.last_roster:
+
+            def current():
+                return (
+                    not viewer.closed
+                    and viewer.watch == watch
+                    and viewer.token == token
+                    and peers == owner.room_peers(watch.location, viewer)
+                    and all(
+                        peer.revision == revision and peer.token == saved_token
+                        for peer, revision, saved_token in captured
+                    )
+                )
+
+            if not await send(websocket, viewer, result, current):
+                viewer.roster_dirty.set()
+                continue
+            if viewer.watch == watch:
+                viewer.last_roster = result
+        if result["status"] == "unavailable" and viewer.watch == watch:
+            owner.watch(viewer, None)
 
 
 async def check_live(owner: presence.PresenceBroker, connection: presence.Connection):
@@ -247,6 +353,8 @@ async def check_live(owner: presence.PresenceBroker, connection: presence.Connec
                     owner.publish(connection, None)
         if connection.follow:
             connection.dirty.set()  # Recheck destination access even when both peers idle.
+        if connection.watch:
+            connection.roster_dirty.set()
 
 
 @router.websocket("/events")
@@ -288,6 +396,7 @@ async def events(websocket: WebSocket):
         tasks = [
             asyncio.create_task(handle(websocket, owner, connection)),
             asyncio.create_task(deliver(websocket, owner, connection)),
+            asyncio.create_task(deliver_roster(websocket, owner, connection)),
             asyncio.create_task(check_live(owner, connection)),
         ]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

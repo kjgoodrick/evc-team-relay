@@ -33,6 +33,7 @@ TICKET_SECONDS = 30
 IDLE_SECONDS = 30
 CHECK_SECONDS = 5
 MAX_MESSAGE_BYTES = 4096
+MAX_ROSTER_BYTES = 192 * 1024
 PeerKey = tuple[str, str, str]
 
 
@@ -171,6 +172,31 @@ def authorize_delivery(viewer_token: str, publisher_token: str, location: Surfac
     authenticate(publisher_token, location)
 
 
+def roster_snapshot(
+    viewer_token: str, location: SurfaceLocation, publishers: list[tuple[PeerKey, str]]
+) -> list[dict]:
+    """One viewer check, then fresh identity/access for each bounded participant.
+
+    This runs off the event loop. The caller fences the captured room and tokens
+    before sending. No client-supplied name, profile, path or activity is relayed.
+    """
+    authenticate(viewer_token, location)
+    result = []
+    for key, token in publishers:
+        try:
+            actor = authenticate(token, location)
+        except HTTPException:
+            continue
+        if actor.key(key[2]) == key:
+            result.append(
+                {
+                    "target": {"user_id": key[0], "session_id": key[1], "instance_id": key[2]},
+                    "name": actor.identity.name,
+                }
+            )
+    return result
+
+
 @dataclass
 class Ticket:
     token: str
@@ -184,6 +210,12 @@ class Follow:
     target: PeerKey
 
 
+@dataclass(frozen=True)
+class Watch:
+    subscription_id: str
+    location: ImageLocation | BaseLocation
+
+
 @dataclass(eq=False)
 class Connection:
     token: str
@@ -192,12 +224,16 @@ class Connection:
     protocol_version: int = 1
     location: SurfaceLocation | None = None
     follow: Follow | None = None
+    watch: Watch | None = None
     revision: int = 0
     closed: bool = False
     last_seen: float = field(default_factory=time.monotonic)
     dirty: asyncio.Event = field(default_factory=asyncio.Event)
+    roster_dirty: asyncio.Event = field(default_factory=asyncio.Event)
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     controls: list[dict] = field(default_factory=list)
     last_location: dict | None = None
+    last_roster: dict | None = None
     allowance: float = 20
     allowance_time: float = field(default_factory=time.monotonic)
 
@@ -226,6 +262,8 @@ class PresenceBroker:
         self.tickets: dict[str, Ticket] = {}
         self.connections: dict[PeerKey, Connection] = {}
         self.followers: dict[PeerKey, set[Connection]] = {}
+        self.rooms: dict[ImageLocation | BaseLocation, set[Connection]] = {}
+        self.watchers: dict[ImageLocation | BaseLocation, set[Connection]] = {}
         self.handshakes = 0
 
     def ticket(self, token: str, actor: Actor) -> str:
@@ -265,13 +303,52 @@ class PresenceBroker:
             return
         if connection.location == location:
             return
+        previous = connection.location
+        if isinstance(previous, (ImageLocation, BaseLocation)):
+            group = self.rooms.get(previous)
+            if group is not None:
+                group.discard(connection)
+                if not group:
+                    self.rooms.pop(previous, None)
+            self.notify_room(previous)
         connection.location = location
+        if isinstance(location, (ImageLocation, BaseLocation)):
+            self.rooms.setdefault(location, set()).add(connection)
+            self.notify_room(location)
         connection.revision += 1
         self.notify(connection.key)
 
     def notify(self, target: PeerKey) -> None:
         for follower in self.followers.get(target, ()):
             follower.dirty.set()  # One replaceable latest state, never a movement queue.
+        publisher = self.connections.get(target)
+        if publisher and isinstance(publisher.location, (ImageLocation, BaseLocation)):
+            self.notify_room(publisher.location)
+
+    def notify_room(self, location: ImageLocation | BaseLocation) -> None:
+        for viewer in self.watchers.get(location, ()):
+            viewer.roster_dirty.set()
+
+    def room_peers(
+        self, location: ImageLocation | BaseLocation, viewer: Connection
+    ) -> list[Connection]:
+        return sorted(
+            (peer for peer in self.rooms.get(location, ()) if peer is not viewer),
+            key=lambda peer: peer.key,
+        )
+
+    def watch(self, connection: Connection, watch: Watch | None) -> None:
+        if connection.watch:
+            group = self.watchers.get(connection.watch.location)
+            if group is not None:
+                group.discard(connection)
+                if not group:
+                    self.watchers.pop(connection.watch.location, None)
+        connection.watch = watch
+        connection.last_roster = None
+        if watch:
+            self.watchers.setdefault(watch.location, set()).add(connection)
+            connection.roster_dirty.set()
 
     def subscribe(self, connection: Connection, follow: Follow | None) -> None:
         if connection.follow:
@@ -287,8 +364,10 @@ class PresenceBroker:
             connection.dirty.set()
 
     def remove(self, connection: Connection) -> None:
+        self.publish(connection, None)
         connection.closed = True
         self.subscribe(connection, None)
+        self.watch(connection, None)
         if self.connections.get(connection.key) is connection:
             self.connections.pop(connection.key)
             self.notify(connection.key)
