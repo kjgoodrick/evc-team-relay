@@ -83,6 +83,12 @@ class BaseTargetCatalog(BaseModel):
         return self
 
 
+class BaseTimelineAxisContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    view_id: uuid.UUID
+    expected_revision: int | None = Field(default=None, ge=1, le=9007199254740991, strict=True)
+
+
 class ViewBinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
     slot: int = Field(ge=0, lt=64, strict=True)

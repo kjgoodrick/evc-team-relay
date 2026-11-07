@@ -48,6 +48,7 @@ def capabilities(
             "discussion_bases": base_discussions.enabled(),
             "discussion_base_definition_catalog": base_discussions.enabled(),
             "discussion_base_groups": base_discussions.groups_enabled(),
+            "discussion_timeline_ranges": base_discussions.timeline_ranges_enabled(),
             "bases_sync": get_settings().managed_bases_sync_enabled,
             "discussion_text_anchors": anchor_service.enabled(),
             "discussion_block_anchors": anchor_service.enabled(),
@@ -88,6 +89,7 @@ def capabilities(
         + (["formula", "summary"] if base_discussions.definitions_enabled() else [])
         + (["formula_cell"] if base_discussions.formula_cells_enabled() else [])
         + (["group"] if base_discussions.groups_enabled() else [])
+        + (["timeline_range"] if base_discussions.timeline_ranges_enabled() else [])
         if base_discussions.enabled()
         else [],
         "discussion_base_file_group_properties": list(base_file_group_values.PROPERTIES)

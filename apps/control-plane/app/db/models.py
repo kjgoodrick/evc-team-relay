@@ -940,7 +940,7 @@ class BaseRegistryRevision(Base):
 
 
 class BaseTargetDefinition(Base):
-    """View-local identities for formula, summary and grouping definitions.
+    """View-local identities for formula, summary, grouping and axis definitions.
 
     A revision is the registry revision that last changed this definition. An
     absent definition retains its identity but cannot be captured. Reappearance

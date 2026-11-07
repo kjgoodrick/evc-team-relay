@@ -70,6 +70,10 @@ class Settings(BaseSettings):
             "and private source observations"
         ),
     )
+    collaboration_bases_timeline_ranges_enabled: bool = Field(
+        default=False,
+        description="Preview saved-view timeline range discussions; requires upgraded clients",
+    )
     managed_bases_sync_enabled: bool = Field(
         default=False,
         description="Preview conditional Bases file publication; requires upgraded clients",

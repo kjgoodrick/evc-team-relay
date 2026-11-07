@@ -188,6 +188,7 @@ allowed_token_types = ["server"]
                 COLLABORATION_BASES_DISCUSSIONS_ENABLED="true",
                 COLLABORATION_BASES_DEFINITION_TARGETS_ENABLED="true",
                 COLLABORATION_BASES_GROUPS_ENABLED="true",
+                COLLABORATION_BASES_TIMELINE_RANGES_ENABLED="true",
                 MANAGED_BASES_SYNC_ENABLED="true",
             )
 

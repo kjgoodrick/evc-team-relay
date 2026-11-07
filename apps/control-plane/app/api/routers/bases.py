@@ -9,11 +9,12 @@ from app.db.session import get_db
 from app.schemas.bases import (
     BaseTargetCatalog,
     BaseTargetContext,
+    BaseTimelineAxisContext,
     CaptureBaseGroup,
     InspectBase,
     ReconcileBase,
 )
-from app.services import base_discussions, base_groups, base_target_definitions
+from app.services import base_discussions, base_groups, base_target_definitions, timeline_axes
 from app.services import bases_registry as service
 
 
@@ -50,6 +51,17 @@ def capture_group(
     db: Session = Depends(get_db),
 ):
     return base_groups.capture(db, token, share_id, entry_id, payload)
+
+
+@router.post("/timeline-axis")
+def timeline_axis(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: BaseTimelineAxisContext,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return timeline_axes.context(db, token, share_id, entry_id, payload)
 
 
 @router.post("/inspect")

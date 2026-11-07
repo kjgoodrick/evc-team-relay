@@ -414,7 +414,11 @@ def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
         group = (
             isinstance(envelope.command, s.ThreadCreate)
             and isinstance(envelope.command.anchor, s.BaseAnchor)
-            and isinstance(envelope.command.anchor.target, s.BaseGroupTarget)
+            and (
+                isinstance(envelope.command.anchor.target, s.BaseGroupTarget)
+                or isinstance(envelope.command.anchor.target, s.BaseTimelineRangeTarget)
+                and envelope.command.anchor.target.lane is not None
+            )
         )
         limit = 256 * 1024 if text or group else 65536
         if len(envelope.canonical_json().encode("utf-8")) > limit:

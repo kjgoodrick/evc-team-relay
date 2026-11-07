@@ -129,6 +129,14 @@ def candidates(configuration, view):
             add(
                 "summary", codec.fingerprint(prop), {"property": prop, "summary": summary}, semantic
             )
+    from app.services.timeline_axes import candidate as axis_candidate
+
+    axis = axis_candidate(configuration, view)
+    if axis:
+        # One separately bounded axis per saved view must not consume a legacy
+        # formula/group/summary slot or disable an existing full catalog.
+        descriptor, semantic = axis
+        output.append(Candidate("axis", "primary", descriptor, codec.fingerprint(semantic)))
     return output
 
 
@@ -138,7 +146,7 @@ def compile_definition(configuration, views):
         if view.state != "active":
             continue
         items = candidates(configuration, view.descriptor)
-        count += len(items)
+        count += sum(item.kind != "axis" for item in items)
         if count > MAX_PER_DEFINITION:
             raise TargetLimit("Too many target definitions")
         result[view.id] = items
@@ -258,7 +266,11 @@ def catalog(db, token, share_id, entry_id, payload):
         if not synchronize(db, definition):
             base_discussions.error(409, "base_definition_targets_limit")
         query = select(m.BaseTargetDefinition).where(
-            m.BaseTargetDefinition.view_id == view.id, m.BaseTargetDefinition.active.is_(True)
+            m.BaseTargetDefinition.view_id == view.id,
+            m.BaseTargetDefinition.active.is_(True),
+            # Old clients strictly decode this catalog. Axis discovery has a
+            # separate versioned response and must not alter their wire shape.
+            m.BaseTargetDefinition.kind.in_(("formula", "group", "summary")),
         )
         if payload.after:
             query = query.where(m.BaseTargetDefinition.id > payload.after)

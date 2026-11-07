@@ -43,6 +43,10 @@ def formula_cells_enabled():
     return definitions_enabled() and get_settings().collaboration_bases_formula_cells_enabled
 
 
+def timeline_ranges_enabled():
+    return enabled() and get_settings().collaboration_bases_timeline_ranges_enabled
+
+
 def groups_enabled():
     settings = get_settings()
     return bool(
@@ -172,6 +176,12 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
         from app.services import base_groups
 
         base_groups.authorize(db, ctx, anchor, user=user)
+    if isinstance(anchor.target, s.BaseTimelineRangeTarget):
+        from app.services import timeline_axes
+
+        timeline_axes.validate(
+            db, ctx, definition, anchor, creation=creation, write=write, user=user
+        )
 
 
 def stored_anchor(payload):

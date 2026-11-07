@@ -20,6 +20,7 @@ from pydantic import (
 from pydantic_core import PydanticSerializationError
 
 from app.schemas.base_values import GroupValue
+from app.schemas.timeline_ranges import TimelineRangeValue, zone
 
 
 class StrictModel(BaseModel):
@@ -386,6 +387,45 @@ class BaseGroupTarget(BaseDefinedTarget):
     value: GroupValue
 
 
+class TimelineAxis(StrictModel):
+    version: Literal[1]
+    renderer: Literal["sabidurian-timeline", "sabidurian-sequence"]
+    start_property: BaseDefinitionProperty
+    end_property: BaseDefinitionProperty | None
+    time_zone: str | None = Field(max_length=128)
+
+    @field_validator("time_zone")
+    @classmethod
+    def valid_zone(cls, value):
+        return None if value is None else zone(value)
+
+
+class BaseTimelineRangeTarget(StrictModel):
+    type: Literal["timeline_range"]
+    axis_definition_id: uuid.UUID
+    axis_definition_revision: int = Field(ge=1, le=9007199254740991, strict=True)
+    axis: TimelineAxis
+    range: TimelineRangeValue
+    lane: BaseGroupTarget | None = None
+
+    @model_validator(mode="after")
+    def coordinate_system(self):
+        sequence = self.axis.renderer == "sabidurian-sequence"
+        if (
+            sequence != (self.range["kind"] == "ordinal")
+            or sequence
+            and self.axis.time_zone is not None
+        ):
+            raise ValueError("Timeline coordinate system does not match the saved axis")
+        if (
+            self.range["kind"] in {"calendar", "instant"}
+            and self.axis.time_zone is not None
+            and self.axis.time_zone != self.range["time_zone"]
+        ):
+            raise ValueError("Timeline timezone does not match the saved axis")
+        return self
+
+
 class BaseAnchor(StrictModel):
     version: Literal[1]
     type: Literal["base"]
@@ -401,7 +441,8 @@ class BaseAnchor(StrictModel):
         | BaseFormulaTarget
         | BaseSummaryTarget
         | BaseFormulaCellTarget
-        | BaseGroupTarget,
+        | BaseGroupTarget
+        | BaseTimelineRangeTarget,
         Field(discriminator="type"),
     ]
 
