@@ -2,9 +2,11 @@
 
 The control plane can persist range discussions for the Time & Line Timeline and
 Sequence views. The client can discover an axis, retain its proof offline, capture
-an explicit interval and deliver it through the ordinary comment queue. This is
-protocol/session implementation: native range selection, projection, visible
-markers, navigation and mobile acceptance remain unfinished. Keep
+an explicit interval and deliver it through the ordinary comment queue. The
+matching client/fork now supply range controls, selection, projection, saved
+markers and guarded navigation, including empty views and intervals outside the
+data-derived axis. These have automated/source integration evidence; native
+desktop/mobile and release acceptance remain unfinished. Keep
 `COLLABORATION_BASES_TIMELINE_RANGES_ENABLED=false` outside disposable development
 fixtures until the matching UI and release acceptance are complete.
 
@@ -92,9 +94,11 @@ context. Authoritative denial invalidates that context; it cannot fall back to
 old proof. Capture rechecks permission and identity after asynchronous work.
 Registry disagreement requires reselection while retaining draft text.
 
-Cache version 17 preserves all existing stores and fences older workers that do
-not understand range/axis/lane targets. No comments or IDs are inserted into task
-Markdown or `.base` files. Ordinary queued range creation retains existing
+Cache version 18 preserves all existing stores and fences older workers that do
+not understand pending range/lane composition. A fresh unverified offline lane
+retains its source evidence and original interval while the queue first obtains
+the group receipt, then creates the range thread. No comments or IDs are inserted
+into task Markdown or `.base` files. Queued range creation retains existing
 operation IDs and receipts across lost responses and cache reopen.
 
 ## Verification and remaining work
@@ -107,16 +111,39 @@ forgery, feature disablement, legacy catalog capacity and exact lane access.
 
 The real Python/Rust/client fixture runs both `sabidurian-timeline` and
 `sabidurian-sequence` with `tests/integration/managed_stack.py --base-groups`.
-Each variant captures a lane-bound range while offline using a verified axis,
-reopens its queued state, loses an accepted response, retries the same operation,
-and verifies the original target after relay restart. It also retains the prior
+Each variant captures a fresh unverified lane-bound range while offline using a
+verified axis, reopens its queued state, loses both accepted group/thread responses,
+retries the same operations and verifies the original target after relay restart.
+It also retains the prior
 note/file group capture and source-permission coverage. These are disposable
 localhost services and synthetic accounts, not native Obsidian acceptance.
 
-Required next work: Time & Line range-selection/axis-conversion API, explicit
-precision/offset controls, rendering/markers, reveal and dirty-inspector guards,
-new unverified offline lane capture composition, keyboard/touch behavior and
-native multiwindow/mobile acceptance. PostgreSQL-specific range concurrency and
-upgrade acceptance also remain; the HTTP fixture uses SQLite. Range support does
-not complete shared milestones, timeline presence or the wider collaboration
-release.
+`tests/integration/base_discussions_postgres.py` now also runs
+`timeline_ranges_postgres.py` against an **empty disposable `127.0.0.1` database
+named `collaboration_test`**, selected by `COLLABORATION_TEST_DATABASE_URL`.
+November 6 verification used PostgreSQL 16.15, fresh migrations to `202611060007`,
+synthetic accounts and a separate rootless container with temporary storage. It
+checks:
+
+- Four coordinate kinds survive exact JSON storage and concurrent duplicate
+  delivery; large adjacent decimals remain distinct and DST offsets are retained.
+- Distinct concurrent commands allocate ordered events isolated to the saved view.
+- Cached ORM axes and requests observed waiting on a share lock cannot bypass a
+  configuration publication or comment/source revocation.
+- A precommit exception rolls back anchors, messages, events, receipts and the
+  share counter; the same operation can then commit once.
+- Exact lane witnesses gate creation, read, receipt retry and filtered event/list
+  delivery; whole-view ranges remain independent of lane membership authority.
+- Refused populated downgrade leaves migration head, anchors, axes and receipts
+  intact. This tests the existing group-data downgrade guard; it is not a rolling
+  upgrade or full backup/restore rehearsal.
+
+The fixture passed alongside **113 range codec/API tests**. No runtime change was
+needed for these checks. The actual-service HTTP fixture uses SQLite and remains
+separate from this PostgreSQL transaction evidence and native host acceptance.
+
+Required next work: integrated native desktop/mobile/multiwindow and physical
+touch acceptance, full accessibility, resource measurements and the wider upgrade/
+recovery matrix. See the plugin's `docs/time-and-line-preview.md` for source
+integration requirements. Range support does not complete shared milestones,
+additional lane adapters, timeline presence or the wider collaboration release.

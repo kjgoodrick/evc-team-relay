@@ -345,6 +345,13 @@ database named `collaboration_test`**. The client fixture is
 its own temporary loopback HTTP/SQLite service. Neither fixture uses a native
 vault or existing service.
 
+The PostgreSQL runner also invokes `timeline_ranges_postgres.py`. Its November 6
+checkpoint covers all four range coordinate kinds, concurrent duplicate and
+independent delivery, real lock waits behind axis/permission changes, precommit
+rollback, retained lane authority and preservation after a refused downgrade.
+See [the range preview](timeline-range-preview.md#verification-and-remaining-work)
+for the evidence and remaining native/upgrade acceptance limits.
+
 The subsequent client increment passed **1,906 plugin tests** (twelve opt-in
 tests skipped), the three actual HTTP suites/four tests, preview build, lint and
 the existing type gates. Added session coverage verifies offline restart/replay,

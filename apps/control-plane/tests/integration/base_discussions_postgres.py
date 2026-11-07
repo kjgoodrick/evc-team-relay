@@ -27,6 +27,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
+from timeline_ranges_postgres import prove_timeline_ranges
 
 from app.core import security
 from app.core.config import get_settings
@@ -489,6 +490,9 @@ def main():
             "stale ORM capture without changing historical access or accepted receipts"
         )
         prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewer_id)
+        prove_timeline_ranges(
+            engine, tokens, share_id, entry_id, record_id, view_id, reviewer_id, wait_for_lock
+        )
     finally:
         with Session(engine) as db:
             if share_id is not None and (share := db.get(m.Share, share_id)):
