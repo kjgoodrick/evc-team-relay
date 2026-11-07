@@ -16,7 +16,7 @@ import anyio
 import jwt
 import pytest
 from fastapi import HTTPException, WebSocketDisconnect
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.api.routers import collaboration_events as events
@@ -506,8 +506,13 @@ def surface_team(db_session, team, monkeypatch):
     db_session.add(definition)
     db_session.flush()
     views = [
-        models.BaseView(definition_id=definition.id, slot=slot, state="active", descriptor={})
-        for slot in (0, 1)
+        models.BaseView(
+            definition_id=definition.id,
+            slot=slot,
+            state="active",
+            descriptor={"name": f"View {slot}", "type": kind},
+        )
+        for slot, kind in enumerate(("table", "sabidurian-timeline"))
     ]
     db_session.add_all(views)
     db_session.commit()
@@ -555,6 +560,177 @@ def image_context(client, team, entry, token=None):
         params={"share_id": str(team.share.id), "entry_id": entry.id},
         headers={"Authorization": "Bearer " + (token or team.tokens["viewer"])},
     )
+
+
+def base_context(client, team, entry=None):
+    return client.get(
+        "/v1/collaboration/base-context",
+        params={"share_id": str(team.share.id), "entry_id": entry.id},
+        headers={"Authorization": "Bearer " + team.tokens["viewer"]},
+    )
+
+
+def test_base_context_reads_active_views_without_writes_config_or_comment_permission(
+    client, db_session, engine, team, surface_team, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "collaboration_discussions_enabled", False)
+    surface_team.views[0].descriptor = {
+        "name": "Work",
+        "type": "table",
+        "filters": "private filter",
+    }
+    db_session.add(
+        models.BaseView(
+            definition_id=surface_team.definition.id,
+            state="archived",
+            descriptor={"name": "Old private view", "type": "table"},
+        )
+    )
+    db_session.commit()
+    statements = []
+
+    def record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        response = base_context(client, team, surface_team.base)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    expected = {
+        key: value
+        for key, value in surface_team.locations[1].items()
+        if key not in {"kind", "view_id"}
+    }
+    assert response.json() == {
+        "protocol_version": 1,
+        **expected,
+        "content_sha256": "b" * 64,
+        "views": [
+            {
+                "id": str(view.id),
+                "slot": slot,
+                "name": "Work" if slot == 0 else "View 1",
+                "type": "table" if slot == 0 else "sabidurian-timeline",
+            }
+            for slot, view in enumerate(surface_team.views)
+        ],
+    }
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    assert not any("collaboration_bases.configuration" in statement for statement in statements)
+    assert (
+        len([statement for statement in statements if "JOIN collaboration_base_views" in statement])
+        == 1
+    )
+    for private in ("private filter", "Old private view", surface_team.base.path):
+        assert private not in response.text
+
+
+@pytest.mark.parametrize(
+    "loss",
+    [
+        "permission",
+        "membership",
+        "session",
+        "deleted",
+        "type",
+        "path",
+        "hash",
+        "generation",
+        "definition",
+    ],
+)
+def test_base_context_rechecks_live_access_and_exact_registry(
+    client, db_session, team, surface_team, loss
+):
+    assert base_context(client, team, surface_team.base).status_code == 200
+    if loss == "permission":
+        team.rule.permission = "none"
+    elif loss == "membership":
+        db_session.delete(team.member)
+    elif loss == "session":
+        db_session.delete(team.sessions["viewer"])
+    elif loss == "deleted":
+        surface_team.base.deleted = True
+    elif loss == "path":
+        surface_team.base.path = "Other.txt"
+    elif loss == "generation":
+        surface_team.base.collaboration_generation = uuid.uuid4()
+    elif loss == "definition":
+        db_session.delete(surface_team.definition)
+    else:
+        surface_team.base.record = (
+            {"type": "image"} if loss == "type" else {"type": "file", "hash": "c" * 64}
+        )
+    db_session.commit()
+    response = base_context(client, team, surface_team.base)
+    assert response.status_code in (401, 403, 404), response.text
+    assert "views" not in response.json()
+
+
+def test_base_context_omits_unmatched_views_and_reflects_new_revision(
+    client, db_session, team, surface_team
+):
+    surface_team.views[0].state = "unmatched"
+    surface_team.views[0].slot = None
+    surface_team.definition.revision += 1
+    db_session.commit()
+    response = base_context(client, team, surface_team.base)
+    assert response.status_code == 200
+    assert response.json()["registry_revision"] == 2
+    assert [view["slot"] for view in response.json()["views"]] == [1]
+    surface_team.views[1].state = "unmatched"
+    surface_team.views[1].slot = None
+    db_session.commit()
+    assert base_context(client, team, surface_team.base).json()["views"] == []
+
+
+@pytest.mark.parametrize("damage", ["name", "duplicate", "slot", "type", "limit"])
+def test_base_context_rejects_malformed_or_oversized_identity_metadata(
+    client, db_session, team, surface_team, damage
+):
+    if damage == "name":
+        surface_team.views[0].descriptor = {"name": "bad\nname", "type": "table"}
+    elif damage == "duplicate":
+        surface_team.views[1].descriptor = surface_team.views[0].descriptor
+    elif damage == "slot":
+        surface_team.views[0].slot = 64
+    elif damage == "type":
+        surface_team.views[0].descriptor = {"name": "Work", "type": 1}
+    else:
+        db_session.add_all(
+            [
+                models.BaseView(
+                    definition_id=surface_team.definition.id,
+                    slot=slot,
+                    state="active",
+                    descriptor={"name": str(slot), "type": "table"},
+                )
+                for slot in range(2, 65)
+            ]
+        )
+    db_session.commit()
+    assert base_context(client, team, surface_team.base).status_code == 403
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "collaboration_presence_enabled",
+        "collaboration_policy_enabled",
+        "collaboration_bases_registry_enabled",
+    ],
+)
+def test_base_context_is_explicitly_gated(client, team, surface_team, monkeypatch, setting):
+    monkeypatch.setattr(get_settings(), setting, False)
+    assert base_context(client, team, surface_team.base).status_code == 404
+    response = client.get(
+        f"/v1/collaboration/capabilities?share_id={team.share.id}",
+        headers={"Authorization": "Bearer " + team.tokens["viewer"]},
+    )
+    assert response.json()["features"]["presence_base_context_preview"] is False
 
 
 def move_image(socket, location, state):
@@ -1103,7 +1279,10 @@ def test_image_context_rechecks_access_and_live_image_metadata(
 
 
 @pytest.mark.parametrize("credential", ["missing", "invalid", "sessionless", "scoped"])
-def test_image_context_requires_normal_session_credentials(client, team, surface_team, credential):
+@pytest.mark.parametrize("endpoint", ["image-location", "base-context"])
+def test_surface_context_requires_normal_session_credentials(
+    client, team, surface_team, credential, endpoint
+):
     claims = security.decode_access_token(team.tokens["viewer"])
     claims["scope"] = "managed"
     token = {
@@ -1115,8 +1294,13 @@ def test_image_context_requires_normal_session_credentials(client, team, surface
         "missing": None,
     }[credential]
     response = client.get(
-        "/v1/collaboration/image-location",
-        params={"share_id": str(team.share.id), "entry_id": surface_team.image.id},
+        "/v1/collaboration/" + endpoint,
+        params={
+            "share_id": str(team.share.id),
+            "entry_id": surface_team.image.id
+            if endpoint == "image-location"
+            else surface_team.base.id,
+        },
         headers={"Authorization": "Bearer " + token} if token else {},
     )
     assert response.status_code in (401, 403), response.text

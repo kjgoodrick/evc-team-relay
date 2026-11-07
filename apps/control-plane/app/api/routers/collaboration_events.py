@@ -52,6 +52,22 @@ async def image_location(
     return {"protocol_version": 1, "location": location.model_dump(mode="json")}
 
 
+@router.get("/base-context")
+async def base_context(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    response: Response,
+    token: str | None = Depends(deps.oauth2_scheme),
+):
+    if not enabled() or not presence.bases_registry.enabled():
+        raise HTTPException(404, "Bases presence context disabled")
+    if not token:
+        raise HTTPException(401, "Missing credentials")
+    context = await run_in_threadpool(presence.base_context, token, share_id, entry_id)
+    response.headers["Cache-Control"] = "no-store"
+    return context.model_dump(mode="json")
+
+
 @router.post("/socket-ticket")
 async def socket_ticket(request: Request, token: str | None = Depends(deps.oauth2_scheme)):
     if not enabled():

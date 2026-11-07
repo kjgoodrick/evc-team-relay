@@ -19,7 +19,7 @@ from typing import Annotated, Literal
 from fastapi import HTTPException
 from jwt.exceptions import InvalidTokenError
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from app.api import deps
 from app.core import security
@@ -138,6 +138,42 @@ class BaseLocation(BaseModel):
     definition_id: uuid.UUID
     view_id: uuid.UUID
     registry_revision: int = Field(strict=True, ge=1, le=9007199254740991)
+
+
+class BasePresenceView(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: uuid.UUID
+    slot: int = Field(strict=True, ge=0, le=63)
+    name: str = Field(min_length=1, max_length=256)
+    type: str = Field(min_length=1, max_length=256)
+
+    @field_validator("name", "type")
+    @classmethod
+    def safe_label(cls, value):
+        if any(ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise ValueError("Invalid saved-view label")
+        return value
+
+
+class BasePresenceContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    protocol_version: Literal[1] = 1
+    share_id: uuid.UUID
+    entry_id: uuid.UUID
+    generation: uuid.UUID
+    definition_id: uuid.UUID
+    registry_revision: int = Field(strict=True, ge=1, le=9007199254740991)
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    views: list[BasePresenceView] = Field(max_length=64)
+
+    @model_validator(mode="after")
+    def unique_views(self):
+        for attribute in ("id", "slot", "name"):
+            if len({getattr(view, attribute) for view in self.views}) != len(self.views):
+                raise ValueError("Ambiguous saved views")
+        if [view.slot for view in self.views] != sorted(view.slot for view in self.views):
+            raise ValueError("Unordered saved views")
+        return self
 
 
 SurfaceLocation = Location | ImageLocation | BaseLocation
@@ -295,6 +331,64 @@ def image_location(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> Imag
                 content_sha256=entry.record.get("hash"),
             )
         except ValueError:
+            raise HTTPException(403, "Location unavailable") from None
+
+
+def base_context(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> BasePresenceContext:
+    """Read existing active identities only: no inspection, repair or object I/O.
+
+    Presence must not initialize a registry or change the saved configuration.
+    Clients prove their native source against this hash before choosing a slot.
+    Unmatched/archived descriptors, formulas, filters and record data stay out.
+    """
+    authenticate(token)
+    with get_sessionmaker()() as db:
+        user = deps._get_user_from_token(db, token)
+        share = share_service.get_share(db, share_id)
+        entry = managed_service.authorize_entry(db, share, user, str(entry_id))
+        if entry.record.get("type") != "file" or not entry.path.lower().endswith(".base"):
+            raise HTTPException(403, "Location unavailable")
+        definition, view = models.BaseDefinition, models.BaseView
+        # One SQL statement pins descriptors and revision to the same database
+        # snapshot even when reconciliation commits concurrently.
+        rows = db.execute(
+            select(
+                definition.id,
+                definition.generation,
+                definition.revision,
+                definition.content_sha256,
+                view.id.label("view_id"),
+                view.slot,
+                view.descriptor["name"].label("name"),
+                view.descriptor["type"].label("type"),
+            )
+            .outerjoin(view, and_(view.definition_id == definition.id, view.state == "active"))
+            .where(
+                definition.entry_id == entry.id,
+                definition.generation == entry.collaboration_generation,
+                definition.content_sha256 == entry.record.get("hash"),
+            )
+            .order_by(view.slot, view.id)
+            .limit(65)
+        ).all()
+        if not rows:
+            raise HTTPException(403, "Location unavailable")
+        current = rows[0]
+        try:
+            return BasePresenceContext(
+                share_id=share_id,
+                entry_id=entry_id,
+                generation=current.generation,
+                definition_id=current.id,
+                registry_revision=current.revision,
+                content_sha256=current.content_sha256,
+                views=[
+                    BasePresenceView(id=row.view_id, slot=row.slot, name=row.name, type=row.type)
+                    for row in rows
+                    if row.view_id is not None
+                ],
+            )
+        except (ValueError, AttributeError):
             raise HTTPException(403, "Location unavailable") from None
 
 

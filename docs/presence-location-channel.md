@@ -8,7 +8,7 @@ The server and plugin transport also support explicitly negotiated version-two
 image-file and saved Bases-view locations and authorized surface rosters. The
 native host now opts in for directly opened managed images, with participant
 controls and whole-image Jump/Follow sharing its note socket. Native image
-acceptance, visible split-pane image observation and Bases/timeline bindings remain unfinished.
+acceptance, visible split-pane image observation and Bases/timeline host integration remain unfinished.
 Direct images now have a separate authorized pointer/viewport stream. Embedded
 images also have a negotiated transport and exact source anchors; the foreground
 plugin host now connects capture, overlays and image-aware navigation with
@@ -65,6 +65,32 @@ Replacement returns the current generation/hash for local verification.
 This endpoint does not authorize future publication or delivery: the socket
 continues to check the descriptor and both parties' current access independently.
 The client must also verify its actual local rendered image before publishing.
+
+## Read-only Bases context
+
+`GET /v1/collaboration/base-context?share_id=UUID&entry_id=UUID` is advertised by
+`presence_base_context_preview` only when both presence and the Bases registry
+are enabled. It uses normal session credentials and current managed-entry read
+access, independently of comment permission and the discussion feature flag.
+The response has `Cache-Control: no-store` and contains protocol version 1,
+share/entry/generation/definition IDs, registry revision, synchronized SHA-256
+and up to 64 active views with ID, slot, name and type. Sparse slots are valid;
+unmatched and archived views are excluded.
+
+This lookup does not invoke registry inspection/reconciliation, initialize IDs,
+read object storage or change any database/file state. A single bounded SQL
+statement reads the current identities and revision consistently, selecting only
+view names/types from descriptors. It does not load the saved configuration,
+filters, formulas or record data. Missing/stale definitions, changed generations,
+invalid hashes and malformed identity metadata reject without returning a context.
+Normal Bases sync/identity management must establish the registry first.
+
+The client negotiates this capability independently, validates/freezes the result,
+and fences late HTTP results after channel shutdown/replacement. Its native
+adapter verifies local disk bytes, runtime configuration and saved-view slots.
+This is the foundation for host integration; it does not yet enable Bases
+participants or fine-grained movement in Obsidian. Socket publication/delivery
+still rechecks both users' current permissions and exact saved-view identity.
 
 ## Publishing and following
 
@@ -271,7 +297,10 @@ disabled, current replacement metadata, cache headers, malformed metadata and
 revoked/deleted/scoped/sessionless rejection. Movement cases cover malformed
 coordinates, legacy watchers, read-only publishers, stale versions/revocation,
 context changes during socket waits and 1,001 coalesced moves without roster work.
-**211 tests** pass across the location, managed-awareness protocol,
+Bases-context cases additionally verify active-only identities, a single coherent
+metadata query with no writes/configuration load, sparse views, revision changes,
+read/session revocation, stale generations/hashes, malformed metadata and gates.
+**265 tests** pass across the location, managed-awareness protocol,
 collaboration-policy and Bases-registry suites. Changed Python files pass lint/format checks. The regression set is
 scoped, not a claim that the complete control-plane suite was run; existing
 test-fixture/library warnings remain. No database migration changed.
@@ -298,7 +327,7 @@ credential refresh, inaccessible destinations and idle permission revocation.
 The native desktop run also verified cross-note Follow in Source, Live Preview
 and Reading, interruption, hidden-peer removal and reload, using a disposable
 vault and a protocol peer. Two-native-client/mobile acceptance, reconnect UX
-polish, native image acceptance, embedded-image presence, Bases/timeline adapters
+polish, native image/embedded-image acceptance, Bases/timeline host integration
 and measured resource budgets remain unfinished.
 The single-process deployment constraint above remains in force.
 
@@ -312,6 +341,10 @@ Alongside the existing Bases HTTP cases, this exercises real WebSocket roster
 discovery, image-to-Bases Follow, saved-view separation, hidden observation,
 same-socket renewal, reconnect, explicit Follow restart and idle read revocation.
 It also verifies fresh image-context reads and denial after read revocation.
+The read-only Bases context is fetched through the actual client transport and
+its active views reconstruct the exact saved-view locations. Native source/view
+binding has separate automated adapter tests; no native Bases presence run is
+claimed by this transport fixture.
 Pointer/viewport delivery is verified separately from membership, including
 surface departure and permission revocation.
 It seeds synthetic identity metadata in a separate share and removes its

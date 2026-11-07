@@ -45,6 +45,8 @@ def capabilities(
             "presence_surface_locations_preview": get_settings().collaboration_presence_enabled,
             "presence_surface_roster_preview": get_settings().collaboration_presence_enabled,
             "presence_image_context_preview": get_settings().collaboration_presence_enabled,
+            "presence_base_context_preview": get_settings().collaboration_presence_enabled
+            and bases_registry.enabled(),
             "presence_image_states_preview": get_settings().collaboration_presence_enabled,
             "presence_embedded_images_preview": get_settings().collaboration_presence_enabled,
             "comment_permissions": get_settings().collaboration_policy_enabled,
