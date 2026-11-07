@@ -493,3 +493,43 @@ host tests against simulated native layout. The client bounds record lookups,
 checks local access/generation, materializes virtualized cells and cancels stale
 navigation. Group/lane/range extensions and native
 Obsidian desktop/mobile, accessibility and resource acceptance remain required.
+
+## Version-two Bases group and range positions
+
+The `presence_base_targets_v2_preview` capability requires presence and the Bases
+registry. Observers opt in with `base_target_version: 2` on an existing
+`base_states: true` watch. A version-two state adds `group` and `timeline_range`
+targets; version one rejects them. Legacy observers receive version-one state
+with unsupported slots cleared, preserving any supported cell/item/header slot.
+The participant roster is independent. Other streams retain their old limits.
+
+Groups carry the current saved grouping property, one member record and its
+generation, a 64-character value fingerprint and at most eight additional record
+references. Current read access and generation are checked for every input for
+both publisher and observer, including on idle revalidation. A denied input
+withdraws the entire precise state without withdrawing an otherwise readable
+Base participant. Note groups require a Markdown member. Formula groups and
+non-inventory file groups are not accepted by this initial adapter. Group labels,
+values and paths are not transmitted. Fingerprints are only client matching hints;
+the server does not attest membership or treat a hash as an authorization proof.
+
+Timeline ranges reuse the typed coordinate codec and carry the saved axis plus a
+nullable group lane. The axis must exactly match the active saved view. Ordinary
+axes require only the view descriptor; formula axes additionally check the saved
+formula configuration, without evaluation or record-content reads. Inputs,
+descriptor and axis are reused within a state check. No registry initialization,
+comment capability, target-definition write or pointer-history storage occurs.
+
+The whole canonical state is limited to 3,072 UTF-8 bytes within the existing
+4 KiB ingress frame. Only negotiated version-two Bases snapshots raise the output
+ceiling to 512 KiB, accommodating all 127 possible peers at the bounded state size.
+Existing rate/coalescing/connection limits apply. Changed fingerprints, references,
+axes, dates or lanes invalidate a pending authorized send; offsets are coalesced.
+Legacy downgrade happens after authorization and before serialization.
+
+Native group/lane/range capture, projection and navigation remain unfinished.
+Automated checks cover read-only handling, legacy downgrade, denied dependencies,
+idle revocation with preserved roster, obsolete axes/grouping, strict input and
+full-room output budgets, and concurrent target changes. The actual client/service
+fixture exchanges groups and lane ranges without roster churn. No migration or
+production deployment is part of this increment.

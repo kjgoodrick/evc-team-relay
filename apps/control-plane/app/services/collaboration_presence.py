@@ -25,6 +25,7 @@ from app.api import deps
 from app.core import security
 from app.db import models
 from app.db.session import get_sessionmaker
+from app.schemas.timeline_ranges import TimelineRangeValue
 from app.services import bases_registry, managed_service, share_service
 from app.services.presence_protocol import PresenceIdentity, identity_for, relative_position
 
@@ -35,6 +36,7 @@ IDLE_SECONDS = 30
 CHECK_SECONDS = 5
 MAX_MESSAGE_BYTES = 4096
 MAX_ROSTER_BYTES = 192 * 1024
+MAX_BASE_TARGET_BYTES = 512 * 1024
 # Ingress already coalesces to eight ordinary movements/second per client.
 # Batch concurrent peers for one frame without adding a second 100 ms delay.
 IMAGE_STATE_INTERVAL = 0.016
@@ -173,19 +175,104 @@ class BasePresenceHeader(BaseModel):
     property: BasePresenceProperty
 
 
+class BasePresenceReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    record_id: uuid.UUID
+    record_generation: uuid.UUID
+
+
+class BasePresenceGroup(BasePresenceItem):
+    type: Literal["group"]
+    property: BasePresenceProperty
+    value_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    references: tuple[BasePresenceReference, ...] = Field(max_length=8)
+
+    @model_validator(mode="after")
+    def supported_group(self):
+        from app.services.base_file_group_values import PROPERTIES
+
+        if self.property.source == "formula" or (
+            self.property.source == "file" and self.property.name.lower() not in PROPERTIES
+        ):
+            raise ValueError("Unsupported presence group")
+        ids = [self.record_id, *(ref.record_id for ref in self.references)]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Duplicate group reference")
+        return self
+
+
+class BasePresenceAxis(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    version: int = Field(strict=True, ge=1, le=1)
+    renderer: Literal["sabidurian-timeline", "sabidurian-sequence"]
+    start_property: BasePresenceProperty
+    end_property: BasePresenceProperty | None
+    time_zone: str | None = Field(max_length=128)
+
+
+class BasePresenceRange(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    type: Literal["timeline_range"]
+    axis: BasePresenceAxis
+    range: TimelineRangeValue
+    lane: BasePresenceGroup | None
+
+    @model_validator(mode="after")
+    def coordinate_system(self):
+        from app.schemas.timeline_ranges import zone
+
+        sequence = self.axis.renderer == "sabidurian-sequence"
+        if (
+            sequence != (self.range["kind"] == "ordinal")
+            or sequence
+            and self.axis.time_zone is not None
+        ):
+            raise ValueError("Timeline coordinate system mismatch")
+        if self.axis.time_zone is not None:
+            zone(self.axis.time_zone)
+            if "time_zone" in self.range and self.range["time_zone"] != self.axis.time_zone:
+                raise ValueError("Timeline timezone mismatch")
+        return self
+
+
 class BasePosition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     target: Annotated[
-        BasePresenceItem | BasePresenceCell | BasePresenceHeader, Field(discriminator="type")
+        BasePresenceItem
+        | BasePresenceCell
+        | BasePresenceHeader
+        | BasePresenceGroup
+        | BasePresenceRange,
+        Field(discriminator="type"),
     ]
     offset: ImagePoint
 
 
 class BaseState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    version: int = Field(strict=True, ge=1, le=1)
+    version: int = Field(strict=True, ge=1, le=2)
     pointer: BasePosition | None
     viewport: BasePosition | None
+
+    @model_validator(mode="after")
+    def negotiated_targets(self):
+        if self.version == 1 and any(
+            position and isinstance(position.target, (BasePresenceGroup, BasePresenceRange))
+            for position in (self.pointer, self.viewport)
+        ):
+            raise ValueError("Extended targets require version two")
+        if len(self.model_dump_json().encode("utf-8")) > 3072:
+            raise ValueError("Bases position exceeds state budget")
+        return self
+
+    def for_version(self, version: int) -> dict:
+        result = self.model_dump(mode="json")
+        if version == 1:
+            result["version"] = 1
+            for field in ("pointer", "viewport"):
+                if result[field] and result[field]["target"]["type"] in {"group", "timeline_range"}:
+                    result[field] = None
+        return result
 
     def semantic_key(self) -> str:
         # Pointer movement within one cell is replaceable geometry. A different
@@ -355,25 +442,101 @@ def authorize_embed(db, user, location: Location, embed: EmbeddedImage) -> None:
 
 
 def authorize_base_state(db, user, location: BaseLocation, state: BaseState) -> None:
+    from app.services import base_target_definitions, timeline_axes
+
     share = share_service.get_share(db, location.share_id)
     records = {}
-    for position in (state.pointer, state.viewport):
-        if not position or not isinstance(position.target, BasePresenceItem):
-            continue
-        target = position.target
-        if target.record_id not in records:
-            records[target.record_id] = managed_service.authorize_entry(
-                db, share, user, str(target.record_id)
-            )
-        entry = records[target.record_id]
+    descriptor = None
+    axis_candidate = None
+
+    def record(record_id, generation, *, markdown=False):
+        if record_id not in records:
+            records[record_id] = managed_service.authorize_entry(db, share, user, str(record_id))
+        entry = records[record_id]
         if (
             entry.record.get("type") not in ("markdown", "image", "file")
-            or entry.collaboration_generation != target.record_generation
-            or isinstance(target, BasePresenceCell)
-            and target.property.source == "note"
+            or entry.collaboration_generation != generation
+            or markdown
             and entry.record.get("type") != "markdown"
         ):
             raise HTTPException(403, "Position unavailable")
+
+    def view():
+        nonlocal descriptor
+        if descriptor is None:
+            descriptor = db.scalar(
+                select(models.BaseView.descriptor).where(
+                    models.BaseView.id == location.view_id,
+                    models.BaseView.definition_id == location.definition_id,
+                    models.BaseView.state == "active",
+                )
+            )
+        if not isinstance(descriptor, dict):
+            raise HTTPException(403, "Position unavailable")
+        return descriptor
+
+    def group(target):
+        grouping = view().get("groupBy")
+        if (
+            not isinstance(grouping, dict)
+            or set(grouping) - {"property", "direction"}
+            or base_target_definitions.property_locator(grouping.get("property"))
+            != target.property.model_dump(mode="json")
+        ):
+            raise HTTPException(403, "Position unavailable")
+        # A fingerprint is only a local matching hint, never an authority proof.
+        # Both parties must read the selected member and every linked input.
+        record(
+            target.record_id, target.record_generation, markdown=target.property.source == "note"
+        )
+        for reference in target.references:
+            record(reference.record_id, reference.record_generation)
+
+    def axis():
+        nonlocal axis_candidate
+        if axis_candidate is None:
+            saved = view()
+            properties = [
+                base_target_definitions.property_locator(saved.get(key))
+                for key in (
+                    ("orderProp", "orderEndProp")
+                    if saved.get("type") == "sabidurian-sequence"
+                    else ("startDateProp", "endDateProp")
+                )
+            ]
+            configuration = {}
+            if any(prop and prop["source"] == "formula" for prop in properties):
+                configuration = (
+                    db.scalar(
+                        select(models.BaseDefinition.configuration).where(
+                            models.BaseDefinition.id == location.definition_id
+                        )
+                    )
+                    or {}
+                )
+            axis_candidate = timeline_axes.candidate(configuration, saved)
+        return axis_candidate
+
+    for position in (state.pointer, state.viewport):
+        if not position:
+            continue
+        target = position.target
+        if isinstance(target, BasePresenceGroup):
+            group(target)
+        elif isinstance(target, BasePresenceRange):
+            # Only axis metadata is inspected. Do not evaluate formulas, read
+            # note contents, create discussion IDs or persist pointer history.
+            candidate = axis()
+            if not candidate or candidate[0]["axis"] != target.axis.model_dump(mode="json"):
+                raise HTTPException(403, "Position unavailable")
+            if target.lane is not None:
+                group(target.lane)
+        elif isinstance(target, BasePresenceItem):
+            record(
+                target.record_id,
+                target.record_generation,
+                markdown=isinstance(target, BasePresenceCell) and target.property.source == "note",
+            )
 
 
 def authenticate(
@@ -603,6 +766,7 @@ class Watch:
     image_states: bool = False
     embedded_images: bool = False
     base_states: bool = False
+    base_target_version: int = 1
 
 
 @dataclass(eq=False)

@@ -269,7 +269,8 @@ async def handle(
                     message,
                     {"type", "subscription_id", "location"}
                     | ({"image_states"} if "image_states" in message else set())
-                    | ({"base_states"} if "base_states" in message else set()),
+                    | ({"base_states"} if "base_states" in message else set())
+                    | ({"base_target_version"} if "base_target_version" in message else set()),
                 )
                 subscription = identifier(message["subscription_id"])
                 location = presence.parse_location(message["location"], 2)
@@ -277,6 +278,7 @@ async def handle(
                     raise ValueError("Notes use managed awareness")
                 image_states = message.get("image_states", False)
                 base_states = message.get("base_states", False)
+                base_target_version = message.get("base_target_version", 1)
                 if (
                     type(image_states) is not bool
                     or image_states
@@ -289,10 +291,23 @@ async def handle(
                     and not isinstance(location, presence.BaseLocation)
                 ):
                     raise ValueError("Invalid Bases observation")
+                if (
+                    type(base_target_version) is not int
+                    or base_target_version not in (1, 2)
+                    or "base_target_version" in message
+                    and not base_states
+                ):
+                    raise ValueError("Invalid Bases target version")
                 await run_in_threadpool(presence.authenticate, connection.token, location)
                 owner.watch(
                     connection,
-                    presence.Watch(subscription, location, image_states, base_states=base_states),
+                    presence.Watch(
+                        subscription,
+                        location,
+                        image_states,
+                        base_states=base_states,
+                        base_target_version=base_target_version,
+                    ),
                 )
             elif kind == "watch_embeds" and connection.protocol_version == 2:
                 fields(message, {"type", "subscription_id", "location"})
@@ -452,7 +467,7 @@ async def deliver_roster(
                         )
                     )
                     if value:
-                        item["state"] = value.model_dump(mode="json")
+                        item["state"] = value.for_version(watch.base_target_version)
             elif watch.embedded_images:
                 identities = await run_in_threadpool(
                     presence.embed_snapshot,
@@ -516,7 +531,12 @@ async def deliver_roster(
         ):
             dirty.set()
             continue
-        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > presence.MAX_ROSTER_BYTES:
+        limit = (
+            presence.MAX_BASE_TARGET_BYTES
+            if base_states and watch.base_target_version == 2
+            else presence.MAX_ROSTER_BYTES
+        )
+        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > limit:
             raise OverflowError("Presence roster too large")
         if result != (viewer.last_image_states if image_states else viewer.last_roster):
 

@@ -2090,7 +2090,7 @@ def move_base(socket, location, state):
     assert recv(socket) == {"type": "pong"}
 
 
-def watch_base(socket, location):
+def watch_base(socket, location, version=1):
     subscription = guid()
     socket.send_json(
         {
@@ -2098,6 +2098,7 @@ def watch_base(socket, location):
             "subscription_id": subscription,
             "location": location,
             "base_states": True,
+            **({"base_target_version": version} if version != 1 else {}),
         }
     )
     initial = [recv(socket), recv(socket)]
@@ -2299,13 +2300,14 @@ def test_base_position_discovery_feature_gate(client, team, surface_team, monkey
         headers={"Authorization": "Bearer " + team.tokens["viewer"]},
     ).json()["features"]
     assert features["presence_base_states_preview"] is False
+    assert features["presence_base_targets_v2_preview"] is False
 
 
 @pytest.mark.parametrize(
     "patch",
     [
         {"version": True},
-        {"version": 2},
+        {"version": 3},
         {"path": "private"},
         {"pointer": {}},
         {"viewport": {"x": 1}},
@@ -2337,7 +2339,22 @@ def test_base_positions_reject_unbounded_geometry_values_and_identity_fields(pat
         presence.BaseState.model_validate(base_state(**patch))
 
 
-@pytest.mark.parametrize("change", ["record", "property", "generation", "hidden", "token", "watch"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "record",
+        "property",
+        "generation",
+        "hidden",
+        "token",
+        "watch",
+        "group-value",
+        "group-reference",
+        "range-axis",
+        "range-date",
+        "range-lane",
+    ],
+)
 def test_base_semantic_change_fences_pending_socket_send(monkeypatch, change):
     async def run():
         owner = presence.PresenceBroker()
@@ -2354,7 +2371,13 @@ def test_base_semantic_change_fences_pending_socket_send(monkeypatch, change):
             view_id=guid(),
             registry_revision=1,
         )
-        original = presence.BaseState.model_validate(base_state())
+        original = presence.BaseState.model_validate(
+            extended_state(extended_range(extended_group()))
+            if change.startswith("range-")
+            else extended_state(extended_group())
+            if change.startswith("group-")
+            else base_state()
+        )
         owner.publish(publisher, location)
         owner.move_base(publisher, location, original)
         owner.watch(viewer, presence.Watch(guid(), location, base_states=True))
@@ -2388,6 +2411,20 @@ def test_base_semantic_change_fences_pending_socket_send(monkeypatch, change):
                     target["property"]["name"] = "different"
                 else:
                     target["record_id" if change == "record" else "record_generation"] = guid()
+                owner.move_base(publisher, location, presence.BaseState.model_validate(data))
+            elif change.startswith(("group-", "range-")):
+                data = original.model_dump(mode="json")
+                target = data["pointer"]["target"]
+                if change == "group-value":
+                    target["value_sha256"] = "b" * 64
+                elif change == "group-reference":
+                    target["references"] = [{"record_id": guid(), "record_generation": guid()}]
+                elif change == "range-axis":
+                    target["axis"]["start_property"]["name"] = "changed"
+                elif change == "range-date":
+                    target["range"]["start"] = "2026-10-01"
+                else:
+                    target["lane"]["record_generation"] = guid()
                 owner.move_base(publisher, location, presence.BaseState.model_validate(data))
             elif change == "hidden":
                 owner.publish(publisher, None)
@@ -2485,3 +2522,293 @@ def test_base_geometry_coalesces_without_roster_rebuild_or_authorization_starvat
             owner.remove(viewer)
 
     asyncio.run(run())
+
+
+def extended_group(record=None, references=()):
+    return {
+        **base_position(record, kind="group")["target"],
+        "value_sha256": "a" * 64,
+        "references": [
+            {"record_id": item.id, "record_generation": str(item.collaboration_generation)}
+            for item in references
+        ],
+    }
+
+
+def extended_range(lane=None):
+    return {
+        "type": "timeline_range",
+        "axis": {
+            "version": 1,
+            "renderer": "sabidurian-timeline",
+            "start_property": {"source": "note", "name": "start"},
+            "end_property": None,
+            "time_zone": "America/Denver",
+        },
+        "range": {
+            "version": 1,
+            "kind": "calendar",
+            "start": "2026-11-01",
+            "end": "2026-11-07",
+            "start_inclusive": True,
+            "end_inclusive": True,
+            "time_zone": "America/Denver",
+        },
+        "lane": lane,
+    }
+
+
+def extended_state(target, viewport=None):
+    return {
+        "version": 2,
+        "pointer": {"target": target, "offset": {"x": 0.25, "y": 0.5}},
+        "viewport": viewport,
+    }
+
+
+def configure_presence_groups(db, surfaces):
+    for view in surfaces.views:
+        view.descriptor = {
+            **view.descriptor,
+            "groupBy": {"property": "note.status", "direction": "ASC"},
+            "startDateProp": "note.start",
+            "timeZone": "America/Denver",
+        }
+    db.commit()
+
+
+@pytest.mark.parametrize("timeline", [False, True])
+def test_extended_base_targets_negotiate_and_preserve_legacy_positions(
+    client, db_session, team, surface_team, monkeypatch, timeline
+):
+    configure_presence_groups(db_session, surface_team)
+    monkeypatch.setattr(get_settings(), "collaboration_discussions_enabled", False)
+    location = surface_team.locations[2 if timeline else 1]
+    group = extended_group(team.notes["first"])
+    state = extended_state(
+        extended_range(group) if timeline else group, base_position(team.notes["first"])
+    )
+    with connected(client, team.tokens["viewer"], protocol_version=2) as (publisher, _):
+        publish(publisher, location)
+        with connected(client, team.tokens["owner"], protocol_version=2) as (legacy, _):
+            watch_base(legacy, location)
+            with connected(client, team.tokens["owner"], protocol_version=2) as (modern, _):
+                watch_base(modern, location, 2)
+                move_base(publisher, location, state)
+                assert recv(modern)["peers"][0]["state"] == state
+                assert recv(legacy)["peers"][0]["state"] == {
+                    "version": 1,
+                    "pointer": None,
+                    "viewport": state["viewport"],
+                }
+                move_base(publisher, location, None)
+                assert recv(modern)["peers"] == []
+                assert recv(legacy)["peers"] == []
+
+
+@pytest.mark.parametrize("party", ["publisher", "viewer"])
+def test_idle_extended_group_link_revocation_preserves_base_roster(
+    client, db_session, team, surface_team, monkeypatch, party
+):
+    configure_presence_groups(db_session, surface_team)
+    monkeypatch.setattr(presence, "CHECK_SECONDS", 0.04)
+    publisher_name, viewer_name = (
+        ("viewer", "owner") if party == "publisher" else ("owner", "viewer")
+    )
+    location = surface_team.locations[2]
+    group = extended_group(surface_team.image, (team.notes["first"],))
+    group["property"] = {"source": "file", "name": "file"}
+    surface_team.views[1].descriptor = {
+        **surface_team.views[1].descriptor,
+        "groupBy": {"property": "file.file"},
+    }
+    db_session.commit()
+    with connected(client, team.tokens[publisher_name], protocol_version=2) as (publisher, _):
+        publish(publisher, location)
+        with connected(client, team.tokens[viewer_name], protocol_version=2) as (viewer, _):
+            watch_base(viewer, location, 2)
+            move_base(publisher, location, extended_state(extended_range(group)))
+            assert recv(viewer)["peers"]
+            db_session.add(
+                models.ManagedRule(
+                    share_id=team.share.id,
+                    user_id=team.viewer.id,
+                    path="First.md",
+                    recursive=False,
+                    permission="none",
+                )
+            )
+            db_session.commit()
+            assert recv(viewer)["peers"] == []
+            watch(viewer, location)
+            assert len(recv(viewer)["peers"]) == 1
+
+
+def test_extended_positions_authorize_grouping_axis_and_all_inputs_without_writes(
+    client, db_session, team, surface_team
+):
+    configure_presence_groups(db_session, surface_team)
+    location = presence.BaseLocation.model_validate(surface_team.locations[2])
+    target = extended_range(extended_group(team.notes["first"]))
+    statements = []
+
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(db_session.bind, "before_cursor_execute", capture)
+    try:
+        presence.authenticate(
+            team.tokens["viewer"],
+            location,
+            base_state=presence.BaseState.model_validate(extended_state(target)),
+        )
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture)
+    assert not any(
+        sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for sql in statements
+    )
+    assert not any("collaboration_bases.configuration" in sql for sql in statements)
+    for changed in (
+        {
+            **target,
+            "axis": {**target["axis"], "start_property": {"source": "note", "name": "other"}},
+        },
+        {**target, "lane": {**target["lane"], "property": {"source": "note", "name": "other"}}},
+        {**target, "lane": extended_group(team.notes["first"], (team.notes["private"],))},
+        {**target, "lane": {**target["lane"], "record_generation": guid()}},
+    ):
+        with pytest.raises(HTTPException) as error:
+            presence.authenticate(
+                team.tokens["viewer"],
+                location,
+                base_state=presence.BaseState.model_validate(extended_state(changed)),
+            )
+        assert error.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"value": "secret"},
+        {"value_sha256": "bad"},
+        {"property": {"source": "formula", "name": "secret"}},
+        {"property": {"source": "file", "name": "size"}},
+        {"references": [{"record_id": guid(), "record_generation": guid()}] * 9},
+    ],
+)
+def test_extended_groups_reject_values_unsupported_derivations_and_unbounded_references(patch):
+    with pytest.raises(ValueError):
+        presence.BaseState.model_validate(extended_state({**extended_group(), **patch}))
+
+
+def test_extended_target_versions_coordinates_and_duplicates_are_strict():
+    group = extended_group()
+    values = [
+        {**extended_state(group), "version": 1},
+        extended_state(
+            {
+                **group,
+                "references": [{key: group[key] for key in ("record_id", "record_generation")}],
+            }
+        ),
+        extended_state(
+            {
+                **extended_range(),
+                "axis": {**extended_range()["axis"], "renderer": "sabidurian-sequence"},
+            }
+        ),
+        extended_state(
+            {**extended_range(), "axis": {**extended_range()["axis"], "time_zone": "UTC"}}
+        ),
+    ]
+    for value in values:
+        with pytest.raises(ValueError):
+            presence.BaseState.model_validate(value)
+
+
+@pytest.mark.parametrize(
+    "version,states", [(True, True), (2.0, True), ("2", True), (3, True), (2, False)]
+)
+def test_extended_watch_requires_explicit_valid_base_negotiation(
+    client, team, surface_team, version, states
+):
+    with connected(client, team.tokens["owner"], protocol_version=2) as (socket, _):
+        socket.send_json(
+            {
+                "type": "watch",
+                "subscription_id": guid(),
+                "location": surface_team.locations[1],
+                "base_states": states,
+                "base_target_version": version,
+            }
+        )
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == 4400
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_extended_snapshot_budget_supports_full_bounded_room(monkeypatch, version):
+    async def scenario():
+        owner = presence.PresenceBroker()
+        viewer = owner.add("viewer", actor(), guid(), 2)
+        location = presence.BaseLocation(
+            kind="base",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            definition_id=guid(),
+            view_id=guid(),
+            registry_revision=1,
+        )
+        group = extended_group()
+        group["property"]["name"] = "😀" * 64
+        group["references"] = [{"record_id": guid(), "record_generation": guid()} for _ in range(8)]
+        state = presence.BaseState.model_validate(
+            extended_state(group, {"target": group, "offset": {"x": 0.5, "y": 0.5}})
+        )
+        for index in range(127):
+            peer = owner.add(str(index), actor(), guid(), 2)
+            owner.publish(peer, location)
+            owner.move_base(peer, location, state)
+        owner.watch(
+            viewer, presence.Watch(guid(), location, base_states=True, base_target_version=version)
+        )
+        sent = asyncio.Event()
+
+        async def authorize(_fn, _token, _location, peers):
+            return [
+                {
+                    "target": dict(zip(("user_id", "session_id", "instance_id"), key)),
+                    "state": value.model_dump(mode="json"),
+                }
+                for key, _, value in peers
+            ]
+
+        async def emit(value):
+            assert len(value["peers"]) == 127
+            size = len(json.dumps(value, ensure_ascii=False).encode())
+            if version == 2:
+                assert presence.MAX_ROSTER_BYTES < size < presence.MAX_BASE_TARGET_BYTES
+            else:
+                assert size < presence.MAX_ROSTER_BYTES
+                assert all(
+                    item["state"] == {"version": 1, "pointer": None, "viewport": None}
+                    for item in value["peers"]
+                )
+            sent.set()
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        monkeypatch.setattr(presence, "IMAGE_STATE_INTERVAL", 0)
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer, True)
+        )
+        try:
+            await asyncio.wait_for(sent.wait(), 2)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            for peer in list(owner.connections.values()):
+                owner.remove(peer)
+
+    asyncio.run(scenario())

@@ -178,8 +178,14 @@ def main():
                 content_sha256="b" * 64,
                 configuration={
                     "views": [
-                        {"type": "table", "name": "Table"},
-                        {"type": "cards", "name": "Cards"},
+                        {"type": "table", "name": "Table", "groupBy": {"property": "note.status"}},
+                        {
+                            "type": "sabidurian-timeline",
+                            "name": "Timeline",
+                            "groupBy": {"property": "note.status"},
+                            "startDateProp": "note.start",
+                            "timeZone": "America/Denver",
+                        },
                     ]
                 },
             )
