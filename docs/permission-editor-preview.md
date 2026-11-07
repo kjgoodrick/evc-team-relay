@@ -2,8 +2,10 @@
 
 The server and TypeScript client now support one conditional transaction for
 file and comment rules. This is the foundation for the settings permission
-editor and its read-only reviewer preset. **The interface is not connected yet**;
-this checkpoint does not make permission management a finished user feature.
+editor and its read-only reviewer preset. The subsequent
+[plugin interface preview](../../evc-team-relay-obsidian/docs/permission-editor-preview.md)
+connects this contract to both share-management surfaces. Full native/mobile
+acceptance remains unfinished.
 
 The independent file and comment authorization models remain unchanged. A
 reviewer needs file `read` plus comment `allowed: true`; this does not issue a
@@ -63,7 +65,7 @@ members return 409 `permission_member_changed`. Account mismatches return 403
 `permission_editor_account_changed`. These are messages inside the existing
 `error` envelope, rather than raw exception diagnostics.
 
-## Client boundary and pending interface
+## Client boundary and interface
 
 `PermissionPolicyClient` and the share client's `permissionEditor()` factory bind
 an operation to a server, share, account and caller-provided lifecycle predicate.
@@ -79,13 +81,12 @@ not identify which administrator wrote it. A differing state needs explicit
 review before another conditional save. Timeout/account-change guards prevent
 late credential resolution from dispatching a new write.
 
-Remaining interface work includes presets and independent overrides, member/path
-selection, inherited/effective access explanations, handling more-specific
-exceptions, proposed-change review, conflict reconciliation, unsaved-state and
-lost-response handling, owner/admin entry points, and native desktop/mobile
-acceptance. The UI must preserve unrelated rules and must not describe a folder
-reviewer preset as removing a more-specific write exception unless that exception
-is explicitly included in the proposed changes.
+The plugin interface now provides presets and independent overrides, member/path
+selection, inherited/effective access explanations, explicit narrower-exception
+handling, proposed-change review, structural conflict reconciliation, unsaved-state
+and lost-response handling, and owner/admin entry points. Native desktop/mobile
+acceptance remains. The interface preserves unrelated rules and only describes
+narrower exceptions as removed when they are explicitly included in the proposal.
 
 ## Verification
 
@@ -110,4 +111,4 @@ Client regression/build/type results and remaining release work are in the
 [project status](../../../docs/Plans/obsidian-presence-comments-status.md).
 
 No database migration, production deployment or live-vault installation is part
-of this checkpoint. The UI and full release remain unfinished.
+of this API checkpoint. Full native UI acceptance and the release remain unfinished.
