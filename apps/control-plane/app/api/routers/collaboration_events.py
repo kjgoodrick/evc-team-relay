@@ -133,7 +133,18 @@ async def handle(
         else:
             # Refresh the identity/session even for unpublish and subscription
             # control frames; possession of an old socket is not authorization.
-            actor = await run_in_threadpool(presence.authenticate, connection.token)
+            image_location, image_state = None, None
+            if kind == "image_state" and connection.protocol_version == 2:
+                fields(message, {"type", "location", "state"})
+                image_location = presence.ImageLocation.model_validate(message["location"])
+                image_state = (
+                    presence.ImageState.model_validate(message["state"])
+                    if message["state"] is not None
+                    else None
+                )
+            # A movement frame performs identity and entry authorization in one
+            # fresh database session rather than repeating session lookup.
+            actor = await run_in_threadpool(presence.authenticate, connection.token, image_location)
             connection.actor = actor
             if kind == "presence":
                 fields(message, {"type", "location"})
@@ -145,6 +156,8 @@ async def handle(
                 if location:
                     await run_in_threadpool(presence.authenticate, connection.token, location)
                 owner.publish(connection, location)
+            elif kind == "image_state" and connection.protocol_version == 2:
+                owner.move(connection, image_location, image_state)
             elif kind == "follow":
                 fields(message, {"type", "subscription_id", "target", "from"})
                 subscription = identifier(message["subscription_id"])
@@ -193,13 +206,24 @@ async def handle(
                 if connection.follow and connection.follow.subscription_id == subscription:
                     owner.subscribe(connection, None)
             elif kind == "watch" and connection.protocol_version == 2:
-                fields(message, {"type", "subscription_id", "location"})
+                fields(
+                    message,
+                    {"type", "subscription_id", "location"}
+                    | ({"image_states"} if "image_states" in message else set()),
+                )
                 subscription = identifier(message["subscription_id"])
                 location = presence.parse_location(message["location"], 2)
                 if isinstance(location, presence.Location):
                     raise ValueError("Notes use managed awareness")
+                image_states = message.get("image_states", False)
+                if (
+                    type(image_states) is not bool
+                    or image_states
+                    and not isinstance(location, presence.ImageLocation)
+                ):
+                    raise ValueError("Invalid image observation")
                 await run_in_threadpool(presence.authenticate, connection.token, location)
-                owner.watch(connection, presence.Watch(subscription, location))
+                owner.watch(connection, presence.Watch(subscription, location, image_states))
             elif kind == "unwatch" and connection.protocol_version == 2:
                 fields(message, {"type", "subscription_id"})
                 subscription = identifier(message["subscription_id"])
@@ -291,18 +315,24 @@ async def deliver(
 
 
 async def deliver_roster(
-    websocket: WebSocket, owner: presence.PresenceBroker, viewer: presence.Connection
+    websocket: WebSocket,
+    owner: presence.PresenceBroker,
+    viewer: presence.Connection,
+    image_states: bool = False,
 ):
+    dirty = viewer.image_dirty if image_states else viewer.roster_dirty
     while True:
-        await viewer.roster_dirty.wait()
-        viewer.roster_dirty.clear()
+        await dirty.wait()
+        if image_states:
+            await asyncio.sleep(presence.IMAGE_STATE_INTERVAL)
+        dirty.clear()
         watch, token = viewer.watch, viewer.token
-        if not watch:
+        if not watch or image_states and not watch.image_states:
             continue
         peers = owner.room_peers(watch.location, viewer)
         captured = [(peer, peer.revision, peer.token) for peer in peers]
         result = {
-            "type": "roster",
+            "type": "image_states" if image_states else "roster",
             "subscription_id": watch.subscription_id,
             "status": "unavailable",
         }
@@ -313,6 +343,25 @@ async def deliver_roster(
                 watch.location,
                 [(peer.key, saved_token) for peer, _, saved_token in captured],
             )
+            if image_states:
+                authorized = {
+                    tuple(item["target"][key] for key in ("user_id", "session_id", "instance_id"))
+                    for item in identities
+                }
+                # Read the latest movement after authorization; movement itself
+                # does not invalidate authorization or starve slow lookups.
+                identities = [
+                    {
+                        "target": {
+                            "user_id": peer.key[0],
+                            "session_id": peer.key[1],
+                            "instance_id": peer.key[2],
+                        },
+                        "state": peer.image_state.model_dump(mode="json"),
+                    }
+                    for peer in peers
+                    if peer.key in authorized and peer.image_state is not None
+                ]
             result.update(status="available", peers=identities)
         except HTTPException:
             pass
@@ -326,11 +375,11 @@ async def deliver_roster(
                 for peer, revision, saved_token in captured
             )
         ):
-            viewer.roster_dirty.set()
+            dirty.set()
             continue
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > presence.MAX_ROSTER_BYTES:
             raise OverflowError("Presence roster too large")
-        if result != viewer.last_roster:
+        if result != (viewer.last_image_states if image_states else viewer.last_roster):
 
             def current():
                 return (
@@ -345,10 +394,13 @@ async def deliver_roster(
                 )
 
             if not await send(websocket, viewer, result, current):
-                viewer.roster_dirty.set()
+                dirty.set()
                 continue
             if viewer.watch == watch:
-                viewer.last_roster = result
+                if image_states:
+                    viewer.last_image_states = result
+                else:
+                    viewer.last_roster = result
         if result["status"] == "unavailable" and viewer.watch == watch:
             owner.watch(viewer, None)
 
@@ -379,6 +431,8 @@ async def check_live(owner: presence.PresenceBroker, connection: presence.Connec
             connection.dirty.set()  # Recheck destination access even when both peers idle.
         if connection.watch:
             connection.roster_dirty.set()
+            if connection.watch.image_states:
+                connection.image_dirty.set()
 
 
 @router.websocket("/events")
@@ -421,6 +475,7 @@ async def events(websocket: WebSocket):
             asyncio.create_task(handle(websocket, owner, connection)),
             asyncio.create_task(deliver(websocket, owner, connection)),
             asyncio.create_task(deliver_roster(websocket, owner, connection)),
+            asyncio.create_task(deliver_roster(websocket, owner, connection, True)),
             asyncio.create_task(check_live(owner, connection)),
         ]
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

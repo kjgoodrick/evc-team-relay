@@ -557,6 +557,140 @@ def image_context(client, team, entry, token=None):
     )
 
 
+def move_image(socket, location, state):
+    socket.send_json({"type": "image_state", "location": location, "state": state})
+    socket.send_json({"type": "ping"})
+    assert recv(socket) == {"type": "pong"}
+
+
+def moving_watch(socket, location):
+    subscription = guid()
+    socket.send_json(
+        {
+            "type": "watch",
+            "subscription_id": subscription,
+            "location": location,
+            "image_states": True,
+        }
+    )
+    initial = [recv(socket), recv(socket)]
+    assert {value["type"] for value in initial} == {"roster", "image_states"}
+    assert all(
+        value["status"] == "available" and value["subscription_id"] == subscription
+        for value in initial
+    )
+    return subscription
+
+
+def test_image_movement_is_authorized_separate_from_roster_and_clears_on_leave(
+    client, team, surface_team
+):
+    location = surface_team.locations[0]
+    state = {
+        "pointer": {"x": 0.25, "y": 0.75},
+        "viewport": {"x": 0.1, "y": 0.2, "width": 0.5, "height": 0.4},
+    }
+    # A read-only reviewer can point; the owner observes while hidden.
+    with connected(client, team.tokens["viewer"], protocol_version=2) as (publisher, ready):
+        publish(publisher, location)
+        with connected(client, team.tokens["owner"], protocol_version=2) as (viewer, _):
+            subscription = moving_watch(viewer, location)
+            move_image(publisher, location, state)
+            assert recv(viewer) == {
+                "type": "image_states",
+                "subscription_id": subscription,
+                "status": "available",
+                "peers": [
+                    {
+                        "target": {
+                            "user_id": str(team.viewer.id),
+                            "session_id": ready["session_id"],
+                            "instance_id": ready["instance_id"],
+                        },
+                        "state": state,
+                    }
+                ],
+            }
+            move_image(publisher, location, None)
+            assert recv(viewer) == {
+                "type": "image_states",
+                "subscription_id": subscription,
+                "status": "available",
+                "peers": [],
+            }
+            move_image(publisher, location, state)
+            assert recv(viewer)["type"] == "image_states"
+            publish(publisher, None)
+            cleared = [recv(viewer), recv(viewer)]
+            assert {value["type"] for value in cleared} == {"roster", "image_states"}
+            assert all(value["peers"] == [] for value in cleared)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"pointer": {"x": -0.1, "y": 0}, "viewport": None},
+        {"pointer": {"x": 1.1, "y": 0}, "viewport": None},
+        {"pointer": {"x": True, "y": 0}, "viewport": None},
+        {"pointer": {"x": "0.5", "y": 0}, "viewport": None},
+        {"pointer": {"x": float("nan"), "y": 0}, "viewport": None},
+        {"pointer": {"x": 0, "y": 0, "user_id": "spoof"}, "viewport": None},
+        {"pointer": None, "viewport": {"x": 0.8, "y": 0, "width": 0.3, "height": 1}},
+        {"pointer": None, "viewport": {"x": 0, "y": 0, "width": 0, "height": 1}},
+        {"pointer": None},
+    ],
+)
+def test_image_movement_rejects_invalid_geometry_and_identity_fields(
+    client, team, surface_team, state
+):
+    location = surface_team.locations[0]
+    with connected(client, team.tokens["owner"], protocol_version=2) as (socket, _):
+        publish(socket, location)
+        socket.send_json({"type": "image_state", "location": location, "state": state})
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == 4400
+
+
+@pytest.mark.parametrize("mode", ["hidden", "note", "revoked", "version", "legacy"])
+def test_image_movement_requires_current_visible_image_and_read_access(
+    client, db_session, team, surface_team, mode
+):
+    location = surface_team.locations[0]
+    with connected(
+        client, team.tokens["viewer"], protocol_version=1 if mode == "legacy" else 2
+    ) as (socket, _):
+        if mode not in ("hidden", "legacy"):
+            publish(socket, team.location() if mode == "note" else location)
+        if mode == "revoked":
+            team.rule.permission = "none"
+            db_session.commit()
+        if mode == "version":
+            location = {**location, "generation": guid()}
+        socket.send_json(
+            {
+                "type": "image_state",
+                "location": location,
+                "state": {"pointer": {"x": 0.2, "y": 0.5}, "viewport": None},
+            }
+        )
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == (4403 if mode in ("revoked", "version") else 4400)
+
+
+def test_old_surface_watch_never_receives_unsolicited_movement(client, team, surface_team):
+    location = surface_team.locations[0]
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, _):
+        publish(publisher, location)
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            watch(viewer, location)
+            assert recv(viewer)["type"] == "roster"
+            move_image(publisher, location, {"pointer": {"x": 0.2, "y": 0.5}, "viewport": None})
+            viewer.send_json({"type": "ping"})
+            assert recv(viewer) == {"type": "pong"}
+
+
 def test_image_context_requires_only_read_access_and_returns_current_version(
     client, db_session, team, surface_team, monkeypatch
 ):
@@ -996,6 +1130,153 @@ def test_roster_snapshot_changed_while_waiting_for_socket_cannot_be_sent(monkeyp
             await asyncio.gather(task, return_exceptions=True)
             owner.remove(publisher)
             owner.remove(viewer)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("change", ["hidden", "watch", "token"])
+def test_image_movement_checked_before_socket_wait_cannot_escape_changed_context(
+    monkeypatch, change
+):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.ImageLocation(
+            kind="image",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            content_sha256="a" * 64,
+        )
+        owner.publish(publisher, location)
+        owner.move(
+            publisher, location, presence.ImageState(pointer={"x": 0.2, "y": 0.3}, viewport=None)
+        )
+        watch = presence.Watch(guid(), location, True)
+        owner.watch(viewer, watch)
+        checked, sent = asyncio.Event(), []
+
+        async def authorize(*_):
+            checked.set()
+            return [
+                {
+                    "target": {
+                        "user_id": publisher.key[0],
+                        "session_id": publisher.key[1],
+                        "instance_id": publisher.key[2],
+                    }
+                }
+            ]
+
+        async def emit(value):
+            sent.append(value)
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        monkeypatch.setattr(presence, "IMAGE_STATE_INTERVAL", 0)
+        await viewer.send_lock.acquire()
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer, True)
+        )
+        try:
+            await asyncio.wait_for(checked.wait(), 1)
+            if change == "hidden":
+                owner.publish(publisher, None)
+            elif change == "watch":
+                owner.watch(viewer, presence.Watch(guid(), location, True))
+            else:
+                viewer.token = "replaced"
+
+            async def empty(*_):
+                return []
+
+            monkeypatch.setattr(events, "run_in_threadpool", empty)
+            viewer.send_lock.release()
+            async with asyncio.timeout(1):
+                while not sent:
+                    await asyncio.sleep(0.001)
+            assert all(value["type"] == "image_states" and value["peers"] == [] for value in sent)
+            assert all(value["subscription_id"] == viewer.watch.subscription_id for value in sent)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(publisher)
+            owner.remove(viewer)
+
+    asyncio.run(run())
+
+
+def test_image_movement_slow_consumer_keeps_only_latest_state_and_no_roster_work(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.ImageLocation(
+            kind="image",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            content_sha256="a" * 64,
+        )
+        owner.publish(publisher, location)
+        owner.watch(viewer, presence.Watch(guid(), location, True))
+        owner.watch(publisher, presence.Watch(guid(), location, True))
+        publisher.image_dirty.clear()
+        viewer.roster_dirty.clear()
+        started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        sent = []
+
+        async def authorize(*_):
+            return [
+                {
+                    "target": {
+                        "user_id": publisher.key[0],
+                        "session_id": publisher.key[1],
+                        "instance_id": publisher.key[2],
+                    }
+                }
+            ]
+
+        async def emit(value):
+            sent.append(value)
+            if len(sent) == 1:
+                started.set()
+                await release.wait()
+            else:
+                finished.set()
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        monkeypatch.setattr(presence, "IMAGE_STATE_INTERVAL", 0)
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer, True)
+        )
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            for x in range(1001):
+                owner.move(
+                    publisher,
+                    location,
+                    presence.ImageState(pointer={"x": x / 1000, "y": 0.5}, viewport=None),
+                )
+            assert (
+                not viewer.roster_dirty.is_set()
+                and not viewer.controls
+                and viewer.image_dirty.is_set()
+            )
+            assert not publisher.image_dirty.is_set()  # Own pointer is omitted.
+            release.set()
+            await asyncio.wait_for(finished.wait(), 1)
+            assert len(sent) == 2 and sent[-1]["peers"][0]["state"]["pointer"] == {"x": 1, "y": 0.5}
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(publisher)
+            owner.remove(viewer)
+        assert publisher.image_state is None and not owner.watchers and not owner.connections
 
     asyncio.run(run())
 

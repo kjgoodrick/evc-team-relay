@@ -17,7 +17,7 @@ from typing import Annotated, Literal
 
 from fastapi import HTTPException
 from jwt.exceptions import InvalidTokenError
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 from sqlalchemy import select
 
 from app.api import deps
@@ -34,6 +34,9 @@ IDLE_SECONDS = 30
 CHECK_SECONDS = 5
 MAX_MESSAGE_BYTES = 4096
 MAX_ROSTER_BYTES = 192 * 1024
+# Ingress already coalesces to eight ordinary movements/second per client.
+# Batch concurrent peers for one frame without adding a second 100 ms delay.
+IMAGE_STATE_INTERVAL = 0.016
 PeerKey = tuple[str, str, str]
 
 
@@ -52,6 +55,29 @@ class ImageLocation(BaseModel):
     entry_id: uuid.UUID
     generation: uuid.UUID
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ImagePoint(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    x: float = Field(strict=True, ge=0, le=1, allow_inf_nan=False)
+    y: float = Field(strict=True, ge=0, le=1, allow_inf_nan=False)
+
+
+class ImageViewport(ImagePoint):
+    width: float = Field(strict=True, gt=0, le=1, allow_inf_nan=False)
+    height: float = Field(strict=True, gt=0, le=1, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def within_image(self):
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ValueError("Viewport outside image")
+        return self
+
+
+class ImageState(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    pointer: ImagePoint | None
+    viewport: ImageViewport | None
 
 
 class BaseLocation(BaseModel):
@@ -236,6 +262,7 @@ class Follow:
 class Watch:
     subscription_id: str
     location: ImageLocation | BaseLocation
+    image_states: bool = False
 
 
 @dataclass(eq=False)
@@ -245,6 +272,7 @@ class Connection:
     instance_id: str
     protocol_version: int = 1
     location: SurfaceLocation | None = None
+    image_state: ImageState | None = None
     follow: Follow | None = None
     watch: Watch | None = None
     revision: int = 0
@@ -252,10 +280,12 @@ class Connection:
     last_seen: float = field(default_factory=time.monotonic)
     dirty: asyncio.Event = field(default_factory=asyncio.Event)
     roster_dirty: asyncio.Event = field(default_factory=asyncio.Event)
+    image_dirty: asyncio.Event = field(default_factory=asyncio.Event)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     controls: list[dict] = field(default_factory=list)
     last_location: dict | None = None
     last_roster: dict | None = None
+    last_image_states: dict | None = None
     allowance: float = 20
     allowance_time: float = field(default_factory=time.monotonic)
 
@@ -334,6 +364,7 @@ class PresenceBroker:
                     self.rooms.pop(previous, None)
             self.notify_room(previous)
         connection.location = location
+        connection.image_state = None
         if isinstance(location, (ImageLocation, BaseLocation)):
             self.rooms.setdefault(location, set()).add(connection)
             self.notify_room(location)
@@ -350,6 +381,24 @@ class PresenceBroker:
     def notify_room(self, location: ImageLocation | BaseLocation) -> None:
         for viewer in self.watchers.get(location, ()):
             viewer.roster_dirty.set()
+            if viewer.watch and viewer.watch.image_states:
+                viewer.image_dirty.set()
+
+    def move(
+        self, connection: Connection, location: ImageLocation, state: ImageState | None
+    ) -> None:
+        if connection.closed or self.connections.get(connection.key) is not connection:
+            return
+        if connection.location != location:
+            raise ValueError("Image movement requires matching visible publication")
+        if connection.image_state == state:
+            return
+        connection.image_state = state
+        # Movement never invalidates the participant roster or Follow identity.
+        # Each observer holds one replaceable snapshot, not a movement queue.
+        for viewer in self.watchers.get(location, ()):
+            if viewer is not connection and viewer.watch and viewer.watch.image_states:
+                viewer.image_dirty.set()
 
     def room_peers(
         self, location: ImageLocation | BaseLocation, viewer: Connection
@@ -368,9 +417,12 @@ class PresenceBroker:
                     self.watchers.pop(connection.watch.location, None)
         connection.watch = watch
         connection.last_roster = None
+        connection.last_image_states = None
         if watch:
             self.watchers.setdefault(watch.location, set()).add(connection)
             connection.roster_dirty.set()
+            if watch.image_states:
+                connection.image_dirty.set()
 
     def subscribe(self, connection: Connection, follow: Follow | None) -> None:
         if connection.follow:

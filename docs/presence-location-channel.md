@@ -8,7 +8,8 @@ The server and plugin transport also support explicitly negotiated version-two
 image-file and saved Bases-view locations and authorized surface rosters. The
 native host now opts in for directly opened managed images, with participant
 controls and whole-image Jump/Follow sharing its note socket. Native image
-acceptance, image pointers/embeds and Bases/timeline bindings remain unfinished.
+acceptance, embedded-image presence and Bases/timeline bindings remain unfinished.
+Direct images now have a separate authorized pointer/viewport stream.
 No production service or live vault has been changed by this work.
 
 Enable locally with `COLLABORATION_PRESENCE_ENABLED=true`. The share capability
@@ -144,21 +145,24 @@ isolation, image replacement, registry/view identity changes, idle revocation an
 read-only access against the actual ASGI application and disposable database.
 This is not native or production-load evidence.
 
-Client surface bindings/rendering/navigation, image coordinates,
-cell/row/group/lane targets and native acceptance remain outstanding.
+Embedded-image presence, Bases/timeline surface bindings, cell/row/group/lane
+targets and native acceptance remain outstanding. Direct image coordinates use
+the separate stream below and do not change the room identity.
 
 ## Authorized surface rosters
 
 `features.presence_surface_roster_preview: true` additionally advertises roster
 commands on version-two connections. The plugin's `LocationChannel` selects
 version two only when its caller opts in with `surfaceLocations: true` and the
-server advertises support. The current native note host does not opt in yet.
+server advertises support. The current native note/image host opts in.
 Older servers retain note publication and Follow; non-note locations are
 withdrawn and roster commands are not sent.
 
-- `watch` has exactly `type`, `subscription_id` (UUID) and `location` (an image or
+- `watch` has `type`, `subscription_id` (UUID) and `location` (an image or
   saved-view descriptor). Each connection observes at most one context. Notes
   retain their existing managed-awareness room. A new watch replaces the old one.
+  The separately negotiated image stream additionally allows `image_states: true`
+  only on an image watch. Old watchers receive no unsolicited movement frames.
 - `unwatch` has exactly `type` and `subscription_id`. A stale ID cannot cancel a
   newer watch. Observing and publishing are independent: a hidden viewer can see
   authorized participants without appearing in their roster.
@@ -197,6 +201,33 @@ and recomputed. A completed old denial cannot cancel a newer subscription.
 This is membership transport, not a cursor-movement stream: fine-grained motion
 still needs typed state and measured update/authorization costs before release.
 
+## Image movement
+
+`presence_image_states_preview` advertises version-two `image_state` frames with
+exactly `type`, `location` (ImageLocation) and `state`. The state is null or exactly
+`{pointer, viewport}`: pointer is null or `{x,y}`; viewport is null or
+`{x,y,width,height}`. All numbers are finite normalized fractions in [0,1];
+viewport dimensions must be positive and its extent must fit within the image.
+Booleans, strings, unknown fields, arbitrary identities and non-image locations
+reject. State is accepted only for the sender's current visible exact image and
+fresh session/read authorization. Each movement uses one authorization session.
+
+An opted-in observer receives independent `image_states` snapshots with the
+watch subscription ID and `status`. Available snapshots contain `peers` with only
+authenticated `target` and `state`; empty snapshots clear all geometry. Unavailable
+snapshots omit peers and end observation. The client uses roster names; movement
+does not rebuild participant identity or trigger cross-file Follow events.
+
+Every connection stores one latest state and each observer one dirty event.
+The server coalesces concurrent movement for 16 ms, reauthorizes the viewer and publishers,
+then reads current states. It never queues a path/history. Movement does not
+invalidate membership authorization in progress; context/token/revision changes
+still fence both authorization results and writes waiting on the shared socket.
+The same 192 KiB bound, 127-peer limit, message-rate limit and five-second idle
+authorization checks apply. Hiding, context changes and disconnect clear state.
+Client coalescing allows at most eight ordinary movement frames per second;
+immediate clearing still consumes the existing burst budget.
+
 ## Bounds and deployment constraint
 
 The initial implementation supports one designated application process for both
@@ -234,7 +265,10 @@ observation, saved-view isolation, replacement/revocation, stale unwatch,
 disconnect cleanup, delayed authorization/socket writes and membership
 coalescing. Image-context cases verify read-only access with discussion features
 disabled, current replacement metadata, cache headers, malformed metadata and
-revoked/deleted/scoped/sessionless rejection. **191 tests** pass across the location, managed-awareness protocol,
+revoked/deleted/scoped/sessionless rejection. Movement cases cover malformed
+coordinates, legacy watchers, read-only publishers, stale versions/revocation,
+context changes during socket waits and 1,001 coalesced moves without roster work.
+**211 tests** pass across the location, managed-awareness protocol,
 collaboration-policy and Bases-registry suites. Changed Python files pass lint/format checks. The regression set is
 scoped, not a claim that the complete control-plane suite was run; existing
 test-fixture/library warnings remain. No database migration changed.
@@ -261,7 +295,7 @@ credential refresh, inaccessible destinations and idle permission revocation.
 The native desktop run also verified cross-note Follow in Source, Live Preview
 and Reading, interruption, hidden-peer removal and reload, using a disposable
 vault and a protocol peer. Two-native-client/mobile acceptance, reconnect UX
-polish, native image acceptance, image pointers/embeds, Bases/timeline adapters
+polish, native image acceptance, embedded-image presence, Bases/timeline adapters
 and measured resource budgets remain unfinished.
 The single-process deployment constraint above remains in force.
 
@@ -275,6 +309,8 @@ Alongside the existing Bases HTTP cases, this exercises real WebSocket roster
 discovery, image-to-Bases Follow, saved-view separation, hidden observation,
 same-socket renewal, reconnect, explicit Follow restart and idle read revocation.
 It also verifies fresh image-context reads and denial after read revocation.
+Pointer/viewport delivery is verified separately from membership, including
+surface departure and permission revocation.
 It seeds synthetic identity metadata in a separate share and removes its
 disposable loopback service/database afterward. This is not a native surface or
 production resource benchmark.
