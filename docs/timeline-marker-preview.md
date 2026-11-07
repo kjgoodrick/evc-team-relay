@@ -66,6 +66,24 @@ Initial limits are 50 markers per page, 256 retained markers per `.base`, 64 act
 placements per put, 256 retained view associations per marker and 64 KiB per
 command. These are explicit errors, never silent truncation or identity reuse.
 
+## Automatic client refresh
+
+Saved-view `GET .../changes?view_id=...&timeline_markers=true` responses include
+an optional `timeline_markers` revision hint with protocol, entry/view/definition,
+generation, registry and catalog identities. The usual discussion read and view
+authorization apply before returning it. The hint contains no label, coordinate,
+marker ID, or body; clients still use the authorized catalog to obtain placements.
+Empty discussion pages report current revisions too, so marker-only activity
+does not require creating a thread or adding synthetic discussion events.
+
+Older clients do not request the field and receive the existing response shape.
+Older servers ignore the query flag; new clients tolerate its absence. Creation
+flag disablement does not hide existing marker metadata or prevent recovery.
+This adds no migration, background worker or separate client poller. Active
+clients use their existing five-second discussion refresh and fetch full marker
+catalogs only when their verified revisions need refreshing. Hidden/unwatched
+discussion scopes keep their existing suspension behavior.
+
 ## Discussion anchors and archival
 
 The new `BaseAnchor.target` kind is `timeline_marker`. It carries marker ID and
@@ -88,6 +106,16 @@ database backup/restore boundary. This guard is not a backup or rolling-upgrade
 procedure.
 
 ## Verification and remaining implementation
+
+The revision-hint increment passes **549 tests across the 13 collaboration
+regression modules**, including **18 marker cases**. The opt-in hint advances
+without thread events, remains readable with creation disabled, rejects a wrong
+view, and leaves legacy response shapes unchanged. All six actual HTTP/client
+tests pass, including catalog-version delivery and verified-cache reuse through
+the real session/transport. Changed-source lint/format and whitespace checks pass.
+This is collaboration regression coverage, not a complete control-plane suite.
+The server adds no schema or transaction mutation in this increment; the earlier
+PostgreSQL mutation/migration evidence below remains at its recorded checkpoint.
 
 API coverage includes all four point/range coordinate kinds, editor versus
 commenter permissions, exact retry, compare-and-swap conflicts, separate saved-
@@ -123,10 +151,14 @@ marker identities/revisions kept separate from ordinary ranges. The actual
 Time & Line source interoperates in both load orders; native acceptance is still
 pending. No server runtime or feature defaults changed in that increment.
 
-Remaining work includes automatic metadata change delivery/refresh; local marker
-IDs and explicit promotion/matching/edit/archive UI; current-marker overlays
-independent of existing discussions; captured-versus-current position comparison
-and overlap polish; server-restart/client and native desktop/mobile/accessibility/
-resource acceptance.
+The client now also provides online creation/edit/archive/restore and explicit
+recovery controls, current-marker overlays independent of discussions, and
+automatic refresh driven by the opt-in revision hint. Current marker labels and
+captured discussion positions remain distinct. Native acceptance is still pending.
+
+Remaining work includes base-wide placement/matching and local marker promotion;
+direct point picking; captured-versus-current position comparison and overlap
+polish; broader recovery; server-restart/client and native desktop/mobile/
+accessibility/resource acceptance.
 Management uses online guarded commands; queued comments must reuse verified
 cached marker/axis evidence. Do not enable this preview before those paths exist.

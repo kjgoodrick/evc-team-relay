@@ -208,9 +208,17 @@ def changes(
     cursor: str | None = Query(None, max_length=2048),
     limit: int = Query(100, ge=1, le=100),
     view_id: uuid.UUID | None = None,
+    timeline_markers: bool = False,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
 ):
     return service.changes(
-        db, token, share_id, entry_id, cursor=cursor, limit=limit, view_id=view_id
+        db,
+        token,
+        share_id,
+        entry_id,
+        cursor=cursor,
+        limit=limit,
+        view_id=view_id,
+        include_timeline_markers=timeline_markers,
     )

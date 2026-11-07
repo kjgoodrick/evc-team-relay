@@ -102,6 +102,38 @@ def archive(client, t, marker):
     return payload
 
 
+def test_changes_opt_in_reports_current_marker_revision_without_thread_events(
+    client, markers, monkeypatch
+):
+    t = markers
+    params = {"view_id": t.captured["view_id"]}
+    legacy = get(client, t, "/changes", **params)
+    assert "timeline_markers" not in legacy
+    initial = get(client, t, "/changes", **params, timeline_markers=True)
+    assert initial["timeline_markers"]["catalog_revision"] == 0
+    assert initial["timeline_markers"]["view_id"] == params["view_id"]
+    assert initial["timeline_markers"]["entry_id"] == t.w.entry.id
+    created = mutate(client, t, put(client, t))
+    changed = get(client, t, "/changes", **params, cursor=initial["cursor"], timeline_markers=True)
+    assert changed["events"] == []
+    assert changed["timeline_markers"]["catalog_revision"] == created["catalog_revision"]
+    assert set(changed["timeline_markers"]) == {
+        "protocol_version",
+        "entry_id",
+        "view_id",
+        "definition_id",
+        "generation",
+        "registry_revision",
+        "catalog_revision",
+    }
+    archived = mutate(client, t, archive(client, t, created["marker"]))
+    monkeypatch.setattr(get_settings(), "collaboration_bases_timeline_markers_enabled", False)
+    latest = get(client, t, "/changes", actor="reader", **params, timeline_markers=True)
+    assert latest["timeline_markers"]["catalog_revision"] == archived["catalog_revision"]
+    assert "timeline_markers" not in get(client, t, "/changes", **params)
+    get(client, t, "/changes", view_id=str(uuid.uuid4()), timeline_markers=True, expected=404)
+
+
 @pytest.mark.parametrize("kind", ["calendar", "instant", "historical", "ordinal"])
 def test_shared_markers_preserve_exact_content_without_editing_base_or_tasks(
     client, db_session, markers, kind

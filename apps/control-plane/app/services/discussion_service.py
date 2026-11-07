@@ -877,7 +877,17 @@ def cursor_value(ctx, sequence, view_id=None):
     }
 
 
-def changes(db, token, share_id, entry_id, *, cursor=None, limit=100, view_id=None):
+def changes(
+    db,
+    token,
+    share_id,
+    entry_id,
+    *,
+    cursor=None,
+    limit=100,
+    view_id=None,
+    include_timeline_markers=False,
+):
     ctx = context(db, token, share_id, entry_id)
     requested_view(db, ctx, view_id)
     offset = 0
@@ -926,6 +936,24 @@ def changes(db, token, share_id, entry_id, *, cursor=None, limit=100, view_id=No
         .encrypt(json.dumps(cursor_value(ctx, through, view_id), sort_keys=True).encode())
         .decode()
     )
+    marker_version = {}
+    if include_timeline_markers and view_id is not None:
+        # Revision hint only: the ordinary authorized catalog read still proves
+        # every placement. Piggyback on active discussion polling; old clients
+        # neither request nor receive this additive metadata.
+        definition = base_discussions.definition_for(db, ctx)
+        catalog = db.get(m.BaseTimelineMarkerCatalog, definition.id)
+        marker_version = {
+            "timeline_markers": {
+                "protocol_version": 1,
+                "entry_id": ctx.entry.id,
+                "view_id": str(view_id),
+                "definition_id": str(definition.id),
+                "generation": str(definition.generation),
+                "registry_revision": definition.revision,
+                "catalog_revision": catalog.revision if catalog else 0,
+            }
+        }
     return {
         "events": [
             {"kind": event.kind, "sequence": event.sequence, "data": event.payload}
@@ -935,6 +963,7 @@ def changes(db, token, share_id, entry_id, *, cursor=None, limit=100, view_id=No
         "cursor": checkpoint,
         "has_more": has_more,
         **({"view_id": str(view_id), "filtered": True} if view_id is not None else {}),
+        **marker_version,
     }
 
 
