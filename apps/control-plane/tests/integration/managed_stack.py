@@ -63,6 +63,11 @@ def main():
         help="Run selected-text comments through the private relay barrier",
     )
     parser.add_argument(
+        "--base-sources",
+        action="store_true",
+        help="Also verify the private Bases source reader against the restarted relay",
+    )
+    parser.add_argument(
         "--image-anchors",
         action="store_true",
         help="Run image occurrence comments through the private relay barrier",
@@ -82,8 +87,12 @@ def main():
         help="Hold a disposable desktop smoke-test server open instead of running Jest",
     )
     args = parser.parse_args()
-    if args.image_anchors:
+    if args.image_anchors or args.base_sources:
         args.text_anchors = True
+    if args.base_sources and (
+        args.image_anchors or args.image_files or args.presence or args.presence_locations
+    ):
+        parser.error("--base-sources uses the selected-text fixture only")
     processes = []
     with tempfile.TemporaryDirectory(prefix="evc-managed-integration-") as temporary:
         temp = Path(temporary)
@@ -401,6 +410,45 @@ path = "{temp / "relay-data"}"
                     destination = Path(tempfile.mkdtemp(prefix="evc-managed-failure-"))
                     shutil.copy(temp / "servers.log", destination / "servers.log")
                     print(f"Local diagnostic log: {destination / 'servers.log'}")
+                elif args.base_sources:
+                    # The existing Yjs fixture inserted/deleted text and restarted
+                    # the real filesystem relay. Borrow its final dependency,
+                    # releasing SQL before calling the production private client.
+                    from fastapi import HTTPException
+                    from sqlalchemy import select
+
+                    from app.services import base_source_service
+
+                    with session.get_sessionmaker()() as db:
+                        payload = db.scalar(
+                            select(models.DiscussionAnchorRevision.payload)
+                            .join(models.DiscussionThread)
+                            .order_by(models.DiscussionThread.created_sequence.desc())
+                            .limit(1)
+                        )
+                        assert payload and payload["type"] == "text"
+                        dependency = payload["dependency"]
+                        generation = uuid.UUID(payload["generation"])
+                    # These flags affect only this parent test process. The
+                    # public control-plane server keeps its original capabilities.
+                    settings = get_settings()
+                    settings.collaboration_bases_registry_enabled = True
+                    settings.collaboration_bases_discussions_enabled = True
+                    settings.collaboration_bases_definition_targets_enabled = True
+                    source = base_source_service.observe(
+                        uuid.UUID(fixture["share"]), uuid.UUID(note), generation, dependency
+                    )
+                    assert source.source_complete and source.source_prefix == "beta gamma"
+                    try:
+                        base_source_service.observe(
+                            uuid.UUID(fixture["share"]), uuid.UUID(note), uuid.uuid4(), dependency
+                        )
+                    except HTTPException as exc:
+                        assert exc.status_code == 409
+                        assert exc.detail == {"code": "anchor_generation_mismatch"}
+                    else:
+                        raise AssertionError("Private source reader accepted a foreign generation")
+                    print("PASS: actual Python/Rust source observation after Yjs edits and restart")
                 return test.returncode
         except Exception:
             import shutil

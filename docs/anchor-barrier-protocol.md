@@ -15,7 +15,9 @@ restore remain unfinished. Never accept a client-provided receipt.
 
 - `POST /internal/collaboration/register` binds a first document generation.
 - `POST /internal/collaboration/validate` observes placements and checkpoints them.
-- Both require `Authorization: Bearer <server-token>`. Document, file and prefix
+- `POST /internal/collaboration/source` provides a bounded source observation for
+  server-derived Bases values; see the [source protocol](base-source-observations.md).
+- All require `Authorization: Bearer <server-token>`. Document, file and prefix
   credentials are not internal authority. Anonymous-development fallback is off.
 - Use the configured private relay origin and server credential. A response is
   trusted only as the direct result of this authenticated internal call; it is not
@@ -30,7 +32,8 @@ restore remain unfinished. Never accept a client-provided receipt.
 
 ## Request
 
-Both endpoints require these fields and reject unknown fields:
+Registration and anchor validation require these fields and reject unknown fields
+(source observations use the same header and a separate dependency field):
 
 | Field | Contract |
 | --- | --- |

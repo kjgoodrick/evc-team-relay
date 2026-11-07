@@ -184,6 +184,12 @@ async fn private_routes_are_disabled_by_default_and_require_server_authority() {
                 .0,
             StatusCode::UNAUTHORIZED
         );
+        assert_eq!(
+            raw(&enabled, token, "source", vec![b'x'; MAX_BODY + 1])
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
     }
     assert_eq!(
         call(&enabled, &token, "register", envelope(DOC, None))
@@ -224,6 +230,183 @@ async fn private_routes_are_disabled_by_default_and_require_server_authority() {
     .unwrap()
     .with_anchor_barriers(true)
     .is_err());
+}
+
+async fn load_source(server: &Server, source: &str) -> Value {
+    use yrs::{Doc, OffsetKind, Options, ReadTxn, StateVector, Text, Transact};
+    let doc = Doc::with_options(Options {
+        offset_kind: OffsetKind::Utf16,
+        ..Options::default()
+    });
+    let text = doc.get_or_insert_text("contents");
+    text.insert(&mut doc.transact_mut(), 0, source);
+    let dependency = doc.transact().snapshot().encode_v1();
+    let update = doc
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
+    server
+        .load_doc_with_user(DOC, Some(SHARE_ID.into()), None)
+        .await
+        .unwrap();
+    server.docs.get(DOC).unwrap().apply_update(&update).unwrap();
+    let mut request = envelope(DOC, None);
+    request["source_dependency"] = json!(BASE64.encode(&dependency));
+    request
+}
+
+#[tokio::test]
+async fn source_observations_bind_generation_and_hashes_and_survive_filesystem_reload() {
+    let temp = tempfile::tempdir().unwrap();
+    let (server, token, _) = server(
+        Some(Box::new(
+            FileSystemStore::new(temp.path().to_owned()).unwrap(),
+        )),
+        true,
+    )
+    .await;
+    let text = "---\nstatus: Planned 🌿\n---\nPrivate body";
+    let request = load_source(&server, text).await;
+    assert_eq!(
+        call(&server, &token, "source", request.clone()).await.1["code"],
+        "generation_mismatch"
+    );
+    assert_eq!(
+        call(&server, &token, "register", envelope(DOC, None))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    for _ in 0..2 {
+        let (status, response) = call(&server, &token, "source", request.clone()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(response["source_prefix"], text);
+        assert_eq!(response["source_complete"], true);
+        assert_eq!(
+            response["source_prefix_sha256"],
+            hex::encode(Sha256::digest(text.as_bytes()))
+        );
+        assert_eq!(
+            response["request_sha256"],
+            hex::encode(Sha256::digest(serde_json::to_vec(&request).unwrap()))
+        );
+        assert_eq!(
+            response["observed_snapshot_sha256"].as_str().unwrap().len(),
+            64
+        );
+        assert!(response.get("placements").is_none());
+        assert!(
+            Server::evict_unused_doc(&server.docs, &server.loading_locks, DOC)
+                .await
+                .unwrap()
+        );
+    }
+    let mut foreign = request.clone();
+    foreign["generation"] = json!(REQUEST_ID);
+    assert_eq!(
+        call(&server, &token, "source", foreign).await.1["code"],
+        "generation_mismatch"
+    );
+    let mut foreign = request;
+    foreign["share_id"] = json!(REQUEST_ID);
+    assert_eq!(
+        call(&server, &token, "source", foreign).await.1["code"],
+        "share_mismatch"
+    );
+    server.drain_workers().await;
+}
+
+#[tokio::test]
+async fn source_requests_cannot_mix_protocols_allocate_from_forged_counts_or_create_unknown_notes()
+{
+    let temp = tempfile::tempdir().unwrap();
+    let (server, token, _) = server(
+        Some(Box::new(
+            FileSystemStore::new(temp.path().to_owned()).unwrap(),
+        )),
+        true,
+    )
+    .await;
+    let mut request = envelope(DOC, None);
+    assert_eq!(
+        call(&server, &token, "source", request.clone()).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    request["source_dependency"] = json!(BASE64.encode(&[0, 0]));
+    assert_eq!(
+        call(&server, &token, "source", request.clone()).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert!(server.docs.is_empty());
+    assert!(!temp.path().join(DOC).exists());
+    for route in ["register", "validate"] {
+        assert_eq!(
+            call(&server, &token, route, request.clone()).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    let mut mixed = request.clone();
+    mixed["anchors"] = envelope(DOC, Some(&vectors()[0]))["anchors"].clone();
+    assert_eq!(
+        call(&server, &token, "source", mixed).await.1["code"],
+        "invalid_batch"
+    );
+    for encoded in [
+        BASE64.encode(&[0, 255, 255, 255, 255, 15]),
+        BASE64.encode(&[0, 0, 42]),
+        "AA".into(),
+        "A".repeat(90000),
+    ] {
+        request["source_dependency"] = json!(encoded);
+        assert_eq!(
+            call(&server, &token, "source", request.clone()).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    server.drain_workers().await;
+}
+
+#[tokio::test]
+async fn source_prefix_caps_are_explicit_and_checkpoint_failure_returns_no_source() {
+    use y_sweet_core::source::{MAX_SOURCE_DOCUMENT_UTF16, MAX_SOURCE_PREFIX_BYTES};
+    let temp = tempfile::tempdir().unwrap();
+    let files = ControlledStore::new(temp.path().to_owned());
+    let (server, token, _) = server(Some(Box::new(DurableTestStore(files.clone()))), true).await;
+    let request = load_source(
+        &server,
+        &("x".repeat(MAX_SOURCE_PREFIX_BYTES - 1) + "🌿tail"),
+    )
+    .await;
+    assert_eq!(
+        call(&server, &token, "register", envelope(DOC, None))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (status, value) = call(&server, &token, "source", request.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        value["source_prefix"].as_str().unwrap().len(),
+        MAX_SOURCE_PREFIX_BYTES - 1
+    );
+    assert_eq!(value["source_complete"], false);
+    // Force an actual ordered write so a failing store cannot issue a proof.
+    server
+        .docs
+        .get(DOC)
+        .unwrap()
+        .sync_kv()
+        .update_metadata("source-test".into(), ciborium::value::Value::Bool(true));
+    files.fail_next.store(true, Ordering::SeqCst);
+    let (status, value) = call(&server, &token, "source", request).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(value.get("source_prefix").is_none());
+    // Insert a second client's content, preserving the bound document lineage.
+    let request = load_source(&server, &"x".repeat(MAX_SOURCE_DOCUMENT_UTF16 as usize + 1)).await;
+    let (status, value) = call(&server, &token, "source", request).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(value["code"], "source_document_too_large");
+    assert!(value.get("source_prefix").is_none());
+    server.drain_workers().await;
 }
 
 #[tokio::test]

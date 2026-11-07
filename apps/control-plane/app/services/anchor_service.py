@@ -91,7 +91,7 @@ def relay_origin() -> str:
     )
 
 
-def _post(client, origin, token, route, request, deadline):
+def _post(client, origin, token, route, request, deadline, *, response_limit=65536):
     encoded = json.dumps(request, separators=(",", ":"), ensure_ascii=False).encode()
     sent = now_ms()
     remaining = deadline - time.monotonic()
@@ -107,7 +107,7 @@ def _post(client, origin, token, route, request, deadline):
         ) as response:
             body = bytearray()
             for chunk in response.iter_raw():
-                if time.monotonic() >= deadline or len(body) + len(chunk) > 65536:
+                if time.monotonic() >= deadline or len(body) + len(chunk) > response_limit:
                     fail()
                 body.extend(chunk)
             try:
@@ -129,6 +129,12 @@ def _post(client, origin, token, route, request, deadline):
                     fail(409, "anchor_dependency_not_ready")
                 if response.status_code == 422:
                     fail(422, "invalid_anchor")
+                if (
+                    route == "source"
+                    and response.status_code == 413
+                    and code == "source_document_too_large"
+                ):
+                    fail(413, "base_value_source_too_large")
                 fail()
     except httpx.HTTPError:
         # Network exceptions can include URLs/headers. Do not propagate them to

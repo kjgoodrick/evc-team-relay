@@ -99,7 +99,7 @@ pub fn resolve_with_snapshot(
 /// payload. A small malicious payload can otherwise request enormous allocation
 /// before truncation is noticed. Check the wire structure without allocating;
 /// every declared entry must fit in the remaining bounded byte slice.
-fn preflight_snapshot(mut bytes: &[u8]) -> Result<()> {
+pub(crate) fn preflight_snapshot(mut bytes: &[u8]) -> Result<()> {
     fn var(bytes: &mut &[u8], limit: u64) -> Result<u64> {
         let mut value = 0u64;
         for shift in (0..=63).step_by(7) {

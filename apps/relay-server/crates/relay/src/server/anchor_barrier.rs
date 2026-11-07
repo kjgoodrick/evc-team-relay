@@ -6,7 +6,9 @@ use axum::body::to_bytes;
 use data_encoding::BASE64;
 use serde::{Deserialize, Serialize};
 use y_sweet_core::anchors::{resolve_with_snapshot, AnchorPlacement, TextAnchorInput};
+use y_sweet_core::source::{decode_source_dependency, observe_source, SourceObservation};
 use yrs::updates::encoder::Encode;
+use yrs::Snapshot;
 
 const MAX_BODY: usize = 512 * 1024;
 const MAX_LIFETIME_MS: u64 = 30_000;
@@ -29,6 +31,21 @@ struct Envelope {
     expires_at_ms: u64,
     #[serde(default)]
     anchors: Vec<WireAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_dependency: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum Operation {
+    Register,
+    Anchors,
+    Source,
+}
+
+enum Input {
+    Register,
+    Anchors(Vec<TextAnchorInput>),
+    Source(Snapshot),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -64,7 +81,7 @@ fn decode(value: &str, limit: usize) -> Result<Vec<u8>, Failure> {
 }
 
 impl Envelope {
-    fn validate(&self, registration: bool) -> Result<Vec<TextAnchorInput>, Failure> {
+    fn validate_header(&self) -> Result<(), Failure> {
         if self.protocol_version != 1
             || ![
                 &self.request_id,
@@ -80,6 +97,14 @@ impl Envelope {
         let now = current_time_epoch_millis();
         if self.expires_at_ms <= now || self.expires_at_ms > now.saturating_add(MAX_LIFETIME_MS) {
             return Err(failure(StatusCode::REQUEST_TIMEOUT, "request_expired"));
+        }
+        Ok(())
+    }
+
+    fn validate(&self, registration: bool) -> Result<Vec<TextAnchorInput>, Failure> {
+        self.validate_header()?;
+        if self.source_dependency.is_some() {
+            return Err(failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"));
         }
         if registration && !self.anchors.is_empty()
             || !registration && (self.anchors.is_empty() || self.anchors.len() > 32)
@@ -103,6 +128,19 @@ impl Envelope {
                 Ok(input)
             })
             .collect()
+    }
+
+    fn validate_source(&self) -> Result<Snapshot, Failure> {
+        self.validate_header()?;
+        if !self.anchors.is_empty() {
+            return Err(failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_batch"));
+        }
+        let source = self
+            .source_dependency
+            .as_ref()
+            .ok_or_else(|| failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"))?;
+        decode_source_dependency(&decode(source, 64 * 1024)?)
+            .map_err(|_| failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_dependency"))
     }
 }
 
@@ -128,20 +166,27 @@ pub(super) async fn register(
     State(server): State<Arc<Server>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    handle(server, request, true).await
+    handle(server, request, Operation::Register).await
 }
 
 pub(super) async fn validate(
     State(server): State<Arc<Server>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    handle(server, request, false).await
+    handle(server, request, Operation::Anchors).await
+}
+
+pub(super) async fn source(
+    State(server): State<Arc<Server>>,
+    request: Request,
+) -> Result<Response, Failure> {
+    handle(server, request, Operation::Source).await
 }
 
 async fn handle(
     server: Arc<Server>,
     request: Request,
-    registration: bool,
+    operation: Operation,
 ) -> Result<Response, Failure> {
     if !server.anchor_barriers_enabled {
         return Err(failure(StatusCode::NOT_FOUND, "barrier_disabled"));
@@ -180,7 +225,14 @@ async fn handle(
     .map_err(|_| failure(StatusCode::PAYLOAD_TOO_LARGE, "request_too_large"))?;
     let envelope: Envelope = serde_json::from_slice(&bytes)
         .map_err(|_| failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request"))?;
-    let anchors = envelope.validate(registration)?;
+    let input = match operation {
+        Operation::Register => {
+            envelope.validate(true)?;
+            Input::Register
+        }
+        Operation::Anchors => Input::Anchors(envelope.validate(false)?),
+        Operation::Source => Input::Source(envelope.validate_source()?),
+    };
     let digest = hex::encode(Sha256::digest(&bytes));
     let deadline = envelope.expires_at_ms;
     let owned = server.clone();
@@ -189,7 +241,7 @@ async fn handle(
     // the server tracker. Shutdown drains that tracker before runtime exit.
     let task = server.doc_worker_tracker.spawn(async move {
         let _slot = slot;
-        observe(owned, envelope, anchors, digest, registration).await
+        observe(owned, envelope, input, digest).await
     });
     let reply = tokio::time::timeout(
         Duration::from_millis(deadline.saturating_sub(current_time_epoch_millis())),
@@ -204,10 +256,10 @@ async fn handle(
 async fn observe(
     server: Arc<Server>,
     envelope: Envelope,
-    anchors: Vec<TextAnchorInput>,
+    input: Input,
     digest: String,
-    registration: bool,
 ) -> Result<Value, Failure> {
+    let registration = matches!(input, Input::Register);
     let lock = server
         .loading_locks
         .entry(envelope.document_id.clone())
@@ -268,30 +320,55 @@ async fn observe(
     } else if saved_generation != Some(&generation) || saved_share != Some(&share) {
         return Err(failure(StatusCode::CONFLICT, "generation_mismatch"));
     }
-    let observation = if registration {
-        None
-    } else {
-        let (placements, snapshot) = {
-            let current = awareness.write().map_err(|_| unavailable())?;
-            resolve_with_snapshot(&current.doc, &anchors)
-                .map_err(|_| failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_anchor"))?
-        };
-        if placements
-            .iter()
-            .any(|placement| matches!(placement, AnchorPlacement::Invalid))
-        {
-            return Err(failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_anchor"));
+    let observation = match input {
+        Input::Register => None,
+        Input::Anchors(anchors) => {
+            let (placements, snapshot) = {
+                let current = awareness.write().map_err(|_| unavailable())?;
+                resolve_with_snapshot(&current.doc, &anchors)
+                    .map_err(|_| failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_anchor"))?
+            };
+            if placements
+                .iter()
+                .any(|placement| matches!(placement, AnchorPlacement::Invalid))
+            {
+                return Err(failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_anchor"));
+            }
+            if placements
+                .iter()
+                .any(|placement| matches!(placement, AnchorPlacement::WaitingForSync))
+            {
+                return Err(failure(StatusCode::CONFLICT, "dependency_not_ready"));
+            }
+            Some(json!({
+                "placements": placements,
+                "observed_snapshot_sha256": hex::encode(Sha256::digest(snapshot.encode_v1())),
+            }))
         }
-        if placements
-            .iter()
-            .any(|placement| matches!(placement, AnchorPlacement::WaitingForSync))
-        {
-            return Err(failure(StatusCode::CONFLICT, "dependency_not_ready"));
+        Input::Source(dependency) => {
+            let (source, snapshot) = {
+                let current = awareness.write().map_err(|_| unavailable())?;
+                observe_source(&current.doc, &dependency)
+                    .map_err(|_| failure(StatusCode::UNPROCESSABLE_ENTITY, "invalid_dependency"))?
+            };
+            match source {
+                SourceObservation::WaitingForSync => {
+                    return Err(failure(StatusCode::CONFLICT, "dependency_not_ready"))
+                }
+                SourceObservation::DocumentTooLarge => {
+                    return Err(failure(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "source_document_too_large",
+                    ))
+                }
+                SourceObservation::Observed { prefix, complete } => Some(json!({
+                    "source_prefix_sha256": hex::encode(Sha256::digest(prefix.as_bytes())),
+                    "source_prefix": prefix,
+                    "source_complete": complete,
+                    "observed_snapshot_sha256": hex::encode(Sha256::digest(snapshot.encode_v1())),
+                })),
+            }
         }
-        Some((
-            placements,
-            hex::encode(Sha256::digest(snapshot.encode_v1())),
-        ))
     };
     // The observation precedes this ordered checkpoint. Edits can proceed while
     // storage writes; a receipt attests to the observed state, not future text.
@@ -305,9 +382,11 @@ async fn observe(
         "generation": envelope.generation, "request_sha256": digest,
         "expires_at_ms": envelope.expires_at_ms, "checkpointed_at_ms": current_time_epoch_millis(),
     });
-    if let Some((placements, snapshot)) = observation {
-        result["placements"] = serde_json::to_value(placements).map_err(|_| unavailable())?;
-        result["observed_snapshot_sha256"] = json!(snapshot);
+    if let Some(observation) = observation {
+        result
+            .as_object_mut()
+            .unwrap()
+            .extend(observation.as_object().unwrap().clone());
     }
     Ok(result)
 }

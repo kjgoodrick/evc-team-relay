@@ -833,6 +833,10 @@ impl Server {
                 .route(
                     "/internal/collaboration/validate",
                     post(anchor_barrier::validate),
+                )
+                .route(
+                    "/internal/collaboration/source",
+                    post(anchor_barrier::source),
                 );
         }
 
