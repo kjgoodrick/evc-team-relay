@@ -316,7 +316,7 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
             raise AssertionError("Populated group tables were downgraded")
         with engine.connect() as connection:
             assert (
-                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
+                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
             )
         assert totals() == (1, 2, 3)
         print(

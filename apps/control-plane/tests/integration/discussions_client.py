@@ -27,6 +27,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", type=Path, required=True)
     parser.add_argument(
+        "--search",
+        action="store_true",
+        help="Run authorized search with the real TypeScript client",
+    )
+    parser.add_argument(
         "--inbox",
         action="store_true",
         help="Run inbox projection and client recovery with application lifecycle enabled",
@@ -36,7 +41,7 @@ def main():
         help="Disposable MinIO at 127.0.0.1:<port>, using synthetic picture-test credentials",
     )
     args = parser.parse_args()
-    if args.inbox and args.pictures_endpoint:
+    if sum(bool(value) for value in (args.inbox, args.search, args.pictures_endpoint)) > 1:
         parser.error("Choose one disposable integration scenario")
     if args.pictures_endpoint:
         match = re.fullmatch(r"127\.0\.0\.1:(\d+)", args.pictures_endpoint)
@@ -49,6 +54,7 @@ def main():
             JWT_SECRET=secrets.token_hex(32),
             COLLABORATION_POLICY_ENABLED="true",
             COLLABORATION_DISCUSSIONS_ENABLED="true",
+            COLLABORATION_SEARCH_ENABLED="true" if args.search else "false",
             LOG_LEVEL="WARNING",
             CONTROL_PLANE_PUBLIC_URL=f"http://127.0.0.1:{number}",
         )
@@ -217,6 +223,8 @@ def main():
                         "--runInBand",
                         "__tests__/collaboration/realInboxStack.test.ts"
                         if args.inbox
+                        else "__tests__/collaboration/realDiscussionSearchStack.test.ts"
+                        if args.search
                         else "__tests__/collaboration/realPictureStack.test.ts"
                         if args.pictures_endpoint
                         else "__tests__/collaboration/realDiscussionStack.test.ts",
@@ -226,6 +234,8 @@ def main():
                         **os.environ,
                         "EVC_INBOX_FIXTURE"
                         if args.inbox
+                        else "EVC_SEARCH_FIXTURE"
+                        if args.search
                         else "EVC_PICTURE_FIXTURE"
                         if args.pictures_endpoint
                         else "EVC_DISCUSSION_FIXTURE": str(fixture_path),
@@ -245,6 +255,8 @@ def main():
     print(
         "PASS: actual application inbox worker, HTTP client and offline recovery"
         if args.inbox
+        else "PASS: actual authorized search, edits, filters, navigation and revocation"
+        if args.search
         else "PASS: real picture HTTP/outbox and MinIO proof"
         if args.pictures_endpoint
         else "PASS: real HTTP outbox retry, replies/history/reactions, revocation and recovery"

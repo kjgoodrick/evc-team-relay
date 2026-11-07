@@ -585,6 +585,12 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
                 )
             elif not command.present and reaction is not None:
                 db.delete(reaction)
+    if isinstance(command, (s.ThreadCreate, s.ReplyCreate, s.MessageEdit, s.MessageDelete)):
+        from app.services import discussion_search_index
+
+        discussion_search_index.update(
+            db, message, command.body.model_dump(mode="json") if hasattr(command, "body") else None
+        )
     if hasattr(command, "body") and command.body.picture_ids():
         from app.services.discussion_pictures import attach
 

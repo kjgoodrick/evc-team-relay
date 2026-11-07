@@ -1279,6 +1279,39 @@ class DiscussionMessageRevision(Base):
     )
 
 
+class DiscussionSearchDocument(Base):
+    __tablename__ = "discussion_search_documents"
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_messages.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(nullable=False)
+    plain_text: Mapped[str] = mapped_column(Text, nullable=False)
+    terms: Mapped[str] = mapped_column(Text, nullable=False)
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_discussion_search_revision"),
+        Index(
+            "ix_discussion_search_terms",
+            func.to_tsvector(text("'simple'::regconfig"), terms),
+            postgresql_using="gin",
+        ).ddl_if(dialect="postgresql"),
+    )
+
+
+class DiscussionSearchMention(Base):
+    __tablename__ = "discussion_search_mentions"
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_search_documents.message_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    __table_args__ = (Index("ix_discussion_search_mentions_user", "user_id", "message_id"),)
+
+
 class DiscussionPicture(Base):
     __tablename__ = "discussion_pictures"
     __table_args__ = (

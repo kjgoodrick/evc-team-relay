@@ -262,7 +262,7 @@ def prove_timeline_markers(engine, tokens, share_id, entry_id, view_id, reviewer
     else:
         raise AssertionError("A downgrade erased marker history")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
     assert totals() == before
     assert send(original) == accepted
     assert send(archive) == archived

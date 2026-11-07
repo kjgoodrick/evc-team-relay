@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     collaboration_discussions_enabled: bool = Field(
         default=False, description="Preview whole-note discussion commands and HTTP catch-up"
     )
+    collaboration_search_enabled: bool = Field(
+        default=False,
+        description="Preview authorized current-comment search; requires search migration",
+    )
     collaboration_text_anchors_enabled: bool = Field(
         default=False, description="Preview validated text anchors; requires private relay barriers"
     )

@@ -84,7 +84,7 @@ def main():
     settings.managed_bases_sync_enabled = True
     command.upgrade(Config("alembic.ini"), "head")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
         drift = compare_metadata(MigrationContext.configure(connection), m.Base.metadata)
         assert not [
             item

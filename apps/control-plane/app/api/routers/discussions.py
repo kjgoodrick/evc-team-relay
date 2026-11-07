@@ -12,8 +12,9 @@ from starlette.requests import Request as StarletteRequest
 from app.api import deps
 from app.core.config import get_settings
 from app.db.session import get_db
+from app.schemas.discussion_search import DiscussionSearch
 from app.schemas.discussions import CommandEnvelope
-from app.services import anchor_service
+from app.services import anchor_service, discussion_search
 from app.services import discussion_service as service
 
 
@@ -94,6 +95,17 @@ router = APIRouter(
     dependencies=[Depends(require_preview)],
     route_class=BoundedDiscussionRoute,
 )
+
+
+@router.post("/shares/{share_id}/search")
+def search(
+    share_id: uuid.UUID,
+    payload: DiscussionSearch,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    # POST keeps private search terms out of URL/access-log query strings.
+    return discussion_search.search(db, token, share_id, payload)
 
 
 @router.post("/commands")
