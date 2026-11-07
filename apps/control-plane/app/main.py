@@ -43,7 +43,12 @@ from app.middleware import errors, logging
 from app.middleware.metrics import PrometheusMiddleware
 from app.services import auth_service
 from app.services.billing_service import LimitExceededError, VisibilityNotAllowedError
-from app.workers import discussion_picture_worker, metrics_worker, retention_worker
+from app.workers import (
+    discussion_inbox_worker,
+    discussion_picture_worker,
+    metrics_worker,
+    retention_worker,
+)
 
 # Rate limiter configuration
 limiter = Limiter(key_func=rate_limit_key)
@@ -169,6 +174,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
         bases,
         collaboration,
         collaboration_events,
+        discussion_inbox,
         discussion_pictures,
         discussions,
         managed,
@@ -182,6 +188,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.include_router(base_content.router, prefix="/v1")
     app.include_router(collaboration_events.router, prefix="/v1")
     app.include_router(discussions.router, prefix="/v1")
+    app.include_router(discussion_inbox.router, prefix="/v1")
     app.include_router(discussion_pictures.router, prefix="/v1")
     app.include_router(native_oauth.router, prefix="/v1")
     app.include_router(managed.router, prefix="/v1")
@@ -361,6 +368,24 @@ Get a token by calling `POST /auth/login` with valid credentials.
         if task is not None:
             task.cancel()
             # Shield/drain an active storage thread before app resources close.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    pass
+
+    @app.on_event("startup")
+    async def _start_inbox_projection() -> None:
+        if get_settings().collaboration_inbox_enabled:
+            app.state.inbox_task = asyncio.create_task(
+                discussion_inbox_worker.run_inbox_projection()
+            )
+
+    @app.on_event("shutdown")
+    async def _stop_inbox_projection() -> None:
+        task = getattr(app.state, "inbox_task", None)
+        if task is not None:
+            task.cancel()
             while not task.done():
                 try:
                     await asyncio.shield(task)

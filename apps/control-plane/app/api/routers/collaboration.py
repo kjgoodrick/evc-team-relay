@@ -15,6 +15,7 @@ from app.services import (
     bases_registry,
     collaboration_auth,
     collaboration_policy,
+    discussion_inbox,
     discussion_pictures,
     managed_service,
     share_service,
@@ -58,6 +59,7 @@ def capabilities(
                 and get_settings().collaboration_image_files_enabled
             ),
             "discussion_pictures": discussion_pictures.enabled(),
+            "discussion_inbox": discussion_inbox.enabled(),
             "discussion_recovery": (
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled

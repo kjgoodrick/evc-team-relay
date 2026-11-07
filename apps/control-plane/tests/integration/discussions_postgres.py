@@ -51,7 +51,7 @@ def main():
     config = Config("alembic.ini")
     command.upgrade(config, "head")
     with engine.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "202611060006"
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
         diffs = compare_metadata(MigrationContext.configure(conn), m.Base.metadata)
 
         def relevant(diff):

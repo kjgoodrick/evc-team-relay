@@ -51,7 +51,7 @@ def main():
         url, connect_args={"connect_timeout": 5, "options": "-c statement_timeout=10000"}
     )
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060006"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
     settings = get_settings()
     settings.collaboration_policy_enabled = True
     settings.collaboration_discussions_enabled = True

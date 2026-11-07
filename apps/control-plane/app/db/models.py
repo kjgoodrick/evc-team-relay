@@ -1322,3 +1322,87 @@ class DiscussionEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
+
+
+class DiscussionSubscription(Base):
+    __tablename__ = "discussion_subscriptions"
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_threads.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    following: Mapped[bool] = mapped_column(nullable=False, default=True)
+    muted: Mapped[bool] = mapped_column(nullable=False, default=False)
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_discussion_subscription_version"),
+        Index("ix_discussion_subscriptions_thread", "thread_id"),
+    )
+
+
+class DiscussionInboxItem(Base):
+    __tablename__ = "discussion_inbox_items"
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("discussion_threads.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shares.id", ondelete="CASCADE"), nullable=False
+    )
+    # Projection versions, not share sequences: a late older job must become
+    # unread even after a newer notification has already been seen.
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    read_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    dismissed_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discussion_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    __table_args__ = (
+        CheckConstraint(
+            "version >= 1 AND read_version >= 0 AND read_version <= version "
+            "AND dismissed_version >= 0 AND dismissed_version <= version",
+            name="ck_discussion_inbox_versions",
+        ),
+        CheckConstraint("reason IN ('mention', 'reply')", name="ck_discussion_inbox_reason"),
+        Index("ix_discussion_inbox_user_share_activity", "user_id", "share_id", "last_sequence"),
+    )
+
+
+class DiscussionNotification(Base):
+    __tablename__ = "discussion_notifications"
+    share_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("shares.id", ondelete="CASCADE"), primary_key=True
+    )
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discussion_threads.id", ondelete="CASCADE"), nullable=False
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discussion_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    delivered: Mapped[bool] = mapped_column(nullable=False, default=False)
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        CheckConstraint("reason IN ('mention', 'reply')", name="ck_discussion_notification_reason"),
+        Index("ix_discussion_notifications_pending", "completed_at", "lease_until"),
+        Index("ix_discussion_notifications_thread_user", "thread_id", "user_id", "sequence"),
+    )

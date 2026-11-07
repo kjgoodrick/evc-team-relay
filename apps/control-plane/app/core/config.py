@@ -81,6 +81,9 @@ class Settings(BaseSettings):
         max_length=63,
         pattern=r"^[a-z0-9][a-z0-9.-]*[a-z0-9]$",
     )
+    collaboration_inbox_enabled: bool = Field(
+        default=False, description="Preview discussion inbox; requires upgraded clients"
+    )
     collaboration_picture_cleanup_enabled: bool = Field(
         default=False,
         description="Reconcile private comment pictures; keep disabled during backup/restore",

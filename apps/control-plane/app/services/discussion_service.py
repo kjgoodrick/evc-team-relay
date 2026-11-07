@@ -632,6 +632,9 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
             result=result,
         )
     )
+    from app.services.discussion_inbox import enqueue
+
+    enqueue(db, ctx, command, thread, message, sequence)
     db.flush()
     if proof is not None:
         proof.check(envelope, ctx.entry.collaboration_generation)
