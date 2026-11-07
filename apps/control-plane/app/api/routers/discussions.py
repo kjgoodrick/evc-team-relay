@@ -52,7 +52,11 @@ class BoundedDiscussionRoute(APIRoute):
                         anchor.get("type") in {"text", "image"}
                         or anchor.get("type") == "base"
                         and isinstance(anchor.get("target"), dict)
-                        and anchor["target"].get("type") == "group"
+                        and (
+                            anchor["target"].get("type") == "group"
+                            or anchor["target"].get("type") == "timeline_range"
+                            and isinstance(anchor["target"].get("lane"), dict)
+                        )
                     )
                 except (ValueError, UnicodeError, RecursionError):
                     is_anchor = False
@@ -210,6 +214,21 @@ def message_history(
 ):
     return service.history(
         db, token, share_id, entry_id, thread_id, message_id, after=after, limit=limit
+    )
+
+
+@router.get("/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/anchor-history")
+def anchor_history(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    after: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=20),
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.anchor_history(
+        db, token, share_id, entry_id, thread_id, after=after, limit=limit
     )
 
 

@@ -270,6 +270,7 @@ def test_preview_disabled_and_no_unimplemented_feature_advertised(client, team, 
         discussion_pictures=False,
         discussion_inbox=False,
         discussion_search=False,
+        discussion_reattach=False,
         discussion_recovery=False,
     )
     assert (

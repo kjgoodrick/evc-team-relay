@@ -23,6 +23,7 @@ from app.services import (
     collaboration_policy,
     discussion_inbox,
     discussion_pictures,
+    discussion_reattachment,
     discussion_search,
     managed_service,
     permission_editor,
@@ -84,6 +85,7 @@ def capabilities(
             "discussion_pictures": discussion_pictures.enabled(),
             "discussion_inbox": discussion_inbox.enabled(),
             "discussion_search": discussion_search.enabled(),
+            "discussion_reattach": discussion_reattachment.enabled(),
             "discussion_recovery": (
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled

@@ -36,6 +36,9 @@ class Settings(BaseSettings):
         default=False,
         description="Preview authorized current-comment search; requires search migration",
     )
+    collaboration_reattach_enabled: bool = Field(
+        default=False, description="Preview explicit same-scope discussion reattachment"
+    )
     collaboration_text_anchors_enabled: bool = Field(
         default=False, description="Preview validated text anchors; requires private relay barriers"
     )

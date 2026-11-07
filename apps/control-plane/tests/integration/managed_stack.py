@@ -163,6 +163,7 @@ def main():
                 COLLABORATION_POLICY_ENABLED="true",
                 COLLABORATION_DISCUSSIONS_ENABLED="true",
                 COLLABORATION_TEXT_ANCHORS_ENABLED="true",
+                COLLABORATION_REATTACH_ENABLED="true" if args.text_anchors else "false",
                 COLLABORATION_ANCHOR_RELAY_TOKEN=token,
             )
             private_auth = f'''[[auth]]

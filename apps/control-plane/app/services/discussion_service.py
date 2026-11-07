@@ -29,6 +29,7 @@ from app.services import (
     base_discussions,
     collaboration_auth,
     collaboration_policy,
+    discussion_reattachment,
     managed_service,
 )
 
@@ -386,6 +387,9 @@ def prepare_text_anchor(db, token, envelope):
     prior = existing_receipt(db, ctx, envelope, anchor_service.command_hash(envelope))
     if prior is not None:
         return prior
+    if isinstance(envelope.command, s.ThreadReattach):
+        thread = thread_for(db, ctx, envelope.command.thread_id, write=True)
+        discussion_reattachment.validate(db, ctx, thread, envelope.command)
     validate_anchor_target(ctx, envelope.command.anchor)
     if not anchor_service.enabled():
         error(409, "text_anchors_disabled")
@@ -394,7 +398,8 @@ def prepare_text_anchor(db, token, envelope):
         error(422, "invalid_anchor")
     if anchor.generation != ctx.entry.collaboration_generation:
         error(409, "anchor_generation_mismatch")
-    validate_mentions(db, ctx, envelope.command.body)
+    if hasattr(envelope.command, "body"):
+        validate_mentions(db, ctx, envelope.command.body)
     validate_image_asset(db, ctx, envelope.command.anchor)
     # Release every authorization/identity lock before any private network I/O.
     # The final command transaction reacquires and rechecks all of them.
@@ -408,11 +413,11 @@ def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
     envelope = envelope.model_copy(deep=True)
     try:
         text = (
-            isinstance(envelope.command, s.ThreadCreate)
+            isinstance(envelope.command, (s.ThreadCreate, s.ThreadReattach))
             and s.source_anchor(envelope.command.anchor) is not None
         )
         group = (
-            isinstance(envelope.command, s.ThreadCreate)
+            isinstance(envelope.command, (s.ThreadCreate, s.ThreadReattach))
             and isinstance(envelope.command.anchor, s.BaseAnchor)
             and (
                 isinstance(envelope.command.anchor.target, s.BaseGroupTarget)
@@ -451,16 +456,21 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
     if prior is not None:
         return prior
     command = envelope.command
-    if isinstance(command, s.ThreadCreate):
+    if isinstance(command, (s.ThreadCreate, s.ThreadReattach)):
         validate_anchor_target(ctx, command.anchor)
-        if isinstance(command.anchor, s.BaseAnchor):
+        if isinstance(command, s.ThreadCreate) and isinstance(command.anchor, s.BaseAnchor):
             base_discussions.validate(db, ctx, command.anchor, creation=True, write=True)
-    if isinstance(command, s.ThreadCreate) and s.source_anchor(command.anchor) is not None:
+    if (
+        isinstance(command, (s.ThreadCreate, s.ThreadReattach))
+        and s.source_anchor(command.anchor) is not None
+    ):
         if not anchor_service.enabled():
             error(409, "text_anchors_disabled")
         if not isinstance(proof, anchor_service.AnchorProof):
             error(503, "anchor_validation_unavailable")
         proof.check(envelope, ctx.entry.collaboration_generation)
+        if isinstance(command, s.ThreadReattach) and proof.placement != "attached":
+            error(409, "reattach_target_unanchored")
         validate_image_asset(db, ctx, command.anchor)
     target_anchor = command.anchor if isinstance(command, s.ThreadCreate) else None
     if isinstance(command, s.ThreadCreate):
@@ -477,6 +487,9 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
     else:
         thread = thread_for(db, ctx, command.thread_id, scope=scope, write=True)
         target_anchor = base_discussions.authorize_thread(db, ctx, thread, write=True)
+        if isinstance(command, s.ThreadReattach):
+            discussion_reattachment.validate(db, ctx, thread, command)
+            target_anchor = command.anchor
     if hasattr(command, "body"):
         validate_mentions(db, ctx, command.body, target_anchor)
     # A row-locked counter produces commit order. No sequence allocation or
@@ -528,6 +541,8 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
                 actor_id=ctx.user.id,
             )
         )
+    elif isinstance(command, s.ThreadReattach):
+        changed = discussion_reattachment.append(db, ctx, thread, command)
     elif isinstance(command, (s.ThreadState, s.ThreadRemove)):
         state_precondition(thread, command.expected_state_revision)
         if isinstance(command, s.ThreadRemove):
@@ -610,6 +625,8 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
         "removed": thread.deleted,
         "changed": changed,
     }
+    if isinstance(command, s.ThreadReattach):
+        result["anchor_revision"] = thread.anchor_revision
     if message is not None:
         result.update(
             message_id=str(message.id),
@@ -621,10 +638,14 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
             share_id=ctx.share.id,
             sequence=sequence,
             scope_id=scope.id,
-            kind=command.type,
+            # Protocol-v1 clients understand thread.state as a thread refresh,
+            # including its current anchor. A new event kind would stop older
+            # clients' change feeds, even when they never invoke reattachment.
+            kind="thread.state" if isinstance(command, s.ThreadReattach) else command.type,
             payload={
                 **result,
                 "actor_id": str(ctx.user.id),
+                **({"change_type": command.type} if isinstance(command, s.ThreadReattach) else {}),
                 **(
                     {"view_id": str(target_anchor.view_id)}
                     if isinstance(target_anchor, s.BaseAnchor)
@@ -799,6 +820,60 @@ def read_thread_state(db, token, share_id, entry_id, thread_id):
         anchor = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
         result["anchor"] = anchor.payload
     return result
+
+
+def anchor_history(db, token, share_id, entry_id, thread_id, *, after=0, limit=10):
+    """Bounded immutable target history, under current thread and target access."""
+    ctx = context(db, token, share_id, entry_id)
+    thread = thread_for(db, ctx, thread_id)
+    current = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
+    if current is None:
+        error(500, "invalid_stored_anchor")
+    current_anchor = discussion_reattachment.stored(current.payload)
+    rows = list(
+        db.scalars(
+            select(m.DiscussionAnchorRevision)
+            .where(
+                m.DiscussionAnchorRevision.thread_id == thread.id,
+                m.DiscussionAnchorRevision.revision > after,
+            )
+            .order_by(m.DiscussionAnchorRevision.revision)
+            .limit(limit + 1)
+        )
+    )
+    authorized = []
+    for row in rows:
+        anchor = discussion_reattachment.stored(row.payload)
+        available = True
+        if isinstance(anchor, s.BaseAnchor):
+            try:
+                base_discussions.validate(db, ctx, anchor)
+            except HTTPException as exc:
+                if exc.status_code not in {403, 404}:
+                    raise
+                available = False
+        authorized.append(
+            {
+                "revision": row.revision,
+                "actor_id": str(row.actor_id) if row.actor_id else None,
+                "created_at": row.created_at,
+                "anchor": anchor.model_dump(mode="json") if available else None,
+                "unavailable": not available,
+            }
+        )
+    page = bounded_bodies(authorized[:limit], lambda row: row["anchor"])
+    return {
+        "entry_id": ctx.entry.id,
+        **(
+            {"view_id": str(current_anchor.view_id)}
+            if isinstance(current_anchor, s.BaseAnchor)
+            else {}
+        ),
+        "thread": thread_data(thread),
+        "revisions": page,
+        "has_more": len(rows) > len(page),
+        "next_after": page[-1]["revision"] if page else after,
+    }
 
 
 def read_message(db, token, share_id, entry_id, thread_id, message_id):

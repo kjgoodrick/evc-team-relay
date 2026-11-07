@@ -556,6 +556,13 @@ class ThreadState(StrictModel):
     state: Literal["open", "resolved"]
 
 
+class ThreadReattach(StrictModel):
+    type: Literal["thread.reattach"]
+    thread_id: uuid.UUID
+    expected_anchor_revision: int = Field(ge=1, strict=True)
+    anchor: Anchor
+
+
 class ThreadRemove(StrictModel):
     type: Literal["thread.remove"]
     thread_id: uuid.UUID
@@ -570,6 +577,7 @@ Command = Annotated[
     | MessageDelete
     | ReactionSet
     | ThreadState
+    | ThreadReattach
     | ThreadRemove,
     Field(discriminator="type"),
 ]
