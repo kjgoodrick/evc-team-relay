@@ -161,8 +161,15 @@ fresh/cached status and separate guarded navigation. Its unit/sidebar and actual
 Time & Line source interoperability checks pass; native acceptance remains. See
 the [client comparison record](../../evc-team-relay-obsidian/docs/timeline-marker-client-preview.md).
 
-Remaining work includes base-wide placement/matching and local marker promotion;
-direct point picking; captured-versus-current position comparison and overlap
+The client also uses the existing base-wide summary catalog and selected-view
+axis endpoint to add explicit saved-view placements. Its actual HTTP fixture
+checks Timeline and Sequence additions, preservation of original placements and
+captured discussion targets, and unchanged `.base` bytes. No server protocol,
+schema or default changed. See the
+[client placement record](../../evc-team-relay-obsidian/docs/timeline-marker-client-preview.md).
+
+Remaining work includes local marker promotion/matching;
+direct point picking; native comparison/placement acceptance and overlap
 polish; broader recovery; server-restart/client and native desktop/mobile/
 accessibility/resource acceptance.
 Management uses online guarded commands; queued comments must reuse verified
