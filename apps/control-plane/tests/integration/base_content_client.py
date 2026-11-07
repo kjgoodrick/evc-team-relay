@@ -163,7 +163,13 @@ def main():
                 path="Presence.base",
                 record={"type": "file", "hash": "b" * 64},
             )
-            db.add_all([presence_image, presence_base])
+            presence_note = m.ManagedEntry(
+                id=str(uuid.uuid4()),
+                share_id=presence_share.id,
+                path="Presence.md",
+                record={"type": "markdown"},
+            )
+            db.add_all([presence_image, presence_base, presence_note])
             db.flush()
             presence_definition = m.BaseDefinition(
                 entry_id=presence_base.id,
@@ -210,6 +216,12 @@ def main():
                     str(reviewer.id), session_id=str(reviewer_session.id)
                 ),
                 presence=dict(
+                    note=dict(
+                        kind="note",
+                        share_id=str(presence_share.id),
+                        entry_id=presence_note.id,
+                        surface="editor",
+                    ),
                     image=dict(
                         kind="image",
                         share_id=str(presence_share.id),

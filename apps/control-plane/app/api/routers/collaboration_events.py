@@ -133,7 +133,7 @@ async def handle(
         else:
             # Refresh the identity/session even for unpublish and subscription
             # control frames; possession of an old socket is not authorization.
-            image_location, image_state = None, None
+            image_location, image_state, embed = None, None, None
             if kind == "image_state" and connection.protocol_version == 2:
                 fields(message, {"type", "location", "state"})
                 image_location = presence.ImageLocation.model_validate(message["location"])
@@ -142,9 +142,19 @@ async def handle(
                     if message["state"] is not None
                     else None
                 )
+            elif kind == "image_embed" and connection.protocol_version == 2:
+                fields(message, {"type", "location", "embed"})
+                image_location = presence.Location.model_validate(message["location"])
+                embed = (
+                    presence.EmbeddedImage.model_validate(message["embed"])
+                    if message["embed"] is not None
+                    else None
+                )
             # A movement frame performs identity and entry authorization in one
             # fresh database session rather than repeating session lookup.
-            actor = await run_in_threadpool(presence.authenticate, connection.token, image_location)
+            actor = await run_in_threadpool(
+                presence.authenticate, connection.token, image_location, embed
+            )
             connection.actor = actor
             if kind == "presence":
                 fields(message, {"type", "location"})
@@ -158,6 +168,8 @@ async def handle(
                 owner.publish(connection, location)
             elif kind == "image_state" and connection.protocol_version == 2:
                 owner.move(connection, image_location, image_state)
+            elif kind == "image_embed" and connection.protocol_version == 2:
+                owner.move_embed(connection, image_location, embed)
             elif kind == "follow":
                 fields(message, {"type", "subscription_id", "target", "from"})
                 subscription = identifier(message["subscription_id"])
@@ -224,6 +236,14 @@ async def handle(
                     raise ValueError("Invalid image observation")
                 await run_in_threadpool(presence.authenticate, connection.token, location)
                 owner.watch(connection, presence.Watch(subscription, location, image_states))
+            elif kind == "watch_embeds" and connection.protocol_version == 2:
+                fields(message, {"type", "subscription_id", "location"})
+                subscription = identifier(message["subscription_id"])
+                location = presence.Location.model_validate(message["location"])
+                await run_in_threadpool(presence.authenticate, connection.token, location)
+                owner.watch(
+                    connection, presence.Watch(subscription, location, embedded_images=True)
+                )
             elif kind == "unwatch" and connection.protocol_version == 2:
                 fields(message, {"type", "subscription_id"})
                 subscription = identifier(message["subscription_id"])
@@ -327,23 +347,55 @@ async def deliver_roster(
             await asyncio.sleep(presence.IMAGE_STATE_INTERVAL)
         dirty.clear()
         watch, token = viewer.watch, viewer.token
-        if not watch or image_states and not watch.image_states:
+        if (
+            not watch
+            or (image_states and not (watch.image_states or watch.embedded_images))
+            or (not image_states and watch.embedded_images)
+        ):
             continue
         peers = owner.room_peers(watch.location, viewer)
         captured = [(peer, peer.revision, peer.token) for peer in peers]
+        embed_revisions = (
+            {peer: peer.embed_revision for peer in peers} if watch.embedded_images else {}
+        )
         result = {
-            "type": "image_states" if image_states else "roster",
+            "type": "image_embeds"
+            if watch.embedded_images
+            else "image_states"
+            if image_states
+            else "roster",
             "subscription_id": watch.subscription_id,
             "status": "unavailable",
         }
         try:
-            identities = await run_in_threadpool(
-                presence.roster_snapshot,
-                token,
-                watch.location,
-                [(peer.key, saved_token) for peer, _, saved_token in captured],
-            )
-            if image_states:
+            if watch.embedded_images:
+                identities = await run_in_threadpool(
+                    presence.embed_snapshot,
+                    token,
+                    watch.location,
+                    [
+                        (peer.key, saved_token, peer.image_embed)
+                        for peer, _, saved_token in captured
+                        if peer.image_embed is not None
+                    ],
+                )
+                latest = {peer.key: peer.image_embed for peer in peers}
+                for item in identities:
+                    value = latest.get(
+                        tuple(
+                            item["target"][key] for key in ("user_id", "session_id", "instance_id")
+                        )
+                    )
+                    if value:
+                        item["embed"]["state"] = value.state.model_dump(mode="json")
+            else:
+                identities = await run_in_threadpool(
+                    presence.roster_snapshot,
+                    token,
+                    watch.location,
+                    [(peer.key, saved_token) for peer, _, saved_token in captured],
+                )
+            if image_states and not watch.embedded_images:
                 authorized = {
                     tuple(item["target"][key] for key in ("user_id", "session_id", "instance_id"))
                     for item in identities
@@ -374,6 +426,7 @@ async def deliver_roster(
                 peer.revision != revision or peer.token != saved_token
                 for peer, revision, saved_token in captured
             )
+            or any(peer.embed_revision != revision for peer, revision in embed_revisions.items())
         ):
             dirty.set()
             continue
@@ -390,6 +443,10 @@ async def deliver_roster(
                     and all(
                         peer.revision == revision and peer.token == saved_token
                         for peer, revision, saved_token in captured
+                    )
+                    and all(
+                        peer.embed_revision == revision
+                        for peer, revision in embed_revisions.items()
                     )
                 )
 
@@ -427,11 +484,22 @@ async def check_live(owner: presence.PresenceBroker, connection: presence.Connec
             except HTTPException:
                 if connection.token == token and connection.revision == revision:
                     owner.publish(connection, None)
+        embed, embed_revision = connection.image_embed, connection.embed_revision
+        if embed and isinstance(location, presence.Location):
+            try:
+                await run_in_threadpool(presence.authenticate, token, location, embed)
+            except HTTPException:
+                if (
+                    connection.token == token
+                    and connection.revision == revision
+                    and connection.embed_revision == embed_revision
+                ):
+                    owner.move_embed(connection, location, None)
         if connection.follow:
             connection.dirty.set()  # Recheck destination access even when both peers idle.
         if connection.watch:
             connection.roster_dirty.set()
-            if connection.watch.image_states:
+            if connection.watch.image_states or connection.watch.embedded_images:
                 connection.image_dirty.set()
 
 

@@ -582,6 +582,370 @@ def moving_watch(socket, location):
     return subscription
 
 
+def embedded_image(surface_team=None, **changes):
+    image = surface_team.locations[0] if surface_team else None
+    return {
+        "version": 1,
+        "occurrence": {
+            "anchor": {"tname": "contents", "item": {"client": 7, "clock": 10}, "assoc": 0},
+            "head": {"tname": "contents", "item": {"client": 7, "clock": 30}, "assoc": -1},
+        },
+        "source_sha256": "c" * 64,
+        "asset": {
+            "kind": "managed",
+            "entry_id": image["entry_id"],
+            "generation": image["generation"],
+            "sha256": image["content_sha256"],
+        }
+        if image
+        else {"kind": "external", "url_sha256": "d" * 64, "version_evidence": "unknown"},
+        "basis": {"width": 640, "height": 480, "orientation": "display"},
+        "state": {"pointer": {"x": 0.2, "y": 0.5}, "viewport": None},
+        **changes,
+    }
+
+
+def move_embed(socket, location, embed):
+    socket.send_json({"type": "image_embed", "location": location, "embed": embed})
+    socket.send_json({"type": "ping"})
+    assert recv(socket) == {"type": "pong"}
+
+
+def watch_embeds(socket, location):
+    subscription = guid()
+    socket.send_json(
+        {"type": "watch_embeds", "subscription_id": subscription, "location": location}
+    )
+    return subscription
+
+
+def embed_frame(subscription, peers=None):
+    return {
+        "type": "image_embeds",
+        "subscription_id": subscription,
+        "status": "available",
+        "peers": peers or [],
+    }
+
+
+def test_embeds_cross_editor_reading_with_authenticated_identity_and_no_comment_permission(
+    client, team, surface_team, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "collaboration_discussions_enabled", False)
+    embed = embedded_image(surface_team)
+    with connected(client, team.tokens["viewer"], protocol_version=2) as (publisher, ready):
+        publish(publisher, team.location())
+        with connected(client, team.tokens["owner"], protocol_version=2) as (viewer, _):
+            subscription = watch_embeds(viewer, team.location(surface="reading"))
+            assert recv(viewer) == embed_frame(subscription)
+            move_embed(publisher, team.location(), embed)
+            target = {
+                "user_id": str(team.viewer.id),
+                "session_id": ready["session_id"],
+                "instance_id": ready["instance_id"],
+            }
+            assert recv(viewer) == embed_frame(subscription, [{"target": target, "embed": embed}])
+            # A second copy of the same image has a different relative interval.
+            second = embedded_image(
+                surface_team,
+                occurrence={
+                    "anchor": {"tname": "contents", "item": {"client": 7, "clock": 50}},
+                    "head": {"tname": "contents", "item": {"client": 7, "clock": 70}},
+                },
+            )
+            move_embed(publisher, team.location(), second)
+            assert recv(viewer) == embed_frame(subscription, [{"target": target, "embed": second}])
+            publish(publisher, None)
+            assert recv(viewer) == embed_frame(subscription)
+
+
+@pytest.mark.parametrize("denied_party", ["publisher", "viewer"])
+def test_embeds_omit_all_asset_metadata_after_independent_image_permission_revocation(
+    client, db_session, team, surface_team, monkeypatch, denied_party
+):
+    monkeypatch.setattr(presence, "CHECK_SECONDS", 0.03)
+    publisher_name, viewer_name = (
+        ("viewer", "owner") if denied_party == "publisher" else ("owner", "viewer")
+    )
+    with connected(client, team.tokens[publisher_name], protocol_version=2) as (publisher, _):
+        publish(publisher, team.location())
+        move_embed(publisher, team.location(), embedded_image(surface_team))
+        with connected(client, team.tokens[viewer_name], protocol_version=2) as (viewer, _):
+            subscription = watch_embeds(viewer, team.location())
+            assert len(recv(viewer)["peers"]) == 1
+            db_session.add(
+                models.ManagedRule(
+                    share_id=team.share.id,
+                    user_id=team.viewer.id,
+                    path=surface_team.image.path,
+                    recursive=False,
+                    permission="none",
+                )
+            )
+            db_session.commit()
+            assert recv(viewer) == embed_frame(subscription)
+            # Denying an image must not hide the still-authorized note location.
+            actors = list(client.app.state.collaboration_presence.connections.values())
+            assert any(
+                peer.location == presence.Location.model_validate(team.location())
+                for peer in actors
+            )
+            assert any(peer.watch and peer.watch.subscription_id == subscription for peer in actors)
+
+
+@pytest.mark.parametrize(
+    "change", ["image_generation", "image_bytes", "image_deleted", "note_denied"]
+)
+def test_embed_delivery_rechecks_note_and_asset_version(
+    client, db_session, team, surface_team, monkeypatch, change
+):
+    monkeypatch.setattr(presence, "CHECK_SECONDS", 0.03)
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, _):
+        publish(publisher, team.location())
+        move_embed(publisher, team.location(), embedded_image(surface_team))
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            subscription = watch_embeds(viewer, team.location())
+            assert len(recv(viewer)["peers"]) == 1
+            if change == "image_generation":
+                surface_team.image.collaboration_generation = uuid.uuid4()
+            elif change == "image_bytes":
+                surface_team.image.record = {"type": "image", "hash": "e" * 64}
+            elif change == "image_deleted":
+                db_session.delete(surface_team.image)
+            else:
+                team.rule.permission = "none"
+            db_session.commit()
+            expected = embed_frame(subscription)
+            if change == "note_denied":
+                expected = {
+                    "type": "image_embeds",
+                    "subscription_id": subscription,
+                    "status": "unavailable",
+                }
+            assert recv(viewer) == expected
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["hidden", "different_note", "legacy", "asset_denied", "cross_share", "generation", "bytes"],
+)
+def test_embed_publication_requires_visible_note_and_current_readable_asset(
+    client, db_session, team, surface_team, mode
+):
+    embed = embedded_image(surface_team)
+    with connected(
+        client, team.tokens["viewer"], protocol_version=1 if mode == "legacy" else 2
+    ) as (socket, _):
+        if mode != "hidden":
+            publish(socket, team.location("second" if mode == "different_note" else "first"))
+        if mode == "asset_denied":
+            db_session.add(
+                models.ManagedRule(
+                    share_id=team.share.id,
+                    user_id=team.viewer.id,
+                    path=surface_team.image.path,
+                    recursive=False,
+                    permission="none",
+                )
+            )
+            db_session.commit()
+        elif mode == "cross_share":
+            embed["asset"]["entry_id"] = guid()
+        elif mode == "generation":
+            embed["asset"]["generation"] = guid()
+        elif mode == "bytes":
+            embed["asset"]["sha256"] = "f" * 64
+        socket.send_json({"type": "image_embed", "location": team.location(), "embed": embed})
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == (
+            4400 if mode in ("hidden", "different_note", "legacy") else 4403
+        )
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"version": True},
+        {"source_sha256": "invalid"},
+        {"source": "private source"},
+        {"occurrence": {"anchor": {"tname": "contents"}, "head": {"tname": "other"}}},
+        {
+            "occurrence": {
+                "anchor": {"tname": "contents", "item": {"client": True, "clock": 0}},
+                "head": {"tname": "contents"},
+            }
+        },
+        {"basis": {"width": True, "height": 10, "orientation": "display"}},
+        {"basis": {"width": 1000001, "height": 10, "orientation": "display"}},
+        {"state": {"pointer": {"x": 2, "y": 0}, "viewport": None}},
+        {"asset": {"kind": "external", "url_sha256": "d" * 64, "version_evidence": "verified"}},
+        {
+            "asset": {
+                "kind": "external",
+                "url_sha256": "d" * 64,
+                "version_evidence": "unknown",
+                "url": "https://private.invalid",
+            }
+        },
+    ],
+)
+def test_embedded_schema_rejects_unbounded_or_sensitive_fields(patch):
+    with pytest.raises(ValueError):
+        presence.EmbeddedImage.model_validate(embedded_image(**patch))
+
+
+def test_external_embed_transport_and_stale_unwatch(client, team):
+    embed = embedded_image()
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, _):
+        publish(publisher, team.location())
+        move_embed(publisher, team.location(), embed)
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            old = watch_embeds(viewer, team.location())
+            assert recv(viewer)["peers"][0]["embed"] == embed
+            current = watch_embeds(viewer, team.location("second"))
+            assert recv(viewer) == embed_frame(current)
+            viewer.send_json({"type": "unwatch", "subscription_id": old})
+            publish(publisher, team.location("second"))
+            move_embed(publisher, team.location("second"), embed)
+            assert recv(viewer)["subscription_id"] == current
+
+
+@pytest.mark.parametrize("change", ["occurrence", "asset", "hidden", "token", "watch"])
+def test_embed_semantic_change_while_waiting_for_socket_cannot_leak_checked_asset(
+    monkeypatch, change
+):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.Location(
+            kind="note", share_id=guid(), entry_id=guid(), surface="editor"
+        )
+        original = presence.EmbeddedImage.model_validate(embedded_image())
+        owner.publish(publisher, location)
+        owner.move_embed(publisher, location, original)
+        owner.watch(viewer, presence.Watch(guid(), location, embedded_images=True))
+        checked, sent = asyncio.Event(), []
+
+        async def authorize(_fn, _token, _location, peers):
+            checked.set()
+            return [
+                {
+                    "target": dict(zip(("user_id", "session_id", "instance_id"), key)),
+                    "embed": embed.model_dump(mode="json"),
+                }
+                for key, _, embed in peers
+            ]
+
+        async def emit(value):
+            sent.append(value)
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        monkeypatch.setattr(presence, "IMAGE_STATE_INTERVAL", 0)
+        await viewer.send_lock.acquire()
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer, True)
+        )
+        try:
+            await asyncio.wait_for(checked.wait(), 1)
+            if change in ("asset", "occurrence"):
+                data = original.model_dump(mode="json")
+                if change == "asset":
+                    data["asset"]["url_sha256"] = "e" * 64
+                else:
+                    data["occurrence"]["anchor"]["item"]["clock"] = 50
+                owner.move_embed(publisher, location, presence.EmbeddedImage.model_validate(data))
+            elif change == "hidden":
+                owner.publish(publisher, None)
+            elif change == "token":
+                publisher.token = "replaced"
+            else:
+                owner.watch(viewer, presence.Watch(guid(), location, embedded_images=True))
+
+            async def denied(*_):
+                return []
+
+            monkeypatch.setattr(events, "run_in_threadpool", denied)
+            viewer.send_lock.release()
+            async with asyncio.timeout(1):
+                while not sent:
+                    await asyncio.sleep(0.001)
+            assert sent == [embed_frame(viewer.watch.subscription_id)]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(publisher)
+            owner.remove(viewer)
+        assert not owner.rooms and not owner.watchers and publisher.image_embed is None
+
+    asyncio.run(run())
+
+
+def test_embed_geometry_does_not_starve_authorization_or_trigger_own_observer(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.Location(
+            kind="note", share_id=guid(), entry_id=guid(), surface="reading"
+        )
+        owner.publish(publisher, location)
+        owner.move_embed(
+            publisher, location, presence.EmbeddedImage.model_validate(embedded_image())
+        )
+        owner.watch(viewer, presence.Watch(guid(), location, embedded_images=True))
+        owner.watch(publisher, presence.Watch(guid(), location, embedded_images=True))
+        publisher.image_dirty.clear()
+        revision, sent = publisher.embed_revision, []
+
+        async def authorize(_fn, _token, _location, peers):
+            for x in range(1001):
+                owner.move_embed(
+                    publisher,
+                    location,
+                    presence.EmbeddedImage.model_validate(
+                        embedded_image(
+                            state={"pointer": {"x": x / 1000, "y": 0.5}, "viewport": None}
+                        )
+                    ),
+                )
+            return [
+                {
+                    "target": dict(zip(("user_id", "session_id", "instance_id"), key)),
+                    "embed": embed.model_dump(mode="json"),
+                }
+                for key, _, embed in peers
+            ]
+
+        async def emit(value):
+            sent.append(value)
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        monkeypatch.setattr(presence, "IMAGE_STATE_INTERVAL", 0)
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer, True)
+        )
+        try:
+            async with asyncio.timeout(1):
+                while not sent:
+                    await asyncio.sleep(0.001)
+            assert sent[0]["peers"][0]["embed"]["state"]["pointer"]["x"] == 1
+            assert publisher.embed_revision == revision
+            assert not publisher.image_dirty.is_set() and not viewer.roster_dirty.is_set()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(publisher)
+            owner.remove(viewer)
+
+    asyncio.run(run())
+
+
 def test_image_movement_is_authorized_separate_from_roster_and_clears_on_leave(
     client, team, surface_team
 ):

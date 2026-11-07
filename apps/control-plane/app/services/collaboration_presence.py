@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import secrets
 import time
 import uuid
@@ -17,7 +18,7 @@ from typing import Annotated, Literal
 
 from fastapi import HTTPException
 from jwt.exceptions import InvalidTokenError
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 from sqlalchemy import select
 
 from app.api import deps
@@ -25,7 +26,7 @@ from app.core import security
 from app.db import models
 from app.db.session import get_sessionmaker
 from app.services import bases_registry, managed_service, share_service
-from app.services.presence_protocol import PresenceIdentity, identity_for
+from app.services.presence_protocol import PresenceIdentity, identity_for, relative_position
 
 MAX_CONNECTIONS = 128
 MAX_TICKETS = 512
@@ -80,6 +81,54 @@ class ImageState(BaseModel):
     viewport: ImageViewport | None
 
 
+class ManagedEmbedAsset(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["managed"]
+    entry_id: uuid.UUID
+    generation: uuid.UUID
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ExternalEmbedAsset(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["external"]
+    url_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    version_evidence: Literal["unknown"]
+
+
+class ImageBasis(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    width: int = Field(strict=True, ge=1, le=1_000_000)
+    height: int = Field(strict=True, ge=1, le=1_000_000)
+    orientation: Literal["display"]
+
+
+class EmbeddedImage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    version: int = Field(strict=True, ge=1, le=1)
+    occurrence: dict
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    asset: Annotated[ManagedEmbedAsset | ExternalEmbedAsset, Field(discriminator="kind")]
+    basis: ImageBasis
+    state: ImageState
+
+    @field_validator("occurrence")
+    @classmethod
+    def valid_occurrence(cls, value):
+        if set(value) != {"anchor", "head"} or not all(
+            relative_position(value[key]) for key in value
+        ):
+            raise ValueError("Invalid image occurrence")
+        return value
+
+    def semantic_key(self) -> str:
+        # Geometry updates do not invalidate a pending permission check; moving
+        # to a different occurrence/asset does. JSON keys are client orderable.
+        return json.dumps(
+            self.model_dump(mode="json", exclude={"state"}), sort_keys=True, separators=(",", ":")
+        )
+
+
 class BaseLocation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     kind: Literal["base"]
@@ -117,6 +166,14 @@ def same_context(left: SurfaceLocation, right: SurfaceLocation) -> bool:
     # Other rooms are pinned to the same image bytes or saved-view identity.
     # A different Bases view is not consent to discover this view's participants.
     return left == right
+
+
+def room_location(location: SurfaceLocation) -> SurfaceLocation:
+    return (
+        location.model_copy(update={"surface": "editor"})
+        if isinstance(location, Location)
+        else location
+    )
 
 
 def authorize_location(db, user, location: SurfaceLocation) -> None:
@@ -177,7 +234,24 @@ class Actor:
         return self.identity.user_id, self.identity.session_id, instance_id
 
 
-def authenticate(token: str, location: SurfaceLocation | None = None) -> Actor:
+def authorize_embed(db, user, location: Location, embed: EmbeddedImage) -> None:
+    if isinstance(embed.asset, ManagedEmbedAsset):
+        authorize_location(
+            db,
+            user,
+            ImageLocation(
+                kind="image",
+                share_id=location.share_id,
+                entry_id=embed.asset.entry_id,
+                generation=embed.asset.generation,
+                content_sha256=embed.asset.sha256,
+            ),
+        )
+
+
+def authenticate(
+    token: str, location: SurfaceLocation | None = None, embed: EmbeddedImage | None = None
+) -> Actor:
     with get_sessionmaker()() as db:
         user = deps._get_user_from_token(db, token)
         try:
@@ -188,6 +262,10 @@ def authenticate(token: str, location: SurfaceLocation | None = None) -> Actor:
             raise HTTPException(401, "Session-backed credentials required")
         if location:
             authorize_location(db, user, location)
+        if embed:
+            if not isinstance(location, Location):
+                raise HTTPException(403, "Location unavailable")
+            authorize_embed(db, user, location, embed)
         return Actor(identity_for(db, user, claims), int(claims["exp"]))
 
 
@@ -245,6 +323,31 @@ def roster_snapshot(
     return result
 
 
+def embed_snapshot(
+    viewer_token: str, location: Location, publishers: list[tuple[PeerKey, str, EmbeddedImage]]
+) -> list[dict]:
+    # A note reader is not necessarily allowed to read its embedded image.
+    # Omit the entire embed (including hashes and IDs) for either denied party.
+    authenticate(viewer_token, location)
+    result = []
+    with get_sessionmaker()() as db:
+        viewer = deps._get_user_from_token(db, viewer_token)
+        for key, token, embed in publishers:
+            try:
+                actor = authenticate(token, location, embed)
+                authorize_embed(db, viewer, location, embed)
+            except HTTPException:
+                continue
+            if actor.key(key[2]) == key:
+                result.append(
+                    {
+                        "target": {"user_id": key[0], "session_id": key[1], "instance_id": key[2]},
+                        "embed": embed.model_dump(mode="json"),
+                    }
+                )
+    return result
+
+
 @dataclass
 class Ticket:
     token: str
@@ -261,8 +364,9 @@ class Follow:
 @dataclass(frozen=True)
 class Watch:
     subscription_id: str
-    location: ImageLocation | BaseLocation
+    location: SurfaceLocation
     image_states: bool = False
+    embedded_images: bool = False
 
 
 @dataclass(eq=False)
@@ -273,6 +377,8 @@ class Connection:
     protocol_version: int = 1
     location: SurfaceLocation | None = None
     image_state: ImageState | None = None
+    image_embed: EmbeddedImage | None = None
+    embed_revision: int = 0
     follow: Follow | None = None
     watch: Watch | None = None
     revision: int = 0
@@ -314,8 +420,8 @@ class PresenceBroker:
         self.tickets: dict[str, Ticket] = {}
         self.connections: dict[PeerKey, Connection] = {}
         self.followers: dict[PeerKey, set[Connection]] = {}
-        self.rooms: dict[ImageLocation | BaseLocation, set[Connection]] = {}
-        self.watchers: dict[ImageLocation | BaseLocation, set[Connection]] = {}
+        self.rooms: dict[SurfaceLocation, set[Connection]] = {}
+        self.watchers: dict[SurfaceLocation, set[Connection]] = {}
         self.handshakes = 0
 
     def ticket(self, token: str, actor: Actor) -> str:
@@ -356,17 +462,19 @@ class PresenceBroker:
         if connection.location == location:
             return
         previous = connection.location
-        if isinstance(previous, (ImageLocation, BaseLocation)):
-            group = self.rooms.get(previous)
+        if previous:
+            group = self.rooms.get(room_location(previous))
             if group is not None:
                 group.discard(connection)
                 if not group:
-                    self.rooms.pop(previous, None)
+                    self.rooms.pop(room_location(previous), None)
             self.notify_room(previous)
         connection.location = location
         connection.image_state = None
-        if isinstance(location, (ImageLocation, BaseLocation)):
-            self.rooms.setdefault(location, set()).add(connection)
+        connection.image_embed = None
+        connection.embed_revision += 1
+        if location:
+            self.rooms.setdefault(room_location(location), set()).add(connection)
             self.notify_room(location)
         connection.revision += 1
         self.notify(connection.key)
@@ -375,13 +483,14 @@ class PresenceBroker:
         for follower in self.followers.get(target, ()):
             follower.dirty.set()  # One replaceable latest state, never a movement queue.
         publisher = self.connections.get(target)
-        if publisher and isinstance(publisher.location, (ImageLocation, BaseLocation)):
+        if publisher and publisher.location:
             self.notify_room(publisher.location)
 
-    def notify_room(self, location: ImageLocation | BaseLocation) -> None:
-        for viewer in self.watchers.get(location, ()):
-            viewer.roster_dirty.set()
-            if viewer.watch and viewer.watch.image_states:
+    def notify_room(self, location: SurfaceLocation) -> None:
+        for viewer in self.watchers.get(room_location(location), ()):
+            if viewer.watch and not viewer.watch.embedded_images:
+                viewer.roster_dirty.set()
+            if viewer.watch and (viewer.watch.image_states or viewer.watch.embedded_images):
                 viewer.image_dirty.set()
 
     def move(
@@ -400,28 +509,44 @@ class PresenceBroker:
             if viewer is not connection and viewer.watch and viewer.watch.image_states:
                 viewer.image_dirty.set()
 
-    def room_peers(
-        self, location: ImageLocation | BaseLocation, viewer: Connection
-    ) -> list[Connection]:
+    def room_peers(self, location: SurfaceLocation, viewer: Connection) -> list[Connection]:
         return sorted(
-            (peer for peer in self.rooms.get(location, ()) if peer is not viewer),
+            (peer for peer in self.rooms.get(room_location(location), ()) if peer is not viewer),
             key=lambda peer: peer.key,
         )
 
+    def move_embed(
+        self, connection: Connection, location: Location, embed: EmbeddedImage | None
+    ) -> None:
+        if connection.closed or self.connections.get(connection.key) is not connection:
+            return
+        if not connection.location or not same_context(connection.location, location):
+            raise ValueError("Embedded image requires matching visible note")
+        if connection.image_embed == embed:
+            return
+        previous = connection.image_embed
+        if not previous or not embed or previous.semantic_key() != embed.semantic_key():
+            connection.embed_revision += 1
+        connection.image_embed = embed
+        for viewer in self.watchers.get(room_location(location), ()):
+            if viewer is not connection and viewer.watch and viewer.watch.embedded_images:
+                viewer.image_dirty.set()
+
     def watch(self, connection: Connection, watch: Watch | None) -> None:
         if connection.watch:
-            group = self.watchers.get(connection.watch.location)
+            group = self.watchers.get(room_location(connection.watch.location))
             if group is not None:
                 group.discard(connection)
                 if not group:
-                    self.watchers.pop(connection.watch.location, None)
+                    self.watchers.pop(room_location(connection.watch.location), None)
         connection.watch = watch
         connection.last_roster = None
         connection.last_image_states = None
         if watch:
-            self.watchers.setdefault(watch.location, set()).add(connection)
-            connection.roster_dirty.set()
-            if watch.image_states:
+            self.watchers.setdefault(room_location(watch.location), set()).add(connection)
+            if not watch.embedded_images:
+                connection.roster_dirty.set()
+            if watch.image_states or watch.embedded_images:
                 connection.image_dirty.set()
 
     def subscribe(self, connection: Connection, follow: Follow | None) -> None:

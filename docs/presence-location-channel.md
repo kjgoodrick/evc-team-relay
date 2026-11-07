@@ -9,7 +9,9 @@ image-file and saved Bases-view locations and authorized surface rosters. The
 native host now opts in for directly opened managed images, with participant
 controls and whole-image Jump/Follow sharing its note socket. Native image
 acceptance, embedded-image presence and Bases/timeline bindings remain unfinished.
-Direct images now have a separate authorized pointer/viewport stream.
+Direct images now have a separate authorized pointer/viewport stream. Embedded
+images have a negotiated transport and source-anchor foundation; their native
+host, overlays and navigation are not connected yet.
 No production service or live vault has been changed by this work.
 
 Enable locally with `COLLABORATION_PRESENCE_ENABLED=true`. The share capability
@@ -121,8 +123,8 @@ Version two accepts the original note descriptor plus these exact descriptors:
 No title, path, external URL, cell value, formula output, pointer or arbitrary
 target object is accepted. The server reads authorization/identity metadata; it
 does not fetch image bytes, parse a base or evaluate a formula for presence.
-Embedded-image occurrences and fine-grained Bases/timeline targets need separate
-adapters and negotiated schemas before they can be sent.
+Embedded-image occurrences use the separate negotiated stream below. Fine-grained
+Bases/timeline targets still need adapters and negotiated schemas.
 
 Initial Follow must reference the same kind and context as the publisher. Notes
 may differ in editor/Reading mode; images must reference the same generation and
@@ -145,7 +147,7 @@ isolation, image replacement, registry/view identity changes, idle revocation an
 read-only access against the actual ASGI application and disposable database.
 This is not native or production-load evidence.
 
-Embedded-image presence, Bases/timeline surface bindings, cell/row/group/lane
+Native embedded-image presence, Bases/timeline surface bindings, cell/row/group/lane
 targets and native acceptance remain outstanding. Direct image coordinates use
 the separate stream below and do not change the room identity.
 
@@ -314,3 +316,66 @@ surface departure and permission revocation.
 It seeds synthetic identity metadata in a separate share and removes its
 disposable loopback service/database afterward. This is not a native surface or
 production resource benchmark.
+
+
+## Embedded images in Markdown notes
+
+`presence_embedded_images_preview` advertises a version-two extension on the same
+location socket. It deliberately does not extend Yjs awareness: a note reader
+may lack permission to read an embedded managed image, so delivery needs a
+separate authorization check for each viewer and asset. Existing note cursors,
+selections, membership and Follow continue on their existing paths.
+
+Publish `{type: "image_embed", location: NoteLocation, embed: EmbeddedImage|null}`
+only while visible in that note. One connection holds at most one current embed.
+`EmbeddedImage` has exactly:
+
+- `version: 1`;
+- `occurrence: {anchor, head}` using bounded Yjs relative positions in `contents`;
+- `source_sha256`, the lowercase SHA-256 of the exact Markdown image occurrence;
+- `asset`: either `{kind: "managed", entry_id, generation, sha256}` or
+  `{kind: "external", url_sha256, version_evidence: "unknown"}`;
+- `basis: {width, height, orientation: "display"}`, positive integer intrinsic
+  dimensions no larger than 1,000,000 per axis;
+- `state: {pointer, viewport}`, with the same normalized bounds as direct images.
+
+No source text, image URL, path, pixel bytes or supplied user identity is accepted.
+External URLs are hashed by the client and remain explicitly unversioned; the
+server does not fetch them. The server validates bounded source positions but
+cannot establish their meaning inside the document. A rendering client must
+resolve the exact relative interval, verify its source hash, identify the actual
+local asset/version and check intrinsic dimensions before showing coordinates.
+Matching by URL, filename or ordinal alone is insufficient for repeated embeds.
+
+`watch_embeds` has exactly `type`, `subscription_id` and `location: NoteLocation`.
+It shares the one surface watch with `watch`; changing watch kind replaces the
+previous observation. A hidden viewer can observe. Editor and Reading locations
+of the same note share the embedded-image room. This watch emits only
+`{type: "image_embeds", subscription_id, status: "available", peers}`; each peer
+contains the authenticated `target` tuple and its `embed`. Names must be joined
+with authenticated note awareness by the complete user/session/instance tuple.
+There is no duplicate roster or client-supplied name in the movement stream.
+A note access denial produces `status: "unavailable"` without peers and ends the
+watch. An asset denial omits that peer's entire embed, including IDs/hashes,
+without ending the still-authorized note watch.
+
+Publisher and viewer must each have current read access to both the note and
+managed image. The image must belong to that share and match its current
+entry/generation/hash. Comment/edit permission is unnecessary. Session, note and
+asset checks run at publication/delivery and during idle revalidation. Losing
+image access clears the embed without hiding a still-readable note. Hiding,
+departure and disconnect clear it too; there is no persistence or reconnect replay.
+
+The client coalesces ordinary movements to 125 ms; the server retains one latest
+state and batches at 16 ms. Occurrence, asset, basis and source-hash changes bump
+a separate semantic revision that fences pending authorization and socket writes.
+Geometry updates do not invalidate permission work and cannot starve delivery.
+Movement never dirties a duplicate note roster or the publisher's own observer.
+The existing 4 KiB inbound, 127-peer/192 KiB outbound, rate and single-process
+limits apply. This is not measured mobile or production-load evidence.
+
+Validation at this checkpoint adds permission/version/repeated-occurrence and
+controlled delayed-write tests, plus real client-to-server WebSocket delivery
+and asset-denial checks. Native embedding and source/render verification remain
+client integration work; this capability is a protocol preview, not a claim that
+all note-image pointer UI is implemented.
