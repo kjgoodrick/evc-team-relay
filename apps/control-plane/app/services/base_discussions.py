@@ -251,3 +251,61 @@ def target_context(db, token, share_id, entry_id, payload):
     except Exception:
         db.rollback()
         raise
+
+
+def record_contexts(db, token, share_id, entry_id, payload):
+    """Bounded read evidence, without paths, values or implicit identity creation.
+
+    Missing, deleted, unreadable, unsupported and uninitialized records are
+    indistinguishable. The share lock fences permission changes for the entire
+    batch; one inventory read and one rules read serve every requested record.
+    """
+    from app.services import bases_registry, discussion_service
+
+    discussion_service.require_clean_session(db)
+    try:
+        if not enabled():
+            error(409, "base_discussions_disabled")
+        ctx = bases_registry.context(db, token, share_id, entry_id, write=True)
+        definition, _view = view_for(db, ctx, payload.view_id, active=True)
+        if definition.content_sha256 != ctx.entry.record.get("hash"):
+            error(409, "base_definition_not_synced")
+        ids = [str(record_id) for record_id in payload.record_ids]
+        records = {
+            record.id: record
+            for record in db.scalars(
+                select(m.ManagedEntry).where(
+                    m.ManagedEntry.share_id == ctx.share.id,
+                    m.ManagedEntry.id.in_(ids),
+                    m.ManagedEntry.deleted.is_(False),
+                )
+            )
+        }
+        rules = managed_service.rules_for(db, ctx.share, ctx.user)
+        result = []
+        for record_id in ids:
+            record = records.get(record_id)
+            generation = None
+            if (
+                record is not None
+                and record.record.get("type") in RECORD_TYPES
+                and managed_service.permission(ctx.share, ctx.user, record.path, rules)
+                in {"read", "write"}
+                and record.collaboration_generation is not None
+            ):
+                generation = str(record.collaboration_generation)
+            result.append({"record_id": record_id, "record_generation": generation})
+        response = dict(
+            protocol_version=1,
+            entry_id=ctx.entry.id,
+            definition_id=str(definition.id),
+            view_id=str(payload.view_id),
+            generation=str(definition.generation),
+            registry_revision=definition.revision,
+            records=result,
+        )
+        db.commit()
+        return response
+    except Exception:
+        db.rollback()
+        raise

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.routers.discussions import BoundedDiscussionRoute, credential
 from app.db.session import get_db
 from app.schemas.bases import (
+    BaseRecordContexts,
     BaseTargetCatalog,
     BaseTargetContext,
     BaseTimelineAxisContext,
@@ -47,6 +48,17 @@ def target_context(
     db: Session = Depends(get_db),
 ):
     return base_discussions.target_context(db, token, share_id, entry_id, payload)
+
+
+@router.post("/record-contexts")
+def record_contexts(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: BaseRecordContexts,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return base_discussions.record_contexts(db, token, share_id, entry_id, payload)
 
 
 @router.post("/group-targets")

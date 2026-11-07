@@ -34,7 +34,7 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas.base_content import PublishBaseContent
-from app.schemas.bases import BaseTargetCatalog, BaseTargetContext, InspectBase
+from app.schemas.bases import BaseRecordContexts, BaseTargetCatalog, BaseTargetContext, InspectBase
 from app.schemas.discussions import CommandEnvelope
 from app.services import (
     base_content,
@@ -205,6 +205,19 @@ def main():
         print(
             "PASS: concurrent reader captures initialize one record generation without file edits"
         )
+        with Session(engine, autoflush=False) as db:
+            missing = uuid.uuid4()
+            batch = base_discussions.record_contexts(
+                db,
+                tokens["reviewer"],
+                share_id,
+                entry_id,
+                BaseRecordContexts(view_id=view_id, record_ids=[record_id, missing]),
+            )
+            assert batch["records"] == [
+                {"record_id": str(record_id), "record_generation": captured["record_generation"]},
+                {"record_id": str(missing), "record_generation": None},
+            ]
 
         def envelope(view=view_id):
             anchor = {
@@ -268,7 +281,7 @@ def main():
 
         # Prime ORM objects before revocation; the service must refresh after its
         # share-lock wait, not rely on these previously readable identities.
-        for mutation in [True, False]:
+        for operation in ["mutation", "read", "records"]:
             pending = envelope()
             pid_queue = Queue()
             with Session(engine, autoflush=False) as stale, Session(engine) as revoker:
@@ -280,8 +293,16 @@ def main():
                 def blocked_request():
                     pid_queue.put(stale.scalar(text("SELECT pg_backend_pid()")))
                     try:
-                        if mutation:
+                        if operation == "mutation":
                             discussions.apply_command(stale, tokens["reviewer"], pending)
+                        elif operation == "records":
+                            return base_discussions.record_contexts(
+                                stale,
+                                tokens["reviewer"],
+                                share_id,
+                                entry_id,
+                                BaseRecordContexts(view_id=view_id, record_ids=[record_id]),
+                            )["records"]
                         else:
                             discussions.read_thread(
                                 stale,
@@ -310,7 +331,12 @@ def main():
                         revoker.commit()
                     finally:
                         revoker.rollback()  # Release the lock even if the assertion fails.
-                    assert future.result(timeout=5) == 404
+                    expected = (
+                        [{"record_id": str(record_id), "record_generation": None}]
+                        if operation == "records"
+                        else 404
+                    )
+                    assert future.result(timeout=5) == expected
                 assert stale.get(m.DiscussionThread, pending.command.thread_id) is None
             with Session(engine) as db:
                 db.execute(select(m.Share.id).where(m.Share.id == share_id).with_for_update())
@@ -322,7 +348,7 @@ def main():
                 db.delete(rule)
                 managed_service.invalidate_discussion_snapshots(db, share_id)
                 db.commit()
-        print("PASS: reads and writes waiting behind record revocation reject stale ORM authority")
+        print("PASS: reads, writes and record batches reject stale ORM authority after revocation")
 
         with Session(engine, autoflush=False) as db:
             cursor = discussions.changes(

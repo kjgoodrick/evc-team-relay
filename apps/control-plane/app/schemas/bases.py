@@ -70,6 +70,19 @@ class BaseTargetContext(BaseModel):
     record_id: uuid.UUID | None = None
 
 
+class BaseRecordContexts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    view_id: uuid.UUID
+    record_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+    @field_validator("record_ids")
+    @classmethod
+    def unique_records(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("Record identities must be unique")
+        return value
+
+
 class BaseTargetCatalog(BaseModel):
     model_config = ConfigDict(extra="forbid")
     view_id: uuid.UUID
