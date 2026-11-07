@@ -421,7 +421,9 @@ def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
             isinstance(envelope.command, (s.ThreadCreate, s.ThreadReattach))
             and isinstance(envelope.command.anchor, s.BaseAnchor)
             and (
-                isinstance(envelope.command.anchor.target, s.BaseGroupTarget)
+                isinstance(
+                    envelope.command.anchor.target, (s.BaseGroupTarget, s.BaseGroupSummaryTarget)
+                )
                 or isinstance(envelope.command.anchor.target, s.BaseTimelineRangeTarget)
                 and envelope.command.anchor.target.lane is not None
             )

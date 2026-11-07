@@ -81,6 +81,12 @@ class Settings(BaseSettings):
         default=False,
         description="Preview saved-view timeline range discussions; requires upgraded clients",
     )
+    collaboration_bases_group_summaries_enabled: bool = Field(
+        default=False,
+        description=(
+            "Preview group-scoped summary definitions; requires group support and upgraded clients"
+        ),
+    )
     collaboration_bases_timeline_markers_enabled: bool = Field(
         default=False,
         description="Preview shared timeline markers; requires range support and upgraded clients",

@@ -57,6 +57,10 @@ def groups_enabled():
     )
 
 
+def group_summaries_enabled():
+    return groups_enabled() and get_settings().collaboration_bases_group_summaries_enabled
+
+
 def definition_for(db, ctx):
     definition = db.scalar(
         select(m.BaseDefinition).where(m.BaseDefinition.entry_id == ctx.entry.id)
@@ -143,11 +147,20 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
                 error(409, "base_formula_cells_disabled")
             if isinstance(anchor.target, s.BaseGroupTarget) and not groups_enabled():
                 error(409, "base_groups_disabled")
+            if (
+                isinstance(anchor.target, s.BaseGroupSummaryTarget)
+                and not group_summaries_enabled()
+            ):
+                error(409, "base_group_summaries_disabled")
             if not base_target_definitions.synchronize(db, definition):
                 error(409, "base_definition_targets_limit")
         target = db.get(m.BaseTargetDefinition, anchor.target.definition_id)
         kind = (
-            "formula" if isinstance(anchor.target, s.BaseFormulaCellTarget) else anchor.target.type
+            "formula"
+            if isinstance(anchor.target, s.BaseFormulaCellTarget)
+            else "summary"
+            if isinstance(anchor.target, s.BaseGroupSummaryTarget)
+            else anchor.target.type
         )
         if not target or target.view_id != anchor.view_id or target.kind != kind:
             error(
@@ -176,6 +189,18 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
         from app.services import base_groups
 
         base_groups.authorize(db, ctx, anchor, user=user)
+    if isinstance(anchor.target, s.BaseGroupSummaryTarget):
+        # The summary definition and the selected group's immutable witness
+        # both apply. A same-value readable group cannot replace this witness.
+        # This target never authorizes or publishes an aggregate result.
+        validate(
+            db,
+            ctx,
+            anchor.model_copy(update={"target": anchor.target.group}),
+            creation=creation,
+            write=write,
+            user=user,
+        )
     if isinstance(anchor.target, s.BaseTimelineRangeTarget):
         from app.services import timeline_axes
 

@@ -388,6 +388,11 @@ class BaseGroupTarget(BaseDefinedTarget):
     value: GroupValue
 
 
+class BaseGroupSummaryTarget(BaseSummaryTarget):
+    type: Literal["group_summary"]
+    group: BaseGroupTarget
+
+
 class TimelineAxis(StrictModel):
     version: Literal[1]
     renderer: Literal["sabidurian-timeline", "sabidurian-sequence"]
@@ -466,6 +471,7 @@ class BaseAnchor(StrictModel):
         | BaseSummaryTarget
         | BaseFormulaCellTarget
         | BaseGroupTarget
+        | BaseGroupSummaryTarget
         | BaseTimelineRangeTarget
         | BaseTimelineMarkerTarget,
         Field(discriminator="type"),

@@ -38,7 +38,13 @@ def read_dependencies(db, target):
     """
     if isinstance(target, s.BaseItemTarget):
         return frozenset([str(target.record_id)])
-    group = target if isinstance(target, s.BaseGroupTarget) else getattr(target, "lane", None)
+    group = (
+        target
+        if isinstance(target, s.BaseGroupTarget)
+        else target.group
+        if isinstance(target, s.BaseGroupSummaryTarget)
+        else getattr(target, "lane", None)
+    )
     if group is not None:
         witness = db.get(m.BaseGroupWitness, group.witness_id)
         if witness is None:

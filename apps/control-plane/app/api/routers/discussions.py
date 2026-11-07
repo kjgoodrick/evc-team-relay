@@ -53,7 +53,7 @@ class BoundedDiscussionRoute(APIRoute):
                         or anchor.get("type") == "base"
                         and isinstance(anchor.get("target"), dict)
                         and (
-                            anchor["target"].get("type") == "group"
+                            anchor["target"].get("type") in {"group", "group_summary"}
                             or anchor["target"].get("type") == "timeline_range"
                             and isinstance(anchor["target"].get("lane"), dict)
                         )

@@ -114,6 +114,7 @@ def capabilities(
         + (["formula", "summary"] if base_discussions.definitions_enabled() else [])
         + (["formula_cell"] if base_discussions.formula_cells_enabled() else [])
         + (["group"] if base_discussions.groups_enabled() else [])
+        + (["group_summary"] if base_discussions.group_summaries_enabled() else [])
         + (["timeline_range"] if base_discussions.timeline_ranges_enabled() else [])
         + (["timeline_marker"] if timeline_markers.enabled() else [])
         if base_discussions.enabled()

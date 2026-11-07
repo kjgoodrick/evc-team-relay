@@ -41,6 +41,7 @@ from app.services import (
 def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewer_id):
     settings = get_settings()
     settings.collaboration_bases_groups_enabled = True
+    settings.collaboration_bases_group_summaries_enabled = True
     settings.collaboration_anchor_relay_token = SecretStr("synthetic-observation-only")
 
     def publish(group=True, property_name="status"):
@@ -51,9 +52,11 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
                         "name": "Table",
                         "type": "table",
                         **({"groupBy": {"property": property_name}} if group else {}),
+                        "summaries": {"formula.total": "Average"},
                     },
                     {"name": "Cards", "type": "cards"},
-                ]
+                ],
+                "formulas": {"total": "2"},
             }
         ).encode()
         with Session(engine, autoflush=False) as db:
@@ -165,7 +168,25 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
                 for model in (m.BaseGroupValue, m.BaseGroupWitness, m.BaseGroupCaptureReceipt)
             )
 
-    def create_thread(captured):
+    def create_thread(captured, summary=False):
+        anchor = captured["anchor"]
+        if summary:
+            with Session(engine, autoflush=False) as db:
+                page = base_target_definitions.catalog(
+                    db, tokens["reviewer"], share_id, entry_id, BaseTargetCatalog(view_id=view_id)
+                )
+            definition = next(item for item in page["targets"] if item["kind"] == "summary")
+            anchor = {
+                **anchor,
+                "target": {
+                    "type": "group_summary",
+                    "definition_id": definition["id"],
+                    "definition_revision": definition["revision"],
+                    "property": definition["property"],
+                    "summary": definition["summary"],
+                    "group": anchor["target"],
+                },
+            }
         payload = CommandEnvelope.model_validate(
             dict(
                 protocol_version=1,
@@ -176,7 +197,7 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
                     type="thread.create",
                     thread_id=uuid.uuid4(),
                     message_id=uuid.uuid4(),
-                    anchor=captured["anchor"],
+                    anchor=anchor,
                     body={"version": 1, "blocks": [{"type": "code", "text": "Group review"}]},
                 ),
             )
@@ -197,6 +218,7 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
         barrier = None
         assert totals() == (1, 1, 1)
         protected = create_thread(captured)
+        protected_summary = create_thread(captured, summary=True)
         # Different operations with the same source reuse immutable evidence.
         assert capture(request())["anchor"]["target"] == captured["anchor"]["target"]
         assert totals() == (1, 1, 2)
@@ -218,6 +240,7 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
         assert other["anchor"]["target"]["group_id"] == captured["anchor"]["target"]["group_id"]
         assert other["anchor"]["target"]["witness_id"] != captured["anchor"]["target"]["witness_id"]
         accessible = create_thread(other)
+        accessible_summary = create_thread(other, summary=True)
         with Session(engine) as db:
             source_path = db.get(m.ManagedEntry, str(record_id)).path
             db.execute(select(m.Share.id).where(m.Share.id == share_id).with_for_update())
@@ -239,19 +262,23 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
             )
             ids = {thread["id"] for thread in visible["threads"]}
             assert protected["thread_id"] not in ids and accessible["thread_id"] in ids
-            try:
-                discussion_service.read_thread(
-                    db, tokens["reviewer"], share_id, entry_id, uuid.UUID(protected["thread_id"])
-                )
-            except HTTPException as exc:
-                assert exc.status_code == 404
-            else:
-                raise AssertionError("Matching accessible group unlocked a protected witness")
+            assert (
+                protected_summary["thread_id"] not in ids and accessible_summary["thread_id"] in ids
+            )
+            for hidden in (protected, protected_summary):
+                try:
+                    discussion_service.read_thread(
+                        db, tokens["reviewer"], share_id, entry_id, uuid.UUID(hidden["thread_id"])
+                    )
+                except HTTPException as exc:
+                    assert exc.status_code == 404
+                else:
+                    raise AssertionError("Matching accessible group unlocked a protected witness")
         with Session(engine) as db:
             db.delete(db.get(m.ManagedRule, rule_id))
             managed_service.invalidate_discussion_snapshots(db, share_id)
             db.commit()
-        print("PASS: identical group values cannot substitute another thread's source authority")
+        print("PASS: groups and group summaries cannot substitute a matching readable witness")
 
         for change in ("permission", "generation", "definition"):
             pending = request()
