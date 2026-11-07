@@ -116,10 +116,17 @@ including offline capture after reopen, a lost accepted response, edits/archive
 before exact retry, historical replies and stale new-capture rejection. The test
 fixture explicitly enables both timeline flags; production defaults are unchanged.
 
-Remaining work includes current metadata change delivery/refresh; local marker
-IDs and explicit promotion/matching/edit/archive UI; native selection and
-rendering/navigation of shared markers in Time & Line; captured-versus-current
-position display; server-restart/client and native desktop/mobile/accessibility/
+Client `86f2153` connects a shared-marker picker to verified capture, explicit
+refresh and guarded position inspection. Existing marker discussions render at
+their captured coordinates and navigate using the original saved axis, with
+marker identities/revisions kept separate from ordinary ranges. The actual
+Time & Line source interoperates in both load orders; native acceptance is still
+pending. No server runtime or feature defaults changed in that increment.
+
+Remaining work includes automatic metadata change delivery/refresh; local marker
+IDs and explicit promotion/matching/edit/archive UI; current-marker overlays
+independent of existing discussions; captured-versus-current position comparison
+and overlap polish; server-restart/client and native desktop/mobile/accessibility/
 resource acceptance.
 Management uses online guarded commands; queued comments must reuse verified
 cached marker/axis evidence. Do not enable this preview before those paths exist.
