@@ -20,6 +20,7 @@ from pydantic import (
 from pydantic_core import PydanticSerializationError
 
 from app.schemas.base_values import GroupValue
+from app.schemas.timeline_markers import TimelineMarkerContent
 from app.schemas.timeline_ranges import TimelineRangeValue, zone
 
 
@@ -426,6 +427,29 @@ class BaseTimelineRangeTarget(StrictModel):
         return self
 
 
+class BaseTimelineMarkerTarget(StrictModel):
+    type: Literal["timeline_marker"]
+    marker_id: uuid.UUID
+    marker_revision: int = Field(ge=1, le=9007199254740991, strict=True)
+    axis_definition_id: uuid.UUID
+    axis_definition_revision: int = Field(ge=1, le=9007199254740991, strict=True)
+    axis: TimelineAxis
+    content: TimelineMarkerContent
+
+    @model_validator(mode="after")
+    def coordinate_system(self):
+        BaseTimelineRangeTarget.model_validate(
+            dict(
+                type="timeline_range",
+                axis_definition_id=self.axis_definition_id,
+                axis_definition_revision=self.axis_definition_revision,
+                axis=self.axis,
+                range=self.content.range,
+            )
+        )
+        return self
+
+
 class BaseAnchor(StrictModel):
     version: Literal[1]
     type: Literal["base"]
@@ -442,7 +466,8 @@ class BaseAnchor(StrictModel):
         | BaseSummaryTarget
         | BaseFormulaCellTarget
         | BaseGroupTarget
-        | BaseTimelineRangeTarget,
+        | BaseTimelineRangeTarget
+        | BaseTimelineMarkerTarget,
         Field(discriminator="type"),
     ]
 

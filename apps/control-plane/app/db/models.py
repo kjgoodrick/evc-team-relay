@@ -967,6 +967,88 @@ class BaseTargetDefinition(Base):
     descriptor: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class BaseTimelineMarkerCatalog(Base):
+    __tablename__ = "collaboration_timeline_marker_catalogs"
+    definition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_bases.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class BaseTimelineMarker(Base):
+    __tablename__ = "collaboration_timeline_markers"
+    __table_args__ = (Index("ix_timeline_marker_definition", "definition_id", "active", "id"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    definition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_bases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BaseTimelineMarkerPlacement(Base):
+    __tablename__ = "collaboration_timeline_marker_placements"
+    __table_args__ = (Index("ix_timeline_marker_view", "view_id", "active", "marker_id"),)
+    marker_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_timeline_markers.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    view_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_base_views.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    axis_definition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_base_target_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    axis_definition_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    axis: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BaseTimelineMarkerRevision(Base):
+    __tablename__ = "collaboration_timeline_marker_revisions"
+    marker_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_timeline_markers.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class BaseTimelineMarkerReceipt(Base):
+    __tablename__ = "collaboration_timeline_marker_receipts"
+    actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    operation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    definition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("collaboration_bases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    generation: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class BaseGroupValue(Base):
     __tablename__ = "collaboration_base_group_values"
     __table_args__ = (

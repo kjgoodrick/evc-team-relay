@@ -68,7 +68,7 @@ def main():
                 )
             ], drift
             assert (
-                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
+                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
             )
         command.downgrade(config, "202611060006")
         command.upgrade(config, "head")
@@ -312,7 +312,7 @@ def main():
             raise AssertionError("Populated inbox was discarded")
         with engine.connect() as connection:
             assert (
-                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
+                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
             )
         print("PASS: populated downgrade refuses to lose inbox/read/preferences")
     finally:

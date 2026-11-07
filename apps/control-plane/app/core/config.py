@@ -74,6 +74,10 @@ class Settings(BaseSettings):
         default=False,
         description="Preview saved-view timeline range discussions; requires upgraded clients",
     )
+    collaboration_bases_timeline_markers_enabled: bool = Field(
+        default=False,
+        description="Preview shared timeline markers; requires range support and upgraded clients",
+    )
     managed_bases_sync_enabled: bool = Field(
         default=False,
         description="Preview conditional Bases file publication; requires upgraded clients",

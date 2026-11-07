@@ -27,6 +27,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
+from timeline_markers_postgres import prove_timeline_markers
 from timeline_ranges_postgres import prove_timeline_ranges
 
 from app.core import security
@@ -83,9 +84,16 @@ def main():
     settings.managed_bases_sync_enabled = True
     command.upgrade(Config("alembic.ini"), "head")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
         drift = compare_metadata(MigrationContext.configure(connection), m.Base.metadata)
-        assert not [item for item in drift if "collaboration_base_group" in str(item)], drift
+        assert not [
+            item
+            for item in drift
+            if any(
+                name in str(item)
+                for name in ("collaboration_base_group", "collaboration_timeline_marker")
+            )
+        ], drift
     command.downgrade(Config("alembic.ini"), "202611060005")
     command.upgrade(Config("alembic.ini"), "head")
     print("PASS: group migration matches ORM metadata and empty-table downgrade/upgrade succeeds")
@@ -493,6 +501,9 @@ def main():
         prove_timeline_ranges(
             engine, tokens, share_id, entry_id, record_id, view_id, reviewer_id, wait_for_lock
         )
+        prove_timeline_markers(
+            engine, tokens, share_id, entry_id, view_id, reviewer_id, wait_for_lock
+        )
     finally:
         with Session(engine) as db:
             if share_id is not None and (share := db.get(m.Share, share_id)):
@@ -503,7 +514,16 @@ def main():
             db.commit()
             assert db.scalar(select(func.count()).select_from(m.DiscussionThread)) == 0
             assert db.scalar(select(func.count()).select_from(m.BaseDefinition)) == 0
-            for model in (m.BaseGroupValue, m.BaseGroupWitness, m.BaseGroupCaptureReceipt):
+            for model in (
+                m.BaseGroupValue,
+                m.BaseGroupWitness,
+                m.BaseGroupCaptureReceipt,
+                m.BaseTimelineMarkerCatalog,
+                m.BaseTimelineMarker,
+                m.BaseTimelineMarkerPlacement,
+                m.BaseTimelineMarkerRevision,
+                m.BaseTimelineMarkerReceipt,
+            ):
                 assert db.scalar(select(func.count()).select_from(model)) == 0
         engine.dispose()
     print("PASS: synthetic accounts/share and their discussion/registry data removed")

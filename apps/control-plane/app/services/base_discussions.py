@@ -182,6 +182,12 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
         timeline_axes.validate(
             db, ctx, definition, anchor, creation=creation, write=write, user=user
         )
+    if isinstance(anchor.target, s.BaseTimelineMarkerTarget):
+        from app.services import timeline_markers
+
+        timeline_markers.validate(
+            db, ctx, definition, anchor, creation=creation, write=write, user=user
+        )
 
 
 def stored_anchor(payload):

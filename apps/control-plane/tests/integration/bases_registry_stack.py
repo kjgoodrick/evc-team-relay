@@ -143,7 +143,7 @@ def prove_target_definitions(engine, client, route, auth, publish, share_id, ent
     else:
         raise AssertionError("Nonempty semantic identities must prevent destructive downgrade")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
     print(
         "PASS: semantic edit/revert revisions, current read revocation "
         "and nonempty downgrade refusal"
@@ -310,7 +310,7 @@ def prove_content(engine, url, client, share_id, entry_id, tokens, minio, key):
     else:
         raise AssertionError("Nonempty guarded content must prevent destructive downgrade")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
     assert client.get(route, headers=auth).json() == current
     print("PASS: nonempty downgrade is refused and leaves the version and bytes intact")
 
@@ -327,7 +327,7 @@ def main():
         url, connect_args={"connect_timeout": 5, "options": "-c statement_timeout=10000"}
     )
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
     settings = get_settings()
     settings.collaboration_policy_enabled = settings.collaboration_bases_registry_enabled = True
     settings.minio_endpoint = endpoint

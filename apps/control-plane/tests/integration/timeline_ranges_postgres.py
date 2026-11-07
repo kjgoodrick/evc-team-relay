@@ -459,7 +459,7 @@ def prove_timeline_ranges(
     else:
         raise AssertionError("Downgrade discarded populated range/group evidence")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611060007"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070001"
     assert totals() == before
     assert read(original)["anchor"] == original_anchor
     assert send(original) == accepted

@@ -14,7 +14,14 @@ from app.schemas.bases import (
     InspectBase,
     ReconcileBase,
 )
-from app.services import base_discussions, base_groups, base_target_definitions, timeline_axes
+from app.schemas.timeline_markers import TimelineMarkerCatalog, TimelineMarkerCommand
+from app.services import (
+    base_discussions,
+    base_groups,
+    base_target_definitions,
+    timeline_axes,
+    timeline_markers,
+)
 from app.services import bases_registry as service
 
 
@@ -73,6 +80,39 @@ def inspect(
     db: Session = Depends(get_db),
 ):
     return service.synchronize(db, token, share_id, entry_id, payload)
+
+
+@router.post("/timeline-markers/catalog")
+def timeline_marker_catalog(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: TimelineMarkerCatalog,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return timeline_markers.list_markers(db, token, share_id, entry_id, payload)
+
+
+@router.post("/timeline-markers/commands")
+def timeline_marker_command(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: TimelineMarkerCommand,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return timeline_markers.apply_command(db, token, share_id, entry_id, payload)
+
+
+@router.get("/timeline-markers/{marker_id}")
+def timeline_marker(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    marker_id: uuid.UUID,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return timeline_markers.read_marker(db, token, share_id, entry_id, marker_id)
 
 
 @router.post("/target-definitions")
