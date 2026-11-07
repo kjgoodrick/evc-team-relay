@@ -70,6 +70,17 @@ def ticket_value(message: dict) -> str:
     return value
 
 
+def authentication_version(message: dict, default=1) -> int:
+    expected = {"type", "ticket", "instance_id"}
+    if "protocol_version" in message:
+        expected.add("protocol_version")
+    fields(message, expected)
+    version = message.get("protocol_version", default)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("Unsupported presence protocol")
+    return version
+
+
 async def handle(
     websocket: WebSocket, owner: presence.PresenceBroker, connection: presence.Connection
 ):
@@ -79,7 +90,11 @@ async def handle(
             raise OverflowError("Collaboration message rate exceeded")
         kind = message.get("type")
         if kind == "authenticate":
-            fields(message, {"type", "ticket", "instance_id"})
+            if (
+                authentication_version(message, connection.protocol_version)
+                != connection.protocol_version
+            ):
+                raise ValueError("Cannot switch presence protocols")
             if identifier(message["instance_id"]) != connection.instance_id:
                 raise ValueError("Cannot switch instances")
             token = owner.consume(ticket_value(message))
@@ -98,7 +113,7 @@ async def handle(
             if kind == "presence":
                 fields(message, {"type", "location"})
                 location = (
-                    presence.Location.model_validate(message["location"])
+                    presence.parse_location(message["location"], connection.protocol_version)
                     if message["location"] is not None
                     else None
                 )
@@ -109,7 +124,7 @@ async def handle(
                 fields(message, {"type", "subscription_id", "target", "from"})
                 subscription = identifier(message["subscription_id"])
                 target = presence.Target.model_validate(message["target"]).key()
-                source = presence.Location.model_validate(message["from"])
+                source = presence.parse_location(message["from"], connection.protocol_version)
                 publisher = owner.connections.get(target)
                 revision = publisher.revision if publisher else -1
                 # Initial consent is scoped to a shared context already visible
@@ -118,10 +133,8 @@ async def handle(
                     publisher
                     and publisher is not connection
                     and publisher.location
-                    and (
-                        publisher.location.share_id == source.share_id
-                        and publisher.location.entry_id == source.entry_id
-                    )
+                    and presence.supports_location(connection.protocol_version, publisher.location)
+                    and presence.same_context(publisher.location, source)
                 )
                 if available:
                     try:
@@ -178,7 +191,7 @@ async def deliver(
         location = publisher.location if publisher else None
         allowed = False
         viewer_token = viewer.token
-        if publisher and location:
+        if publisher and location and presence.supports_location(viewer.protocol_version, location):
             try:
                 await run_in_threadpool(
                     presence.authorize_delivery, viewer_token, publisher.token, location
@@ -254,19 +267,19 @@ async def events(websocket: WebSocket):
     try:
         await websocket.accept()
         message = await asyncio.wait_for(receive(websocket), timeout=5)
-        fields(message, {"type", "ticket", "instance_id"})
+        protocol_version = authentication_version(message)
         if message["type"] != "authenticate":
             raise ValueError("Authenticate first")
         instance = identifier(message["instance_id"])
         token = owner.consume(ticket_value(message))
         actor = await run_in_threadpool(presence.authenticate, token)
-        connection = owner.add(token, actor, instance)
+        connection = owner.add(token, actor, instance, protocol_version)
         owner.handshakes -= 1
         pending_handshake = False
         connection.control(
             {
                 "type": "ready",
-                "protocol_version": 1,
+                "protocol_version": protocol_version,
                 "session_id": actor.identity.session_id,
                 "instance_id": instance,
                 "expires_at": actor.expires_at,

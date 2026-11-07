@@ -4,6 +4,10 @@ The control plane now provides an opt-in, ephemeral channel for following an
 already visible participant between authorized Markdown notes. The Obsidian
 preview now connects to this channel and follows participants across notes;
 precise positions and current-note Jump/Follow still use managed Yjs awareness.
+The server also accepts explicitly negotiated version-two image-file and saved
+Bases-view locations. These are transport/authorization foundations; the plugin
+still uses version one, and image/Bases rosters, pointers and navigation adapters
+are not implemented by this change.
 No production service or live vault has been changed by this work.
 
 Enable locally with `COLLABORATION_PRESENCE_ENABLED=true`. The share capability
@@ -76,6 +80,58 @@ denial for an old note cannot clear a publisher's newer authorized location.
 Disconnect/shutdown removes connection ownership and subscriptions and awaits
 the channel's receive/delivery/revalidation tasks before cleanup completes.
 
+## Opt-in version-two surface locations
+
+`features.presence_surface_locations_preview: true` advertises support for the
+version-two location envelope, under the existing presence enable switch. The
+capability response and ticket response retain their own version-one formats.
+This does not advertise every surface adapter or require discussion permission.
+Bases publication additionally requires the Bases registry feature to be enabled.
+
+Include `protocol_version: 2` on the first `authenticate` frame to select the
+extended socket protocol. `ready.protocol_version` confirms the selection. An
+omitted version selects one, preserving old client behavior. Renewal may omit
+the version or repeat the selected value; it cannot change protocol on a live
+connection. Strings, booleans, fractional numbers and unknown versions reject.
+
+Version two accepts the original note descriptor plus these exact descriptors:
+
+| Kind | Required fields beyond `kind`, `share_id`, `entry_id` | Authorization |
+| --- | --- | --- |
+| `image` | `generation` (UUID), `content_sha256` (64 lowercase hex characters) | Live managed image entry, current generation and exact current hash, current read access. |
+| `base` | `generation`, `definition_id`, `view_id` (UUIDs), `registry_revision` (positive safe integer) | Live `.base` entry, matching generation, server-owned definition and active saved view, current registry revision and synchronized content hash, current read access. |
+
+No title, path, external URL, cell value, formula output, pointer or arbitrary
+target object is accepted. The server reads authorization/identity metadata; it
+does not fetch image bytes, parse a base or evaluate a formula for presence.
+Embedded-image occurrences and fine-grained Bases/timeline targets need separate
+adapters and negotiated schemas before they can be sent.
+
+Initial Follow must reference the same kind and context as the publisher. Notes
+may differ in editor/Reading mode; images must reference the same generation and
+bytes, and Bases must reference the same saved view/definition/generation/revision.
+Being in another view of the same base does not establish a shared context. An
+already established Follow may cross these surfaces after the usual checks for
+both users. Read-only reviewers do not need comment or edit permission.
+
+New descriptors are never sent to version-one followers. Moving to an unsupported
+surface returns the existing generic `unavailable` event and removes the follow
+subscription, without leaking identifiers or silently resuming later. Version-one
+publishers cannot send the new descriptors. Image replacement, registry change,
+unmatched/deleted views, generation changes and revocation invalidate the old
+location on delivery or the existing five-second recheck. A subsequent publisher
+refresh must use freshly verified metadata; an ended Follow remains ended.
+
+All existing bounds, snapshot-race checks, ephemeral storage and deployment
+constraints apply unchanged. Tests exercise version negotiation, old-client
+isolation, image replacement, registry/view identity changes, idle revocation and
+read-only access against the actual ASGI application and disposable database.
+This is not native or production-load evidence.
+
+Discovery of participants on non-note surfaces,
+client rendering/navigation, image coordinates, cell/row/group/lane targets and
+native acceptance remain outstanding.
+
 ## Bounds and deployment constraint
 
 The initial implementation supports one designated application process for both
@@ -95,7 +151,8 @@ changing their independent note synchronization connection.
 Close codes are 4400 for invalid messages, 4403 for authentication/access or
 idle expiry, 4408 for handshake/send timeout, 4409 for duplicate instance
 ownership, and 4429 for capacity/rate/slow-consumer limits. JSON duplicate keys,
-non-finite numbers, unexpected fields and unsupported location kinds reject.
+non-finite numbers, unexpected fields and location kinds unsupported by the
+negotiated protocol reject.
 
 ## Evidence and remaining work
 
@@ -106,6 +163,12 @@ single-use ticket expiry, disconnect/cleanup and ownership. Controlled async
 tests cover concurrent destination replacement and slow-consumer coalescing.
 The test database is disposable file-backed SQLite; these tests are not a
 production PostgreSQL load benchmark or native Obsidian acceptance.
+
+The version-two server increment passes **167 tests** across the location,
+managed-awareness protocol, collaboration-policy and Bases-registry suites.
+Changed Python files pass lint/format checks. This is a scoped regression run,
+not a claim that the complete control-plane suite was run; the existing test
+fixture/library warnings remain. No plugin code or database migration changed.
 
 The plugin transport negotiates this capability, uses fresh session credentials,
 renews tickets on the same socket, bounds retries and pending sends, and withdraws

@@ -13,16 +13,18 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import HTTPException
 from jwt.exceptions import InvalidTokenError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from sqlalchemy import select
 
 from app.api import deps
 from app.core import security
+from app.db import models
 from app.db.session import get_sessionmaker
-from app.services import managed_service, share_service
+from app.services import bases_registry, managed_service, share_service
 from app.services.presence_protocol import PresenceIdentity, identity_for
 
 MAX_CONNECTIONS = 128
@@ -40,6 +42,92 @@ class Location(BaseModel):
     share_id: uuid.UUID
     entry_id: uuid.UUID
     surface: Literal["editor", "reading"]
+
+
+class ImageLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["image"]
+    share_id: uuid.UUID
+    entry_id: uuid.UUID
+    generation: uuid.UUID
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class BaseLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["base"]
+    share_id: uuid.UUID
+    entry_id: uuid.UUID
+    generation: uuid.UUID
+    definition_id: uuid.UUID
+    view_id: uuid.UUID
+    registry_revision: int = Field(strict=True, ge=1, le=9007199254740991)
+
+
+SurfaceLocation = Location | ImageLocation | BaseLocation
+_surface_location = TypeAdapter(Annotated[SurfaceLocation, Field(discriminator="kind")])
+
+
+def parse_location(value, protocol_version: int) -> SurfaceLocation:
+    # Version one remains Markdown-only, including strict unknown-field checks.
+    if protocol_version == 1:
+        return Location.model_validate(value)
+    if protocol_version == 2:
+        return _surface_location.validate_python(value)
+    raise ValueError("Unsupported presence protocol")
+
+
+def supports_location(protocol_version: int, location: SurfaceLocation) -> bool:
+    return protocol_version == 2 or isinstance(location, Location)
+
+
+def same_context(left: SurfaceLocation, right: SurfaceLocation) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Location):
+        # Source, Live Preview and Reading share the same authorized note room.
+        return left.share_id == right.share_id and left.entry_id == right.entry_id
+    # Other rooms are pinned to the same image bytes or saved-view identity.
+    # A different Bases view is not consent to discover this view's participants.
+    return left == right
+
+
+def authorize_location(db, user, location: SurfaceLocation) -> None:
+    share = share_service.get_share(db, location.share_id)
+    entry = managed_service.authorize_entry(db, share, user, str(location.entry_id))
+    valid = False
+    if isinstance(location, Location):
+        valid = entry.record.get("type") == "markdown"
+    elif isinstance(location, ImageLocation):
+        valid = (
+            entry.record.get("type") == "image"
+            and entry.collaboration_generation == location.generation
+            and entry.record.get("hash") == location.content_sha256
+        )
+    elif isinstance(location, BaseLocation) and bases_registry.enabled():
+        # Select only identity metadata. Frequent presence revalidation must not
+        # materialize the saved configuration or view descriptors.
+        definition, view = models.BaseDefinition, models.BaseView
+        valid = bool(
+            entry.record.get("type") == "file"
+            and entry.path.lower().endswith(".base")
+            and entry.collaboration_generation == location.generation
+            and db.scalar(
+                select(view.id)
+                .join(definition, view.definition_id == definition.id)
+                .where(
+                    definition.id == location.definition_id,
+                    definition.entry_id == entry.id,
+                    definition.generation == location.generation,
+                    definition.revision == location.registry_revision,
+                    definition.content_sha256 == entry.record.get("hash"),
+                    view.id == location.view_id,
+                    view.state == "active",
+                )
+            )
+        )
+    if not valid:
+        raise HTTPException(403, "Location unavailable")
 
 
 class Target(BaseModel):
@@ -62,7 +150,7 @@ class Actor:
         return self.identity.user_id, self.identity.session_id, instance_id
 
 
-def authenticate(token: str, location: Location | None = None) -> Actor:
+def authenticate(token: str, location: SurfaceLocation | None = None) -> Actor:
     with get_sessionmaker()() as db:
         user = deps._get_user_from_token(db, token)
         try:
@@ -72,14 +160,11 @@ def authenticate(token: str, location: Location | None = None) -> Actor:
         if not claims.get("session_id") or type(claims.get("exp")) is not int:
             raise HTTPException(401, "Session-backed credentials required")
         if location:
-            share = share_service.get_share(db, location.share_id)
-            entry = managed_service.authorize_entry(db, share, user, str(location.entry_id))
-            if entry.record.get("type") != "markdown":
-                raise HTTPException(403, "Location unavailable")
+            authorize_location(db, user, location)
         return Actor(identity_for(db, user, claims), int(claims["exp"]))
 
 
-def authorize_delivery(viewer_token: str, publisher_token: str, location: Location) -> None:
+def authorize_delivery(viewer_token: str, publisher_token: str, location: SurfaceLocation) -> None:
     # Both users must still have live sessions and read access to this exact
     # destination. A revoked publisher cannot keep an old location visible.
     authenticate(viewer_token, location)
@@ -104,7 +189,8 @@ class Connection:
     token: str
     actor: Actor
     instance_id: str
-    location: Location | None = None
+    protocol_version: int = 1
+    location: SurfaceLocation | None = None
     follow: Follow | None = None
     revision: int = 0
     closed: bool = False
@@ -162,17 +248,19 @@ class PresenceBroker:
             raise HTTPException(401, "Invalid collaboration ticket")
         return ticket.token
 
-    def add(self, token: str, actor: Actor, instance_id: str) -> Connection:
+    def add(self, token: str, actor: Actor, instance_id: str, protocol_version=1) -> Connection:
+        if type(protocol_version) is not int or protocol_version not in (1, 2):
+            raise ValueError("Unsupported presence protocol")
         key = actor.key(instance_id)
         if key in self.connections:
             raise FileExistsError("Presence instance already connected")
         if len(self.connections) >= MAX_CONNECTIONS:
             raise OverflowError("Collaboration connection capacity")
-        connection = Connection(token, actor, instance_id)
+        connection = Connection(token, actor, instance_id, protocol_version=protocol_version)
         self.connections[key] = connection
         return connection
 
-    def publish(self, connection: Connection, location: Location | None) -> None:
+    def publish(self, connection: Connection, location: SurfaceLocation | None) -> None:
         if connection.closed or self.connections.get(connection.key) is not connection:
             return
         if connection.location == location:

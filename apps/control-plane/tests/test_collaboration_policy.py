@@ -243,6 +243,7 @@ def test_preview_disabled_and_no_unimplemented_feature_advertised(client, team, 
     features = client.get(url, headers=auth(reviewer)).json()["features"]
     assert features == dict(
         presence_locations_preview=False,
+        presence_surface_locations_preview=False,
         comment_permissions=True,
         comments=False,
         bases=False,

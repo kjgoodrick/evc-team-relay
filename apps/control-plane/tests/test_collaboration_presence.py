@@ -75,13 +75,17 @@ def ticket(client, token):
 
 
 @contextmanager
-def connected(client, token, instance=None):
+def connected(client, token, instance=None, *, protocol_version=None):
     instance = instance or guid()
     value = ticket(client, token)
     with client.websocket_connect(PATH) as socket:
-        socket.send_json({"type": "authenticate", "ticket": value, "instance_id": instance})
+        message = {"type": "authenticate", "ticket": value, "instance_id": instance}
+        if protocol_version is not None:
+            message["protocol_version"] = protocol_version
+        socket.send_json(message)
         ready = recv(socket)
         assert ready["type"] == "ready" and ready["instance_id"] == instance
+        assert ready["protocol_version"] == (protocol_version or 1)
         assert len(ready["session_id"]) == 32
         yield socket, ready
 
@@ -248,6 +252,7 @@ def test_capability_is_explicit_and_scoped_credentials_cannot_get_tickets(client
     )
     assert response.status_code == 200
     assert response.json()["features"]["presence_locations_preview"] is True
+    assert response.json()["features"]["presence_surface_locations_preview"] is True
     claims = security.decode_access_token(team.tokens["owner"])
     claims["scope"] = "managed"
     scoped = jwt.encode(claims, get_settings().jwt_secret, algorithm=get_settings().jwt_algorithm)
@@ -471,6 +476,263 @@ def test_malformed_frames_close_without_echoing_data(client, team, message):
         with pytest.raises(WebSocketDisconnect) as error:
             recv(socket)
         assert error.value.code == 4400 and not error.value.reason
+
+
+@pytest.fixture
+def surface_team(db_session, team, monkeypatch):
+    monkeypatch.setattr(get_settings(), "collaboration_policy_enabled", True)
+    monkeypatch.setattr(get_settings(), "collaboration_bases_registry_enabled", True)
+    image = models.ManagedEntry(
+        id=guid(),
+        share_id=team.share.id,
+        path="Diagram.png",
+        record={"type": "image", "hash": "a" * 64},
+    )
+    base = models.ManagedEntry(
+        id=guid(),
+        share_id=team.share.id,
+        path="Planning.base",
+        record={"type": "file", "hash": "b" * 64},
+    )
+    db_session.add_all([image, base])
+    db_session.flush()
+    definition = models.BaseDefinition(
+        entry_id=base.id,
+        generation=base.collaboration_generation,
+        revision=1,
+        content_sha256="b" * 64,
+        configuration={"views": []},
+    )
+    db_session.add(definition)
+    db_session.flush()
+    views = [
+        models.BaseView(definition_id=definition.id, slot=slot, state="active", descriptor={})
+        for slot in (0, 1)
+    ]
+    db_session.add_all(views)
+    db_session.commit()
+    locations = [
+        {
+            "kind": "image",
+            "share_id": str(team.share.id),
+            "entry_id": image.id,
+            "generation": str(image.collaboration_generation),
+            "content_sha256": "a" * 64,
+        },
+        *[
+            {
+                "kind": "base",
+                "share_id": str(team.share.id),
+                "entry_id": base.id,
+                "generation": str(base.collaboration_generation),
+                "definition_id": str(definition.id),
+                "view_id": str(view.id),
+                "registry_revision": 1,
+            }
+            for view in views
+        ],
+    ]
+    return SimpleNamespace(
+        image=image, base=base, definition=definition, views=views, locations=locations
+    )
+
+
+def test_v2_follows_note_image_and_saved_views_with_read_permission(client, team, surface_team):
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, ready):
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            publish(publisher, team.location())
+            subscription = follow(viewer, team.owner.id, ready, team.location())
+            assert recv(viewer) == {"type": "following", "subscription_id": subscription}
+            assert recv(viewer) == available(subscription, team.location())
+            for location in [*surface_team.locations, team.location("second", "reading")]:
+                publish(publisher, location)
+                assert recv(viewer) == available(subscription, location)
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_legacy_follower_gets_no_new_surface_identifiers_and_does_not_resume(
+    client, team, surface_team, index
+):
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, ready):
+        with connected(client, team.tokens["viewer"]) as (viewer, _):
+            publish(publisher, team.location())
+            subscription = follow(viewer, team.owner.id, ready, team.location())
+            assert recv(viewer)["type"] == "following"
+            assert recv(viewer) == available(subscription, team.location())
+            publish(publisher, surface_team.locations[index])
+            assert recv(viewer) == unavailable(subscription)
+            publish(publisher, team.location())
+            viewer.send_json({"type": "ping"})
+            assert recv(viewer) == {"type": "pong"}
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_v1_publisher_cannot_send_new_surface_locations(client, team, surface_team, index):
+    with connected(client, team.tokens["owner"]) as (socket, _):
+        socket.send_json({"type": "presence", "location": surface_team.locations[index]})
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == 4400
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_initial_surface_follow_requires_same_image_version_or_saved_view(
+    client, team, surface_team, index
+):
+    location = surface_team.locations[index]
+    wrong = dict(location)
+    if index == 0:
+        wrong["content_sha256"] = "c" * 64
+    else:
+        wrong = surface_team.locations[2]
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, ready):
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            publish(publisher, location)
+            subscription = follow(viewer, team.owner.id, ready, wrong)
+            assert recv(viewer) == unavailable(subscription)
+            subscription = follow(viewer, team.owner.id, ready, location)
+            assert recv(viewer)["type"] == "following"
+            assert recv(viewer) == available(subscription, location)
+
+
+@pytest.mark.parametrize(
+    "index,loss",
+    [
+        (0, "image-bytes"),
+        (0, "generation"),
+        (0, "deleted"),
+        (0, "permission"),
+        (1, "generation"),
+        (1, "base-bytes"),
+        (1, "revision"),
+        (1, "view-state"),
+        (1, "view-owner"),
+        (1, "disabled"),
+        (1, "permission"),
+        (1, "deleted"),
+    ],
+)
+def test_idle_surface_follow_rechecks_versions_identity_access_and_feature_state(
+    client, db_session, team, surface_team, monkeypatch, index, loss
+):
+    monkeypatch.setattr(presence, "CHECK_SECONDS", 0.05)
+    location = surface_team.locations[index]
+    entry = surface_team.image if index == 0 else surface_team.base
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, ready):
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            publish(publisher, location)
+            subscription = follow(viewer, team.owner.id, ready, location)
+            assert recv(viewer)["type"] == "following"
+            assert recv(viewer) == available(subscription, location)
+            if loss in {"image-bytes", "base-bytes"}:
+                entry.record = {**entry.record, "hash": "c" * 64}
+            elif loss == "generation":
+                entry.collaboration_generation = uuid.uuid4()
+            elif loss == "deleted":
+                entry.deleted = True
+            elif loss == "permission":
+                team.rule.permission = "none"
+            elif loss == "revision":
+                surface_team.definition.revision += 1
+            elif loss == "view-state":
+                surface_team.views[0].state = "unmatched"
+            elif loss == "view-owner":
+                # A view from another definition is never interchangeable.
+                other = models.BaseDefinition(
+                    entry_id=surface_team.image.id,
+                    generation=uuid.uuid4(),
+                    revision=1,
+                    content_sha256="c" * 64,
+                    configuration={},
+                )
+                db_session.add(other)
+                db_session.flush()
+                surface_team.views[0].definition_id = other.id
+            elif loss == "disabled":
+                monkeypatch.setattr(get_settings(), "collaboration_bases_registry_enabled", False)
+            db_session.commit()
+            assert recv(viewer) == unavailable(subscription)
+
+
+@pytest.mark.parametrize(
+    "index,field,value",
+    [
+        (0, "content_sha256", "c" * 64),
+        (0, "generation", "new-id"),
+        (0, "entry_id", "new-id"),
+        (1, "view_id", "new-id"),
+        (1, "definition_id", "new-id"),
+        (1, "generation", "new-id"),
+        (1, "registry_revision", 2),
+    ],
+)
+def test_surface_publication_rejects_unverified_identity_or_version(
+    client, team, surface_team, index, field, value
+):
+    location = {**surface_team.locations[index], field: guid() if value == "new-id" else value}
+    with connected(client, team.tokens["owner"], protocol_version=2) as (socket, _):
+        socket.send_json({"type": "presence", "location": location})
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == 4403
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"registry_revision": True},
+        {"registry_revision": "1"},
+        {"registry_revision": 1.0},
+        {"registry_revision": 9007199254740992},
+        {"path": "Private.md"},
+        {"value": "computed result"},
+        {"pointer": {"x": 0.5}},
+    ],
+)
+def test_surface_schema_rejects_unnegotiated_targets_and_values(client, team, surface_team, patch):
+    with connected(client, team.tokens["owner"], protocol_version=2) as (socket, _):
+        socket.send_json({"type": "presence", "location": {**surface_team.locations[1], **patch}})
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == 4400 and not error.value.reason
+
+
+@pytest.mark.parametrize("version", [True, 2.0, "2", 0, 3, None])
+def test_authenticate_rejects_invalid_protocol_versions(client, team, version):
+    with client.websocket_connect(PATH) as socket:
+        socket.send_json(
+            {
+                "type": "authenticate",
+                "ticket": ticket(client, team.tokens["owner"]),
+                "instance_id": guid(),
+                "protocol_version": version,
+            }
+        )
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == 4400
+
+
+def test_v2_refresh_preserves_protocol_and_cannot_downgrade(client, team, surface_team):
+    with connected(client, team.tokens["owner"], protocol_version=2) as (socket, ready):
+        message = {
+            "type": "authenticate",
+            "instance_id": ready["instance_id"],
+            "ticket": ticket(client, team.tokens["owner"]),
+        }
+        socket.send_json(message)
+        assert recv(socket)["type"] == "authenticated"
+        publish(socket, surface_team.locations[0])
+        socket.send_json(
+            {
+                **message,
+                "ticket": ticket(client, team.tokens["owner"]),
+                "protocol_version": 1,
+            }
+        )
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(socket)
+        assert error.value.code == 4400
 
 
 def actor():
