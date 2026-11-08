@@ -21,7 +21,7 @@ from app.schemas.collaboration import (
     PermissionPolicy,
     PermissionPolicyUpdate,
 )
-from app.services import managed_service, share_service
+from app.services import collaboration_restore, managed_service, share_service
 
 
 def _lock(db: Session, share: m.Share, actor: m.User, write: bool) -> m.Share:
@@ -74,6 +74,8 @@ def _snapshot(db: Session, share: m.Share, actor: m.User) -> PermissionPolicy:
         "files": _wire(file_rules),
         "comments": _wire(comment_rules),
     }
+    if share.collaboration_restore_generation is not None:
+        material["restore_generation"] = str(share.collaboration_restore_generation)
     revision = hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf8")
     ).hexdigest()
@@ -86,6 +88,7 @@ def _snapshot(db: Session, share: m.Share, actor: m.User) -> PermissionPolicy:
         .order_by(m.User.email, m.User.id)
     )
     return PermissionPolicy(
+        restore_generation=share.collaboration_restore_generation,
         share_id=share.id,
         actor_id=actor.id,
         owner_id=share.owner_user_id,
@@ -109,11 +112,16 @@ def get_policy(db: Session, share: m.Share, actor: m.User, actor_id: uuid.UUID) 
 
 
 def replace_policy(
-    db: Session, share: m.Share, actor: m.User, payload: PermissionPolicyUpdate
+    db: Session,
+    share: m.Share,
+    actor: m.User,
+    payload: PermissionPolicyUpdate,
+    restore_generation: uuid.UUID | None = None,
 ) -> PermissionPolicy:
     if payload.actor_id != actor.id:
         raise HTTPException(403, "permission_editor_account_changed")
     share = _lock(db, share, actor, True)
+    collaboration_restore.require_generation(share, restore_generation)
     current = _snapshot(db, share, actor)
     if payload.expected_revision != current.revision:
         raise HTTPException(409, "permission_policy_changed")

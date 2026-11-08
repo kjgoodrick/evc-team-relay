@@ -270,3 +270,53 @@ def test_strict_bounded_wire_validation(client, team):
     save(client, team, update(snapshot, comment_rules=[commenter(team)] * 1001), expected=422)
     save(client, team, update(snapshot, expected_revision="unversioned"), expected=422)
     save(client, team, update(snapshot, invented_field=True), expected=422)
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_restore_guard_precedes_stale_revision_and_noop_checks(client, db_session, team, changed):
+    before = read(client, team)
+    assert before["restore_guard"] is True and before["restore_generation"] is None
+    generation = uuid.uuid4()
+    team[0].collaboration_restore_generation = generation
+    db_session.commit()
+    restored = read(client, team)
+    assert restored["restore_generation"] == str(generation)
+    assert restored["revision"] != before["revision"]
+    for snapshot in [before, restored]:
+        payload = update(snapshot, comment_rules=[commenter(team)] if changed else [])
+        for old in [None, str(uuid.uuid4())]:
+            headers = auth(team[1])
+            if old:
+                headers["X-Relay-Restore-Generation"] = old
+            response = client.put(endpoint(team), json=payload, headers=headers)
+            assert response.status_code == 409, response.text
+            assert response.json()["error"]["message"] == {"code": "restore_generation_changed"}
+            assert read(client, team) == restored
+    assert (
+        list(db_session.scalars(select(m.AuditLog).where(m.AuditLog.target_share_id == team[0].id)))
+        == []
+    )
+    headers = auth(team[1]) | {"X-Relay-Restore-Generation": str(generation)}
+    response = client.put(endpoint(team), json=update(before), headers=headers)
+    assert response.status_code == 409
+    assert response.json()["error"]["message"] == "permission_policy_changed"
+    response = client.put(
+        endpoint(team),
+        json=update(restored, comment_rules=[commenter(team)] if changed else []),
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["restore_generation"] == str(generation)
+    assert response.json()["comment_rules"] == ([commenter(team)] if changed else [])
+
+
+def test_permission_restore_header_is_strict_and_does_not_allow_generation_downgrade(client, team):
+    before = read(client, team)
+    for generation, expected in [("not-a-uuid", 422), (str(uuid.uuid4()), 409)]:
+        response = client.put(
+            endpoint(team),
+            json=update(before),
+            headers=auth(team[1]) | {"X-Relay-Restore-Generation": generation},
+        )
+        assert response.status_code == expected, response.text
+        assert read(client, team) == before

@@ -52,6 +52,8 @@ class PermissionMember(BaseModel):
 
 class PermissionPolicy(BaseModel):
     version: Literal[1] = 1
+    restore_guard: Literal[True] = True
+    restore_generation: uuid.UUID | None = None
     share_id: uuid.UUID
     actor_id: uuid.UUID
     owner_id: uuid.UUID

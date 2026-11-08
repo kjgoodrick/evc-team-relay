@@ -1,6 +1,7 @@
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -247,7 +248,10 @@ def put_permission_policy(
     payload: PermissionPolicyUpdate,
     db: Session = Depends(get_db),
     user: models.User = Depends(collaboration_auth.get_actor),
+    restore_generation: Annotated[
+        uuid.UUID | None, Header(alias="X-Relay-Restore-Generation")
+    ] = None,
 ):
     return permission_editor.replace_policy(
-        db, share_service.get_share(db, share_id), user, payload
+        db, share_service.get_share(db, share_id), user, payload, restore_generation
     )

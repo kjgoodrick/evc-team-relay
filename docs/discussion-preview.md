@@ -138,10 +138,23 @@ automatic rotation or restore activation command yet. The client transport/store
 preserve explicit bindings and fence local old-generation work. Ordinary-session
 startup, reconnect and intent creation observe these bindings, with actual HTTP
 evidence from `discussions_client.py --restore-guard`. Complete recovery review
-and guards for permission and other mutation paths are still unfinished.
+and guards for legacy rule APIs and other mutation paths are still unfinished.
 This capability describes **discussion commands and withdrawals only**; it is
 not a complete service restore boundary. Do not manually activate it for a live
 share or claim the collaboration restore procedure is complete.
+
+Combined permission snapshots advertise `restore_guard` and `restore_generation`.
+Their revision includes any nonnull generation. The combined PUT checks the
+original `X-Relay-Restore-Generation` after refreshing and locking the share,
+before revision comparison or unchanged-save handling. A stale form therefore
+cannot overwrite restored rules, even if its previous revision or rules recur.
+NULL remains compatible with original-lineage clients. The editor freezes the
+snapshot header before credential refresh, preserves a rejected proposal, and
+requires a fresh read and explicit merge/review before another save. A lost
+response is reconciled by reading actual rules, without an automatic retry.
+PostgreSQL verifies a waiting save refreshes a stale ORM share after rotation;
+HTTP and UI tests cover original headers, rejection and reviewed recovery.
+Legacy file/comment rule APIs are not yet guarded by this checkpoint.
 
 Separate capabilities `discussion_picture_restore_guard` and
 `discussion_base_group_restore_guard` cover picture and group writes. Picture
