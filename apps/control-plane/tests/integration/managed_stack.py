@@ -350,6 +350,22 @@ allowed_token_types = ["server"]
                     ]
                 ),
             )
+            canvas_id = str(uuid.uuid4())
+            if args.document_restore:
+                managed_service.apply_batch(
+                    db,
+                    share,
+                    owner,
+                    managed_service.Batch(
+                        changes=[
+                            managed_service.Change(
+                                path="Board.canvas",
+                                previous=None,
+                                value=managed_service.Record(id=canvas_id, type="canvas"),
+                            )
+                        ]
+                    ),
+                )
             image_id = str(uuid.uuid4())
             if args.image_anchors or args.image_files or args.base_groups:
                 managed_service.apply_batch(
@@ -387,6 +403,7 @@ allowed_token_types = ["server"]
                 "relay": f"ws://127.0.0.1:{relay_port}",
                 "share": str(share.id),
                 "note": note,
+                "canvas": canvas_id if args.document_restore else None,
                 "secret": secret,
                 "second": second if args.presence_locations else None,
                 "image": image_id
