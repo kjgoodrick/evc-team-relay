@@ -96,9 +96,12 @@ class FakeEngine:
         self.after_stop(role)
 
     def logs(self, cid, started_at):
-        assert (
-            cid == self.row("relay")["Id"] and started_at == self.row("relay")["State"]["StartedAt"]
-        )
+        assert started_at == self.rows[cid]["State"]["StartedAt"]
+        if cid == self.row("control-plane")["Id"]:
+            return (
+                b"control_plane_shutdown_complete\nApplication shutdown complete.\n"
+                b"Finished server process [1]"
+            )
         return (
             (snapshot.COMPLETION + "\nServer shut down.").encode() if self.complete else b"failed"
         )
@@ -411,6 +414,99 @@ def test_engine_logs_collects_both_streams(monkeypatch):
         lambda *a, **kw: subprocess.CompletedProcess(a, 0, b"stdout", b"stderr"),
     )
     assert snapshot.Engine().logs("a" * 64, "2026-11-08T01:00:00Z") == b"stdoutstderr"
+
+
+@pytest.mark.parametrize("code", [0, 130, 143])
+def test_completed_control_plane_signal_exit_is_recorded_exactly(engine, tmp_path, code):
+    def stop(role):
+        if role == "control-plane":
+            engine.row(role)["State"]["ExitCode"] = code
+
+    engine.after_stop = stop
+    output = tmp_path / "capture"
+    manifest = snapshot.capture(engine, plan(engine), output)
+    cid = engine.row("control-plane")["Id"]
+    assert manifest["stops"][cid]["exit_code"] == code
+    assert snapshot.verify(output) == manifest
+
+
+@pytest.mark.parametrize(
+    "code,log",
+    [
+        (0, b"Finished server process [1]"),
+        (143, b"Application shutdown failed.\nFinished server process [1]"),
+        (143, b"Application shutdown complete."),
+        (137, b"Application shutdown complete.\nFinished server process [1]"),
+        (1, b"Application shutdown complete.\nFinished server process [1]"),
+        (0, b"Application shutdown complete.\nFinished server process [1]"),
+        (
+            143,
+            b"control_plane_shutdown_complete\nApplication shutdown complete.\n"
+            b"Finished server process [1]\nASGI 'lifespan' protocol appears unsupported.",
+        ),
+        (
+            143,
+            b"control_plane_shutdown_complete\nApplication shutdown complete.\n"
+            b"Finished server process [1]\nException in 'lifespan' protocol",
+        ),
+    ],
+)
+def test_incomplete_or_forced_control_plane_shutdown_never_captures(engine, tmp_path, code, log):
+    normal_logs = engine.logs
+
+    def logs(cid, started):
+        return log if cid == engine.row("control-plane")["Id"] else normal_logs(cid, started)
+
+    def stop(role):
+        if role == "control-plane":
+            engine.row(role)["State"]["ExitCode"] = code
+
+    engine.logs = logs
+    engine.after_stop = stop
+    with pytest.raises(snapshot.SnapshotError):
+        snapshot.capture(engine, plan(engine), tmp_path / "capture")
+    assert not any(event[0] == "archive" for event in engine.events)
+    assert not (tmp_path / "capture/complete.json").exists()
+
+
+def test_stop_receipt_timestamps_are_bound_into_the_completion_hash(engine, tmp_path):
+    source = captured(engine, tmp_path)
+    stop = snapshot.read_json(source / "stop-00.json")
+    stop["started_at"] = "2026-11-08T00:00:00Z"
+    (source / "stop-00.json").write_bytes(snapshot.encoded(stop))
+    with pytest.raises(snapshot.SnapshotError, match="checksum"):
+        snapshot.verify(source)
+
+
+def test_legacy_snapshot_remains_verifiable_and_can_stage_into_current_format(engine, tmp_path):
+    source = captured(engine, tmp_path)
+    manifest = snapshot.read_json(source / "manifest.json")
+    manifest["format"] = manifest["plan"]["format"] = snapshot.LEGACY_FORMAT
+    manifest["stops"] = {cid: record["finished_at"] for cid, record in manifest["stops"].items()}
+    (source / "plan.json").write_bytes(snapshot.encoded(manifest["plan"]))
+    (source / "manifest.json").write_bytes(snapshot.encoded(manifest))
+    (source / "complete.json").write_bytes(
+        snapshot.encoded(
+            {
+                "format": snapshot.LEGACY_FORMAT,
+                "manifest_sha256": snapshot.digest(manifest),
+            }
+        )
+    )
+    assert snapshot.verify(source) == manifest
+    target, scope = fresh_target()
+    selected = snapshot.prepare(target, scope, COMMIT, fresh=True)
+    assert (
+        snapshot.stage(target, source, selected, tmp_path / "staging")["format"] == snapshot.FORMAT
+    )
+
+
+def test_old_prepared_plan_requires_fresh_readonly_planning(engine, tmp_path):
+    selected = plan(engine)
+    selected["format"] = snapshot.LEGACY_FORMAT
+    with pytest.raises(snapshot.SnapshotError, match="stale"):
+        snapshot.capture(engine, selected, tmp_path / "capture")
+    assert engine.events == []
 
 
 def fresh_target():

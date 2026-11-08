@@ -1,7 +1,8 @@
 """Restore-lineage checks; callers must hold the current share's row lock.
 
-No automatic rotation: the eventual coordinated restore must rotate this value
-before admitting clients. Ordinary permission/cursor resets do not change it.
+No automatic rotation: explicit offline maintenance rotates this value before
+admitting clients. Ordinary permission/cursor resets do not change it. See
+collaboration_restore_admin and the restore maintenance command.
 """
 
 import uuid

@@ -272,6 +272,25 @@ class Share(Base, TimestampMixin):
     )
 
 
+class CollaborationRestore(Base):
+    """Durable administrative receipt; ordinary audit retention must not erase it."""
+
+    __tablename__ = "collaboration_restores"
+
+    generation: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    plan_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    snapshot_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_state_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    share_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_versions: Mapped[list] = mapped_column(JSON, nullable=False)
+    operator: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    __table_args__ = (CheckConstraint("share_count >= 0", name="ck_collaboration_restore_count"),)
+
+
 class ShareMember(Base, TimestampMixin):
     __tablename__ = "share_members"
     __table_args__ = (UniqueConstraint("share_id", "user_id", name="uq_share_member"),)

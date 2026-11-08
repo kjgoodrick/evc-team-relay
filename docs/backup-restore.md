@@ -9,8 +9,9 @@ container-set capture, verified shutdown, complete physical-store archives and
 isolated staging into new empty stores. Fault tests and disposable Podman tests
 cover capture/staging failures; actual PostgreSQL and MinIO stores reopen with
 matching saved references/bytes and accept new writes. The tool leaves services
-stopped. It does not yet rotate restored generations, perform the complete
-application/client rehearsal or activate restored data. Existing unlabelled
+stopped. A separate [offline rotation command](collaboration-restore-rotation.md)
+now has PostgreSQL migration/concurrency/CLI evidence; the complete integrated
+application/client rehearsal and activation remain unfinished. Existing unlabelled
 deployments cannot be selected accidentally. See that contract before using any
 of the older independent backup commands below.
 

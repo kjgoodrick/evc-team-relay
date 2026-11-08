@@ -22,7 +22,9 @@ from pathlib import Path, PurePosixPath
 
 SET_LABEL = "io.evc.snapshot.set"
 ROLE_LABEL = "io.evc.snapshot.role"
-FORMAT = "evc-cold-snapshot-v1"
+FORMAT = "evc-cold-snapshot-v2"
+LEGACY_FORMAT = "evc-cold-snapshot-v1"
+SUPPORTED_FORMATS = {FORMAT, LEGACY_FORMAT}
 CONTRACT = "single-postgres-minio-local-relay-v1"
 PATHS = {
     "postgres": "/var/lib/postgresql/data",
@@ -122,7 +124,7 @@ def validate_plan(plan):
         "Unsupported snapshot plan",
     )
     require(
-        plan["format"] == FORMAT and plan["storage_contract"] == CONTRACT,
+        plan["format"] in SUPPORTED_FORMATS and plan["storage_contract"] == CONTRACT,
         "Unsupported storage contract",
     )
     require(str(uuid.UUID(plan["set_id"])) == plan["set_id"], "Invalid snapshot set ID")
@@ -252,6 +254,12 @@ def live(info):
     )
 
 
+def normal_exit(role, code):
+    # Uvicorn re-raises SIGTERM/SIGINT after a completed lifespan shutdown.
+    # These statuses require its completion evidence separately at capture.
+    return type(code) is int and (code == 0 or role == "control-plane" and code in (130, 143))
+
+
 def mounts(info):
     return [m for m in info.get("Mounts", []) if m.get("Type") in ("bind", "volume")]
 
@@ -372,7 +380,7 @@ def check_set(engine, plan, initial, stopped):
             require(
                 state.get("Status") in ("exited", "stopped")
                 and not state.get("Running")
-                and state.get("ExitCode") == 0
+                and normal_exit(row["role"], state.get("ExitCode"))
                 and not state.get("OOMKilled")
                 and not state.get("Error")
                 and state.get("FinishedAt"),
@@ -600,6 +608,7 @@ def capture(engine, plan, output):
     private_json(output / "plan.json", plan)
     initial, _ = inspect_set(engine, plan["set_id"])
     stopped = {}
+    stop_evidence = {}
     began = now()
     started = time.monotonic()
     for number, row in enumerate(sorted(plan["containers"], key=lambda r: ORDER[r["role"]])):
@@ -615,15 +624,30 @@ def capture(engine, plan, output):
                 COMPLETION.encode() in log and b"Server shut down." in log,
                 "Relay final-checkpoint completion is missing",
             )
+        if row["role"] == "control-plane":
+            log = engine.logs(cid, initial[cid]["State"]["StartedAt"])
+            require(
+                b"control_plane_shutdown_complete" in log
+                and b"Application shutdown complete." in log
+                and b"Finished server process [" in log
+                and b"Application shutdown failed." not in log,
+                "Control-plane lifespan shutdown completion is missing",
+            )
+            require(
+                b"ASGI 'lifespan' protocol appears unsupported." not in log
+                and b"Exception in 'lifespan' protocol" not in log,
+                "Control-plane lifespan shutdown completion is missing",
+            )
+        stop_evidence[cid] = {
+            "id": cid,
+            "role": row["role"],
+            "started_at": initial[cid]["State"]["StartedAt"],
+            "finished_at": stopped[cid],
+            "exit_code": state["ExitCode"],
+        }
         private_json(
             output / f"stop-{number:02d}.json",
-            {
-                "id": cid,
-                "role": row["role"],
-                "started_at": initial[cid]["State"]["StartedAt"],
-                "finished_at": stopped[cid],
-                "exit_code": 0,
-            },
+            stop_evidence[cid],
         )
     quiesced_at = now()
     archives = {}
@@ -644,7 +668,7 @@ def capture(engine, plan, output):
         "completed_at": now(),
         "duration_seconds": round(time.monotonic() - started, 3),
         "archives": archives,
-        "stops": stopped,
+        "stops": stop_evidence,
     }
     private_json(output / "manifest.json", manifest)
     check_set(engine, plan, initial, stopped)
@@ -677,7 +701,7 @@ def verify(folder, sealed=True):
         },
         "Unsupported snapshot manifest",
     )
-    require(manifest["format"] == FORMAT, "Unsupported snapshot format")
+    require(manifest["format"] in SUPPORTED_FORMATS, "Unsupported snapshot format")
     require(
         timestamp(manifest["started_at"])
         <= timestamp(manifest["quiesced_at"])
@@ -690,6 +714,7 @@ def verify(folder, sealed=True):
         "Invalid snapshot duration",
     )
     plan = validate_plan(manifest["plan"])
+    require(plan["format"] == manifest["format"], "Snapshot format mismatch")
     require(read_json(folder / "plan.json") == plan, "Snapshot plan mismatch")
     require(set(manifest["archives"]) == set(PATHS), "Incomplete snapshot stores")
     require(
@@ -704,11 +729,16 @@ def verify(folder, sealed=True):
             set(stop) == {"id", "role", "started_at", "finished_at", "exit_code"}
             and stop["id"] == row["id"]
             and stop["role"] == row["role"]
-            and type(stop["exit_code"]) is int
-            and stop["exit_code"] == 0
-            and stop["finished_at"] == manifest["stops"][row["id"]],
+            and normal_exit(row["role"], stop["exit_code"]),
             "Invalid shutdown evidence",
         )
+        if manifest["format"] == LEGACY_FORMAT:
+            require(
+                stop["exit_code"] == 0 and stop["finished_at"] == manifest["stops"][row["id"]],
+                "Invalid legacy shutdown evidence",
+            )
+        else:
+            require(stop == manifest["stops"][row["id"]], "Shutdown evidence checksum mismatch")
         require(
             timestamp(stop["finished_at"]) >= timestamp(stop["started_at"]),
             "Invalid shutdown timestamps",
@@ -724,7 +754,7 @@ def verify(folder, sealed=True):
     if sealed:
         require(
             read_json(folder / "complete.json")
-            == {"format": FORMAT, "manifest_sha256": digest(manifest)},
+            == {"format": manifest["format"], "manifest_sha256": digest(manifest)},
             "Snapshot completion seal mismatch",
         )
         expected.add("complete.json")

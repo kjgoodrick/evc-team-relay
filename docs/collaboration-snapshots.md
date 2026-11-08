@@ -6,8 +6,10 @@ selected containers, captures all four stores after shutdown, verifies the
 archives and writes a completion seal. Restore staging copies a verified set into
 new, empty, network-isolated containers and reads every restored store back.
 
-This is not yet the complete collaboration restore workflow. Generation rotation,
-application-level restore/rollback rehearsal, minimum-client enforcement and safe
+This is not yet the complete collaboration restore workflow. A separate
+[offline generation-rotation command](collaboration-restore-rotation.md) now has
+transaction and PostgreSQL CLI evidence. Its integration with this maintenance
+lifecycle, application-level restore/rollback rehearsal, minimum-client enforcement and safe
 client source activation remain required before a restored service admits users.
 The tool never starts services, changes networks, overwrites existing stores,
 removes containers or force-kills a process. Both successful capture and failed
@@ -91,10 +93,14 @@ metadata files use `0600`. The sequence is:
 
 1. Recheck the exact plan and complete labelled set before the first stop.
 2. Stop ingress, standalone workers, control plane, relay, PostgreSQL, then MinIO.
-3. Require each container to exit normally with status zero, no OOM/error and no
-   intervening restart. Require the relay's final-checkpoint completion and normal
-   shutdown messages from its observed start. A failed relay never produces a
-   completed snapshot, even if the engine stop command succeeded.
+3. Require no OOM/error or intervening restart. Storage, relay, workers and ingress
+   must exit with status zero. The control plane also accepts Uvicorn's normal
+   signal exits (130/143), but only with its final application-hook marker,
+   successful lifespan shutdown and finished-server messages from this start.
+   Missing/unsupported/failed lifespan completion is rejected even after a zero
+   exit. Require the relay's final-checkpoint completion and normal shutdown
+   messages too. A failed relay never produces a completed snapshot, even if the
+   engine stop command succeeded.
 4. Export each stopped store through the container engine. Check shutdown evidence
    and storage isolation before and after each export.
 5. Verify tar structure, full archive SHA-256, and an order-independent file-tree
@@ -140,6 +146,13 @@ host filesystem. Content is streamed in bounded chunks; path inventory memory
 scales with entry count, with a one-million-entry limit per store. Capture and
 staging deliberately perform full verification/readback passes; downtime and
 temporary disk usage scale with stored bytes.
+
+New captures use `evc-cold-snapshot-v2`, which binds each complete stop receipt,
+including its observed exit status and timestamps, into the manifest checksum.
+The reader still verifies and stages v1 archives under their original, narrower
+shutdown-evidence contract; it does not retroactively claim v2 process evidence.
+An old prepared capture plan must be regenerated before any services are stopped.
+Staging always writes the current-format result, including when its input is v1.
 
 ## Isolated restore staging
 
@@ -191,16 +204,21 @@ physical stores, byte-exact cross-store references and new writes after staging.
 All fixture service connections remain inside network-isolated containers.
 Existing container identities and start states are checked unchanged afterward.
 
-November 8 verification passed **66 fault tests** and the actual Podman success,
-failed-relay and populated-target cases. A separate PostgreSQL 16/MinIO case
-reopened the staged physical stores, compared four binary objects against their
-database references and wrote new data. Capture took about 32 seconds and staged
-copy/readback about 28 seconds for this tiny fixture; those are local engine and
-verification overhead measurements, not production capacity or RTO promises.
-All disposable containers/volumes were removed and pre-existing container IDs,
-running states and start timestamps were unchanged. Changed-script lint and
-format checks pass. The relay/control-plane processes in this engine fixture
-remain synthetic; do not conflate that check with full application acceptance.
+November 8 verification passed **80 fault tests** and the actual Podman success,
+failed-relay and populated-target cases. The final-format fixture combined real
+PostgreSQL 16, MinIO and Uvicorn running a synthetic ASGI application. It verified
+graceful exit status 143, reopened the staged physical stores, compared four binary
+objects against database references and wrote new data. A failing lifespan hook
+was rejected without a completion seal, including Uvicorn's automatic unsupported-
+lifespan handling. Capture took about 30 seconds and staged copy/readback about
+28 seconds for this tiny fixture; those are local engine and verification overhead
+measurements, not production capacity or RTO promises.
+All disposable fixtures were removed and pre-existing container IDs, running
+states and start timestamps were unchanged. Changed-script lint and format checks
+pass. The relay and application logic in this engine fixture remain synthetic;
+do not conflate that check with full application acceptance. The real Uvicorn run
+is server-runtime evidence, separate from the real control-plane hook tests and
+the still-required integrated drill.
 
 These checks do not yet prove application-level anchor/ACL/receipt preservation,
 restored epoch rotation, obsolete-client rejection across a complete restored

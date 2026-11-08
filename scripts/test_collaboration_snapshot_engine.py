@@ -32,7 +32,37 @@ def run(binary, args):
     return run_bytes(binary, args).decode().strip()
 
 
-def exercise(binary, image, failed=False, stores=None):
+def runtime(role, image, body, stores, uvicorn_image, lifespan_fail):
+    if stores and role in stores.roles:
+        return stores.runtime(role)
+    if role == "control-plane" and uvicorn_image:
+        program = f"""import uvicorn
+from pathlib import Path
+state = Path("/app/app/static/uploads/state")
+async def app(scope, receive, send):
+    if scope["type"] != "lifespan":
+        await send({{"type": "http.response.start", "status": 204, "headers": []}})
+        await send({{"type": "http.response.body", "body": b""}})
+        return
+    while True:
+        event = await receive()
+        if event["type"] == "lifespan.startup":
+            state.write_text("before\\n")
+            await send({{"type": "lifespan.startup.complete"}})
+        else:
+            if {lifespan_fail!r}:
+                raise RuntimeError("Synthetic lifespan failure")
+            state.write_text("drained\\n")
+            print("control_plane_shutdown_complete", flush=True)
+            await send({{"type": "lifespan.shutdown.complete"}})
+            return
+uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info", access_log=False)
+"""
+        return ["--entrypoint", "python", uvicorn_image, "-c", program]
+    return ["--entrypoint", "/bin/sh", image, "-c", body]
+
+
+def exercise(binary, image, failed=False, stores=None, uvicorn_image=None, lifespan_fail=False):
     engine = snapshot.Engine(binary, timeout=30)
     scope = str(uuid.uuid4())
     created = []
@@ -50,6 +80,12 @@ def exercise(binary, image, failed=False, stores=None):
                     if role == "relay" and not failed
                     else ""
                 )
+                if role == "control-plane":
+                    completion = (
+                        'echo "control_plane_shutdown_complete"; '
+                        'echo "Application shutdown complete."; '
+                        'echo "Finished server process [1]"; '
+                    )
                 # Every fixture writes its last bytes only during TERM. The
                 # archive must contain these bytes, not the initial state.
                 body = (
@@ -66,6 +102,7 @@ def exercise(binary, image, failed=False, stores=None):
                         "--pull=never",
                         "--network=none",
                         "--restart=no",
+                        *(["--init"] if role == "control-plane" and uvicorn_image else []),
                         "--name",
                         f"evc-snapshot-{scope}-{role}",
                         "--label",
@@ -74,11 +111,7 @@ def exercise(binary, image, failed=False, stores=None):
                         f"{snapshot.ROLE_LABEL}={role}",
                         "--mount",
                         f"type=volume,source={volume},destination={path}",
-                        *(
-                            stores.runtime(role)
-                            if stores and role in stores.roles
-                            else ["--entrypoint", "/bin/sh", image, "-c", body]
-                        ),
+                        *runtime(role, image, body, stores, uvicorn_image, lifespan_fail),
                     ],
                 )
                 created.append(cid)
@@ -88,7 +121,13 @@ def exercise(binary, image, failed=False, stores=None):
                     stores.ready(cid, role)
                     continue
                 deadline = time.monotonic() + 10
-                while "fixture-ready" not in run(binary, ["logs", cid]):
+                expected = (
+                    b"Application startup complete."
+                    if role == "control-plane" and uvicorn_image
+                    else b"fixture-ready"
+                )
+                started_at = engine.inspect(cid)["State"]["StartedAt"]
+                while expected not in engine.logs(cid, started_at):
                     if time.monotonic() >= deadline:
                         raise RuntimeError("Disposable container did not become ready")
                     time.sleep(0.05)
@@ -96,13 +135,19 @@ def exercise(binary, image, failed=False, stores=None):
                 stores.seed(source_ids)
             plan = snapshot.prepare(engine, scope, "a" * 40)
             target = root / "capture"
-            if failed:
+            if failed or lifespan_fail:
                 try:
                     snapshot.capture(engine, plan, target)
-                except snapshot.SnapshotError:
+                except snapshot.SnapshotError as exc:
+                    assert ("lifespan" if lifespan_fail else "did not stop cleanly") in str(exc)
                     assert not (target / "complete.json").exists()
                     assert not list(target.glob("*.tar"))
-                    return {"failed_relay_rejected": True, "sealed": False}
+                    return {
+                        "failed_control_plane_rejected"
+                        if lifespan_fail
+                        else "failed_relay_rejected": True,
+                        "sealed": False,
+                    }
                 raise AssertionError("A failed relay exit was accepted")
             manifest = snapshot.capture(engine, plan, target)
             assert snapshot.verify(target) == manifest
@@ -127,6 +172,7 @@ def exercise(binary, image, failed=False, stores=None):
                         "--pull=never",
                         "--network=none",
                         "--restart=no",
+                        *(["--init"] if role == "control-plane" and uvicorn_image else []),
                         "--name",
                         f"evc-snapshot-{restored_scope}-{role}",
                         "--label",
@@ -135,11 +181,7 @@ def exercise(binary, image, failed=False, stores=None):
                         f"{snapshot.ROLE_LABEL}={role}",
                         "--mount",
                         f"type=volume,source={volume},destination={path}",
-                        *(
-                            stores.runtime(role)
-                            if stores and role in stores.roles
-                            else ["--entrypoint", "/bin/sh", image, "-c", "exit 0"]
-                        ),
+                        *runtime(role, image, "exit 0", stores, uvicorn_image, False),
                     ],
                 )
                 created.append(cid)
@@ -161,6 +203,8 @@ def exercise(binary, image, failed=False, stores=None):
                 stores.reopen_and_verify(restored_by_role)
             return {
                 "real_postgres_minio": stores is not None,
+                "real_uvicorn": uvicorn_image is not None,
+                "control_plane_exit": manifest["stops"][source_ids["control-plane"]]["exit_code"],
                 "stores": len(manifest["archives"]),
                 "verified": True,
                 "final_bytes_captured": True,
@@ -326,16 +370,24 @@ def main():
         action="store_true",
         help="Run just the additional real-store case",
     )
+    parser.add_argument(
+        "--uvicorn-image", help="Cached Python image with Uvicorn; uses a synthetic ASGI app"
+    )
+    parser.add_argument(
+        "--uvicorn-only", action="store_true", help="Run only real Uvicorn success/failure cases"
+    )
     args = parser.parse_args()
     if bool(args.postgres_image) != bool(args.minio_image) or (
         args.stores_only and not args.postgres_image
     ):
         parser.error("Both real-store images are required together")
+    if args.uvicorn_only and (not args.uvicorn_image or args.stores_only):
+        parser.error("Uvicorn-only needs its image and cannot combine with stores-only")
     engine = snapshot.Engine(args.engine)
     before = {cid: engine.inspect(cid)["State"] for cid in engine.ids()}
     results = (
         []
-        if args.stores_only
+        if args.stores_only or args.uvicorn_only
         else [exercise(args.engine, args.image, failed) for failed in (False, True)]
     )
     if args.postgres_image:
@@ -344,7 +396,14 @@ def main():
                 args.engine,
                 args.image,
                 stores=RealStores(args.engine, args.postgres_image, args.minio_image),
+                uvicorn_image=args.uvicorn_image,
             )
+        )
+    if args.uvicorn_image:
+        if not args.postgres_image:
+            results.append(exercise(args.engine, args.image, uvicorn_image=args.uvicorn_image))
+        results.append(
+            exercise(args.engine, args.image, uvicorn_image=args.uvicorn_image, lifespan_fail=True)
         )
     after = {cid: engine.inspect(cid)["State"] for cid in engine.ids()}
     assert set(before) == set(after)

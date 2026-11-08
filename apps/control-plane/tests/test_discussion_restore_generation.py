@@ -9,8 +9,42 @@ from test_discussions import world as world_fixture
 
 from app.db import models as m
 from app.services import anchor_service
+from app.services import collaboration_restore_admin as restore_admin
 
 world = world_fixture
+
+
+def test_offline_rotation_preserves_discussions_and_receipts_while_fencing_old_commands(
+    client, db_session, world
+):
+    original = create(world, "Preserve this discussion across rotation")
+    accepted = send(client, world, original)
+    before = tuple(
+        db_session.scalar(select(func.count()).select_from(model))
+        for model in (m.DiscussionMessage, m.DiscussionReceipt, m.DiscussionEvent)
+    )
+    selected = restore_admin.prepare(
+        db_session, "a" * 64, "b" * 64, "Disposable application proof", ("202611080001",)
+    )
+    restore_admin.apply(db_session, selected, ("202611080001",))
+    db_session.commit()
+    request(client, world, original)
+    request(client, world, original, withdraw=True)
+    assert inspect(client, world, original) == dict(status="accepted", result=accepted)
+    assert before == tuple(
+        db_session.scalar(select(func.count()).select_from(model))
+        for model in (m.DiscussionMessage, m.DiscussionReceipt, m.DiscussionEvent)
+    )
+    assert db_session.get(m.Share, world.share.id).collaboration_epoch == restore_admin.new_epoch(
+        selected, world.share.id
+    )
+    request(
+        client,
+        world,
+        create(world, "New restored-generation comment"),
+        selected.generation,
+        expected=200,
+    )
 
 
 def request(client, w, payload, generation=None, *, withdraw=False, expected=409):

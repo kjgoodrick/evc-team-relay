@@ -416,6 +416,12 @@ Get a token by calling `POST /auth/login` with valid credentials.
                 except asyncio.CancelledError:
                     pass
 
+    @app.on_event("shutdown")
+    async def _report_shutdown_completion() -> None:
+        # Registered last: Starlette stops this sequence if an earlier hook
+        # fails. A snapshot also requires Uvicorn completion and process exit.
+        get_logger(__name__).info("control_plane_shutdown_complete")
+
     return app
 
 
