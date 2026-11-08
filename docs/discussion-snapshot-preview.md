@@ -65,10 +65,12 @@ Busy/network failures use normal backoff. A stopped or replaced context cannot
 install a late baseline. An unobserved restore generation is refused; receiving
 a snapshot does not authorize switching file histories or resending queued work.
 
-Legacy servers keep their existing event replay path. Event pruning, retention
-floors, compatible-client admission and larger/resumable baseline handling remain
-unfinished. **Do not prune event history based only on this capability**: legacy
-clients and scopes over the snapshot limits still depend on it.
+Legacy servers keep their existing event replay path. A durable retained-event
+boundary and explicit change-reader admission are now implemented separately;
+see the [event-boundary contract](discussion-event-floor-preview.md). Event
+pruning and larger/resumable baseline handling remain unfinished. **Do not prune
+event history based only on these capabilities**: scopes over the snapshot limits
+still depend on retained replay.
 
 ## Evidence
 

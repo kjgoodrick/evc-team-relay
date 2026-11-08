@@ -138,8 +138,8 @@ def test_credentials_require_explicit_private_postgresql_file(tmp_path):
 
 def test_schema_read_requires_exact_local_migration_head(db_session):
     db_session.execute(text("CREATE TABLE alembic_version (version_num varchar(64) PRIMARY KEY)"))
-    db_session.execute(text("INSERT INTO alembic_version VALUES ('202611080001')"))
-    assert cli.versions(db_session) == ("202611080001",)
+    db_session.execute(text("INSERT INTO alembic_version VALUES ('202611080002')"))
+    assert cli.versions(db_session) == ("202611080002",)
     db_session.execute(text("UPDATE alembic_version SET version_num = '202611070005'"))
     with pytest.raises(admin.RestoreError, match="schema"):
         cli.versions(db_session)

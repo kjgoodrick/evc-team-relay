@@ -101,7 +101,8 @@ def test_late_retry_after_another_restore_never_revives_earlier_generation(db_se
 
 
 @pytest.mark.parametrize(
-    "change", ["generation", "epoch", "sequence", "new-share", "deleted-share", "schema"]
+    "change",
+    ["generation", "epoch", "sequence", "event-floor", "new-share", "deleted-share", "schema"],
 )
 def test_stale_plan_cannot_partially_rotate_any_share(db_session, shares, change):
     selected = plan(db_session)
@@ -111,6 +112,8 @@ def test_stale_plan_cannot_partially_rotate_any_share(db_session, shares, change
         shares[0].collaboration_epoch = uuid.uuid4()
     elif change == "sequence":
         shares[0].collaboration_sequence += 1
+    elif change == "event-floor":
+        shares[0].discussion_event_floor = 1
     elif change == "new-share":
         db_session.add(
             m.Share(

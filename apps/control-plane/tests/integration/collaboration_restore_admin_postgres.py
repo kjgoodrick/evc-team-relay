@@ -27,7 +27,7 @@ from app.db import models as m
 from app.maintenance import collaboration_restore as cli
 from app.services import collaboration_restore_admin as admin
 
-VERSIONS = ("202611080001",)
+VERSIONS = ("202611080002",)
 
 
 def run(args, *, env=None, expected=0):

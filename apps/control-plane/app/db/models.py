@@ -190,6 +190,11 @@ class Share(Base, TimestampMixin):
     collaboration_sequence: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default=text("0"), nullable=False
     )
+    # Events at/below this sequence may have been removed. Never infer a
+    # complete initial view from the remaining tail after this advances.
+    discussion_event_floor: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default=text("0"), nullable=False
+    )
     collaboration_epoch: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     # Separate from visibility/cursor resets: only a service restore changes
     # this generation. NULL is the original, pre-restore lineage.
@@ -250,6 +255,10 @@ class Share(Base, TimestampMixin):
     # uniqueness itself is separately enforced by `unique=True` above, which
     # already backs the column with its own (non-partial) unique index.
     __table_args__ = (
+        CheckConstraint(
+            "discussion_event_floor >= 0 AND discussion_event_floor <= collaboration_sequence",
+            name="ck_shares_discussion_event_floor",
+        ),
         Index(
             "idx_shares_web_slug",
             "web_slug",

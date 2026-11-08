@@ -30,6 +30,7 @@ class ShareState(BaseModel):
     generation: uuid.UUID | None
     epoch: uuid.UUID | None
     sequence: int = Field(ge=0, strict=True)
+    event_floor: int = Field(ge=0, strict=True)
 
 
 class RestorePlan(BaseModel):
@@ -87,6 +88,7 @@ def inventory(db: Session) -> tuple[ShareState, ...]:
             m.Share.collaboration_restore_generation,
             m.Share.collaboration_epoch,
             m.Share.collaboration_sequence,
+            m.Share.discussion_event_floor,
         )
         .order_by(m.Share.id)
         .limit(10001)
@@ -94,7 +96,8 @@ def inventory(db: Session) -> tuple[ShareState, ...]:
     if len(rows) > 10000:
         raise RestoreError("Restore inventory exceeds the maintenance plan limit")
     return tuple(
-        ShareState(id=row[0], generation=row[1], epoch=row[2], sequence=row[3]) for row in rows
+        ShareState(id=row[0], generation=row[1], epoch=row[2], sequence=row[3], event_floor=row[4])
+        for row in rows
     )
 
 

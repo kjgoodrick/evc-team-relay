@@ -301,6 +301,7 @@ def changes(
     limit: int = Query(100, ge=1, le=100),
     view_id: uuid.UUID | None = None,
     timeline_markers: bool = False,
+    sync_protocol: int | None = Query(None, ge=1, le=1),
     token: str = Depends(credential),
     db: Session = Depends(get_db),
 ):
@@ -313,6 +314,7 @@ def changes(
         limit=limit,
         view_id=view_id,
         include_timeline_markers=timeline_markers,
+        sync_protocol=sync_protocol,
     )
 
 

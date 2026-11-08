@@ -1048,6 +1048,7 @@ def changes(
     limit=100,
     view_id=None,
     include_timeline_markers=False,
+    sync_protocol=None,
 ):
     ctx = context(db, token, share_id, entry_id)
     requested_view(db, ctx, view_id)
@@ -1067,6 +1068,13 @@ def changes(
                 error(409, "snapshot_required")
         except (InvalidToken, ValueError, KeyError, TypeError):
             error(409, "snapshot_required")
+    if offset < ctx.share.discussion_event_floor:
+        # A missing cursor also starts before the floor. Returning a successful
+        # tail would silently omit old threads and deletion state. Fresh/current
+        # cursors remain usable by legacy clients until they need a new baseline.
+        if sync_protocol != 1:
+            error(426, "discussion_sync_upgrade_required")
+        error(409, "snapshot_required")
     scope = scope_for(db, ctx)
     rows = (
         []
