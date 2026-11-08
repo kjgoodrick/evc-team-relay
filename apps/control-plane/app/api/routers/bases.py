@@ -115,8 +115,11 @@ def timeline_marker_command(
     payload: TimelineMarkerCommand,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    return timeline_markers.apply_command(db, token, share_id, entry_id, payload)
+    return timeline_markers.apply_command(
+        db, token, share_id, entry_id, payload, restore_generation=restore_generation
+    )
 
 
 @router.get("/timeline-markers/{marker_id}")

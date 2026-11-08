@@ -11,11 +11,11 @@ source bytes must match the relay's complete CRDT checkpoints and private pictur
 objects. A verified capture/restore coordinator, restore-epoch fencing of old
 client commands across all mutation paths, and the full restore drill remain
 unfinished. Server guards reject old discussion commands/withdrawals, picture
-uploads, Bases group captures and inbox choices after a share's restore generation
-changes.
+uploads, Bases group captures, inbox choices and shared marker saves after a
+share's restore generation changes.
 Client transport/store binding, ordinary-session startup/reconnect and local
 quarantine have automated and actual HTTP evidence. Picture object-storage races
-and PostgreSQL group-capture/inbox lock races are covered too. Remaining mutation guards,
+and PostgreSQL group-capture/inbox/marker lock races are covered too. Remaining mutation guards,
 complete request reconciliation and coordinated activation are unfinished. See the
 [protocol contract](discussion-preview.md#restore-generation-command-guard-server-foundation).
 Do not reopen a

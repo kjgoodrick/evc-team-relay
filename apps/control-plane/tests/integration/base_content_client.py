@@ -23,6 +23,11 @@ sys.path.insert(0, str(ROOT))
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", type=Path, required=True)
+    parser.add_argument(
+        "--restore-guard",
+        action="store_true",
+        help="Verify bound marker saves on a synthetic restored share",
+    )
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="evc-base-content-client-") as temporary:
         temp, number = Path(temporary), port()
@@ -62,6 +67,7 @@ def main():
                 managed=True,
                 visibility=m.ShareVisibility.PRIVATE,
                 owner_user_id=owner.id,
+                collaboration_restore_generation=uuid.uuid4() if args.restore_guard else None,
             )
             db.add(share)
             db.flush()
@@ -205,6 +211,9 @@ def main():
             fixture = dict(
                 base=f"http://127.0.0.1:{number}",
                 share=str(share.id),
+                restoreGeneration=str(share.collaboration_restore_generation)
+                if args.restore_guard
+                else None,
                 entry=entry_id,
                 registryEntry=registry_entry_id,
                 discussionEntry=discussion_entry_id,
@@ -276,16 +285,21 @@ def main():
                 ready(number, process)
                 result = subprocess.run(
                     [
-                        "npm",
-                        "test",
-                        "--",
+                        "node",
+                        str(args.plugin.resolve() / "node_modules/jest/bin/jest.js"),
                         "--runInBand",
-                        "__tests__/bases/realBaseContent.test.ts",
-                        "__tests__/bases/realBaseRegistry.test.ts",
-                        "__tests__/collaboration/realBaseDiscussionStack.test.ts",
-                        "__tests__/collaboration/realBaseDefinitionStack.test.ts",
-                        "__tests__/collaboration/realTimelineMarkerStack.test.ts",
-                        "__tests__/presence/realSurfaceLocationStack.test.ts",
+                        *(
+                            ["__tests__/collaboration/realTimelineMarkerRestoreStack.test.ts"]
+                            if args.restore_guard
+                            else [
+                                "__tests__/bases/realBaseContent.test.ts",
+                                "__tests__/bases/realBaseRegistry.test.ts",
+                                "__tests__/collaboration/realBaseDiscussionStack.test.ts",
+                                "__tests__/collaboration/realBaseDefinitionStack.test.ts",
+                                "__tests__/collaboration/realTimelineMarkerStack.test.ts",
+                                "__tests__/presence/realSurfaceLocationStack.test.ts",
+                            ]
+                        ),
                     ],
                     cwd=args.plugin.resolve(),
                     env={
@@ -298,7 +312,9 @@ def main():
                 if result.returncode:
                     raise RuntimeError("Bases client HTTP proof failed")
                 print(
-                    "PASS: actual Bases client HTTP, offline persistence, exact retry, "
+                    "PASS: actual restored marker session, immutable binding and exact retry"
+                    if args.restore_guard
+                    else "PASS: actual Bases client HTTP, offline persistence, exact retry, "
                     "conflicts, withdrawal, saved-view identity, repair recovery, "
                     "discussions and surface presence"
                 )

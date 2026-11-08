@@ -255,6 +255,44 @@ def prove_timeline_markers(engine, tokens, share_id, entry_id, view_id, reviewer
         db.commit()
     print("PASS: edit-permission revocation during a lock wait prevents marker restoration")
 
+    pending_restore = operation(archived["marker"])
+    before = totals()
+    with Session(engine, autoflush=False) as restorer:
+        restorer.execute(select(m.Share.id).where(m.Share.id == share_id).with_for_update())
+
+        def waiting_restore():
+            with Session(engine, autoflush=False) as db:
+                cached = db.get(m.Share, share_id)
+                assert cached.collaboration_restore_generation is None
+                pid_queue.put(db.scalar(text("SELECT pg_backend_pid()")))
+                try:
+                    timeline_markers.apply_command(
+                        db, tokens["owner"], share_id, entry_id, pending_restore
+                    )
+                except HTTPException as exc:
+                    assert exc.status_code == 409
+                    assert exc.detail == {"code": "restore_generation_changed"}
+                else:
+                    raise AssertionError("A waiting marker write bypassed the restore guard")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            waiting = pool.submit(waiting_restore)
+            try:
+                wait_for_lock(engine, pid_queue.get(timeout=5))
+                restorer.get(m.Share, share_id).collaboration_restore_generation = uuid.uuid4()
+                restorer.commit()
+            finally:
+                restorer.rollback()
+            waiting.result(timeout=10)
+    assert totals() == before
+    # Reset only this disposable fixture for the populated downgrade checks.
+    with Session(engine) as db:
+        db.scalar(
+            select(m.Share).where(m.Share.id == share_id).with_for_update()
+        ).collaboration_restore_generation = None
+        db.commit()
+    print("PASS: waiting marker writes refresh stale ORM state and reject concurrent restore")
+
     before = totals()
     try:
         migrations.downgrade(Config("alembic.ini"), "202611060007")

@@ -82,6 +82,10 @@ def capabilities(
             "discussion_base_formula_groups": base_discussions.formula_groups_enabled(),
             "discussion_timeline_ranges": base_discussions.timeline_ranges_enabled(),
             "discussion_timeline_markers": timeline_markers.enabled(),
+            "discussion_timeline_marker_restore_guard": (
+                get_settings().collaboration_policy_enabled
+                and get_settings().collaboration_discussions_enabled
+            ),
             "bases_sync": get_settings().managed_bases_sync_enabled,
             "discussion_text_anchors": anchor_service.enabled(),
             "discussion_block_anchors": anchor_service.enabled(),

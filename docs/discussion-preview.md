@@ -138,7 +138,7 @@ automatic rotation or restore activation command yet. The client transport/store
 preserve explicit bindings and fence local old-generation work. Ordinary-session
 startup, reconnect and intent creation observe these bindings, with actual HTTP
 evidence from `discussions_client.py --restore-guard`. Complete recovery review
-and guards for marker, permission and other mutation paths are still unfinished.
+and guards for permission and other mutation paths are still unfinished.
 This capability describes **discussion commands and withdrawals only**; it is
 not a complete service restore boundary. Do not manually activate it for a live
 share or claim the collaboration restore procedure is complete.
@@ -164,6 +164,17 @@ locally preserves them for review and invalidates old leases. Late responses
 cannot remove the retained choice. PostgreSQL lock-wait tests prove stale ORM
 state cannot bypass the guard; actual HTTP tests run the inbox projection worker
 and ordinary client session with a synthetic restored share.
+
+`discussion_timeline_marker_restore_guard` covers shared marker creation, edits,
+archival and restoration, including exact retries. The server checks before
+receipt/revision lookup under the refreshed share lock. The binding remains
+outside the canonical marker hash. This guard stays advertised when new marker
+authoring is disabled, allowing same-generation accepted-receipt recovery. The
+client captures the generation before axis validation, persists it with the
+original request and checks local completion against it. A lost-response/reopen
+HTTP proof and a PostgreSQL concurrent-restore lock-wait proof pass. Old pending
+marker requests remain saved and inspectable with retry suppressed; read-only
+receipt reconciliation for them is still unfinished.
 
 The client must retain an operation's original generation across retries,
 offline storage, export/import and dependent commands. It must never replace that

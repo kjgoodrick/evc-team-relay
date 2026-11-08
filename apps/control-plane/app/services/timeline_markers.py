@@ -17,7 +17,12 @@ from app.db import models as m
 from app.schemas import discussions as ds
 from app.schemas.timeline_markers import PutTimelineMarker
 from app.schemas.timeline_ranges import validate_timeline_time_zone
-from app.services import base_discussions, base_target_definitions, bases_registry
+from app.services import (
+    base_discussions,
+    base_target_definitions,
+    bases_registry,
+    collaboration_restore,
+)
 from app.services import discussion_service as discussions
 
 MAX_MARKERS = 256
@@ -209,7 +214,7 @@ def checked_placement(db, definition, requested, content):
     return axis
 
 
-def apply_command(db, token, share_id, entry_id, payload):
+def apply_command(db, token, share_id, entry_id, payload, restore_generation=None):
     discussions.require_clean_session(db)
     encoded = json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     if len(encoded.encode()) > 65536:
@@ -217,6 +222,7 @@ def apply_command(db, token, share_id, entry_id, payload):
     request_hash = hashlib.sha256(encoded.encode()).hexdigest()
     try:
         ctx, definition = scope(db, token, share_id, entry_id, write=True)
+        collaboration_restore.require_generation(ctx.share, restore_generation)
         if payload.definition_id != definition.id or payload.generation != definition.generation:
             error(409, "base_generation_changed")
         receipt = db.get(m.BaseTimelineMarkerReceipt, (ctx.user.id, payload.operation_id))

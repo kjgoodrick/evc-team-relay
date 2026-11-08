@@ -102,6 +102,40 @@ def archive(client, t, marker):
     return payload
 
 
+def test_restore_guards_marker_create_edit_archive_and_exact_retry(client, db_session, markers):
+    t = markers
+    initial = put(client, t)
+    accepted = mutate(client, t, initial)
+    edit = put(client, t, marker=accepted["marker"])
+    remove = archive(client, t, accepted["marker"])
+    create_new = put(client, t)
+    generation = uuid.uuid4()
+    t.w.share.collaboration_restore_generation = generation
+    db_session.commit()
+    original = catalog(client, t)
+    auth = headers(t.w.tokens["owner"])
+    for previous in (None, uuid.uuid4()):
+        stale = dict(auth)
+        if previous:
+            stale["X-Relay-Restore-Generation"] = str(previous)
+        for payload in (initial, edit, remove, create_new):
+            response = client.post(marker_path(t) + "/commands", json=payload, headers=stale)
+            assert response.status_code == 409 and "restore_generation_changed" in response.text
+    assert catalog(client, t) == original
+    assert db_session.scalar(select(func.count()).select_from(m.BaseTimelineMarkerReceipt)) == 1
+    auth["X-Relay-Restore-Generation"] = str(generation)
+    response = client.post(marker_path(t) + "/commands", json=initial, headers=auth)
+    assert response.status_code == 200 and response.json() == accepted
+    response = client.post(marker_path(t) + "/commands", json=remove, headers=auth)
+    assert response.status_code == 200 and response.json()["marker"]["active"] is False
+    # Guard remains advertised for exact receipt recovery if new marker writes stop.
+    get_settings().collaboration_bases_timeline_markers_enabled = False
+    response = client.post(marker_path(t) + "/commands", json=remove, headers=auth)
+    assert response.status_code == 200
+    response = client.get(f"/v1/collaboration/capabilities?share_id={t.w.share.id}", headers=auth)
+    assert response.json()["features"]["discussion_timeline_marker_restore_guard"] is True
+
+
 def test_changes_opt_in_reports_current_marker_revision_without_thread_events(
     client, markers, monkeypatch
 ):
