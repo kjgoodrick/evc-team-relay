@@ -78,6 +78,11 @@ def main():
         help="Run group capture with transitive source-verified formulas",
     )
     parser.add_argument(
+        "--base-lifecycle",
+        action="store_true",
+        help="Run offline Bases deletion and recovery against the managed inventory",
+    )
+    parser.add_argument(
         "--image-anchors",
         action="store_true",
         help="Run image occurrence comments through the private relay barrier",
@@ -97,6 +102,19 @@ def main():
         help="Hold a disposable desktop smoke-test server open instead of running Jest",
     )
     args = parser.parse_args()
+    if args.base_lifecycle and any(
+        (
+            args.base_groups,
+            args.base_formula_groups,
+            args.base_sources,
+            args.text_anchors,
+            args.image_anchors,
+            args.image_files,
+            args.presence,
+            args.presence_locations,
+        )
+    ):
+        parser.error("Choose the Bases lifecycle fixture by itself")
     if args.base_formula_groups:
         args.base_groups = True
     if args.image_anchors or args.base_sources or args.base_groups:
@@ -201,6 +219,8 @@ allowed_token_types = ["server"]
                 COLLABORATION_BASES_TIMELINE_RANGES_ENABLED="true",
                 MANAGED_BASES_SYNC_ENABLED="true",
             )
+        if args.base_lifecycle:
+            os.environ["MANAGED_BASES_SYNC_ENABLED"] = "true"
 
         get_settings.cache_clear()
         from app.db import models, session
@@ -319,7 +339,7 @@ allowed_token_types = ["server"]
             owner_session, _ = session_service.create_session(db, owner.id)
             bob_session, _ = session_service.create_session(db, bob.id)
             base_id = str(uuid.uuid4())
-            if args.base_groups:
+            if args.base_groups or args.base_lifecycle:
                 db.add(
                     models.ManagedEntry(
                         id=base_id,
@@ -340,7 +360,7 @@ allowed_token_types = ["server"]
                 "image": image_id
                 if args.image_anchors or args.image_files or args.base_groups
                 else None,
-                "baseEntry": base_id if args.base_groups else None,
+                "baseEntry": base_id if args.base_groups or args.base_lifecycle else None,
                 "bobId": str(bob.id),
                 "ownerId": str(owner.id),
                 "ownerToken": security.create_access_token(
@@ -404,7 +424,9 @@ path = "{temp / "relay-data"}"
                         time.sleep(0.2)
                     return 0
                 fixture_variable = (
-                    "EVC_BASE_GROUP_FIXTURE"
+                    "EVC_BASE_LIFECYCLE_FIXTURE"
+                    if args.base_lifecycle
+                    else "EVC_BASE_GROUP_FIXTURE"
                     if args.base_groups
                     else "EVC_IMAGE_FILE_FIXTURE"
                     if args.image_files
@@ -419,7 +441,9 @@ path = "{temp / "relay-data"}"
                     else "EVC_MANAGED_FIXTURE"
                 )
                 test_file = (
-                    "__tests__/collaboration/realBaseGroupStack.test.ts"
+                    "__tests__/bases/realBaseLifecycle.test.ts"
+                    if args.base_lifecycle
+                    else "__tests__/collaboration/realBaseGroupStack.test.ts"
                     if args.base_groups
                     else "__tests__/collaboration/realImageFileStack.test.ts"
                     if args.image_files
