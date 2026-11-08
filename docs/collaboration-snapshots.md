@@ -107,6 +107,12 @@ metadata files use `0600`. The sequence is:
    digest covering content, numeric ownership and permissions. Recheck every
    container after final verification, then durably write `complete.json`.
 
+The application preserves these few server lifecycle messages and its final
+`control_plane_shutdown_complete` marker even when ordinary logging is set to
+`WARNING`. Informational WebSocket connection/request messages remain suppressed;
+enabling shutdown evidence must not expose token-bearing URLs. Older application
+images that suppress the server's lifecycle messages cannot satisfy v2 capture.
+
 Both [Docker's stop timeout](https://docs.docker.com/reference/cli/docker/container/stop/)
 and [Podman's stop time](https://docs.podman.io/en/latest/markdown/podman-stop.1.html)
 support `-1` for indefinite graceful waiting. The tool uses that setting. Its own

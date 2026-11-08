@@ -94,6 +94,31 @@ class StructuredTextFormatter(logging.Formatter):
         return base_msg
 
 
+class ServerLifecycleFilter(logging.Filter):
+    """Keep drain evidence without logging request URLs or socket credentials."""
+
+    messages = frozenset(
+        {
+            "Started server process [%d]",
+            "Waiting for application startup.",
+            "Application startup complete.",
+            "Shutting down",
+            "Waiting for application shutdown.",
+            "Application shutdown complete.",
+            "Finished server process [%d]",
+            "Waiting for connections to close. (CTRL+C to force quit)",
+            "Waiting for background tasks to complete. (CTRL+C to force quit)",
+        }
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING or (
+            record.levelno == logging.INFO
+            and isinstance(record.msg, str)
+            and record.msg in self.messages
+        )
+
+
 def configure_logging(log_level: str = "INFO", log_format: str = "json") -> None:
     """Configure structured logging for the application.
 
@@ -131,7 +156,20 @@ def configure_logging(log_level: str = "INFO", log_format: str = "json") -> None
 
     # Suppress noisy third-party loggers
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+    # A cold snapshot requires both successful application drain and process
+    # shutdown evidence, even with LOG_LEVEL=WARNING. Keep these few lifecycle
+    # records independently of ordinary application verbosity. In particular,
+    # do not enable Uvicorn's INFO websocket URLs, which may contain tokens.
+    lifecycle_handler = logging.StreamHandler(sys.stdout)
+    lifecycle_handler.setLevel(logging.INFO)
+    lifecycle_handler.setFormatter(formatter)
+    for name in ("uvicorn.error", "app.lifecycle"):
+        lifecycle_logger = logging.getLogger(name)
+        lifecycle_logger.setLevel(logging.INFO)
+        lifecycle_logger.handlers.clear()
+        lifecycle_logger.addHandler(lifecycle_handler)
+        lifecycle_logger.propagate = False
+    logging.getLogger("uvicorn.error").addFilter(ServerLifecycleFilter())
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
