@@ -72,7 +72,10 @@ def assets(world, db_session, monkeypatch):
     return state
 
 
-def mint(client, w, *, binding=None, actor="owner", sha=SHA, length=len(DATA), expected=200):
+def mint(
+    client, w, *, binding=None, actor="owner", sha=SHA, length=len(DATA), expected=200,
+    read_only=None,
+):
     auth = headers(w.tokens[actor])
     if binding is not None:
         auth["X-Relay-Restore-Generation"] = str(binding)
@@ -84,6 +87,7 @@ def mint(client, w, *, binding=None, actor="owner", sha=SHA, length=len(DATA), e
             "sha256": sha,
             "content_type": "image/png",
             "content_length": length,
+            **({"read_only": read_only} if read_only is not None else {}),
         },
     )
     assert response.status_code == expected, response.text
@@ -107,6 +111,71 @@ def rotate(db, w):
     w.share.collaboration_restore_generation = uuid.uuid4()
     db.commit()
     return w.share.collaboration_restore_generation
+
+
+@pytest.mark.parametrize("actor", ["owner", "reader"])
+@pytest.mark.parametrize("restored", [False, True])
+def test_inspection_grant_reads_but_cannot_upload_even_for_owner(
+    client, world, assets, db_session, actor, restored
+):
+    generation = rotate(db_session, world) if restored else None
+    grant = mint(client, world, actor=actor, read_only=True, binding=generation)
+    claims = security.decode_access_token(grant["token"])
+    assert grant["read_only"] is claims["read_only"] is True
+    assert claims["restore_guard"] is True
+    assert claims["restore_generation"] == (str(generation) if generation else None)
+    assets.objects[managed_assets.object_name(world.share.id, world.entry.id, SHA)] = DATA
+    root = f"/shares/{world.share.id}/files/{world.entry.id}"
+    auth = headers(grant["token"])
+    assert client.head(root, headers=auth).status_code == 200
+    assert client.get(root + "/download-url", headers=auth).status_code == 200
+    assert client.get(content_url(world, grant)).content == DATA
+    upload_url(client, world, grant, 403)
+    assert client.put(content_url(world, grant), content=DATA).status_code == 403
+    assert not assets.writes
+    rotate(db_session, world)
+    assert client.head(root, headers=auth).status_code == 409
+    assert client.get(root + "/download-url", headers=auth).status_code == 409
+    assert client.get(content_url(world, grant)).status_code == 409
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, {}, []])
+def test_read_only_flag_is_strict(client, world, assets, value):
+    mint(client, world, read_only=value, expected=422)
+
+
+@pytest.mark.parametrize("change", ["restore", "revoke", "session"])
+def test_inspection_rechecks_authority_after_object_read(
+    client, world, assets, db_session, change
+):
+    grant = mint(client, world, actor="reader", read_only=True)
+    assets.objects[managed_assets.object_name(world.share.id, world.entry.id, SHA)] = DATA
+
+    def change_authority():
+        if change == "restore":
+            rotate(db_session, world)
+        elif change == "revoke":
+            rule = db_session.query(m.ManagedRule).filter_by(user_id=world.reader.id).one()
+            rule.permission = "none"
+            db_session.commit()
+        else:
+            session = db_session.get(m.UserSession, world.sessions["reader"])
+            db_session.delete(session)
+            db_session.commit()
+
+    assets.after_io = change_authority
+    assert client.get(content_url(world, grant)).status_code in {401, 403, 409}
+    assert not assets.writes
+
+
+def test_headerless_inspection_captures_current_generation_without_write_authority(
+    client, world, assets, db_session
+):
+    generation = rotate(db_session, world)
+    grant = mint(client, world, read_only=True)
+    assert grant["restore_generation"] == str(generation)
+    assert security.decode_access_token(grant["token"])["restore_generation"] == str(generation)
+    upload_url(client, world, grant, 403)
 
 
 def test_managed_upload_is_verified_and_old_credentials_cannot_cross_restore(

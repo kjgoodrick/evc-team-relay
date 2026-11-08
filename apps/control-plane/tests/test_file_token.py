@@ -162,6 +162,23 @@ def mint(client: TestClient, share_id, token: str, body: dict = FILE_TOKEN_BODY)
 
 
 class TestCreateFileToken:
+    def test_explicit_read_only_owner_token_cannot_upload(self, client, db_session, owner):
+        share = make_folder_share(db_session, owner, slug="ft-explicit-read")
+        token = login(client, owner.email, "test123456")
+        data = mint(client, share.id, token, {**FILE_TOKEN_BODY, "read_only": True})
+        assert data["read_only"] is True
+        assert sec.decode_access_token(data["token"])["read_only"] is True
+        root = f"/shares/{share.id}/files/{FILE_TOKEN_BODY['path']}"
+        with minio_patch() as storage:
+            assert client.head(root, headers=bearer(data["token"])).status_code == 200
+            upload = client.post(root + "/upload-url", headers=bearer(data["token"]))
+            assert upload.status_code == 403
+            direct = client.put(
+                root + "/content", params={"token": data["token"]}, content=b"test"
+            )
+            assert direct.status_code == 403
+            storage.put_object.assert_not_called()
+
     def test_no_auth_returns_401(self, client: TestClient, db_session: Session, owner):
         share = make_folder_share(db_session, owner, slug="ft-no-auth")
         r = client.post(f"/shares/{share.id}/file-token", json=FILE_TOKEN_BODY)

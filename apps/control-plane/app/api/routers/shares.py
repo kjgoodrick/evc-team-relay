@@ -17,7 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from jwt.exceptions import InvalidTokenError
 from minio import Minio
 from minio.error import S3Error
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 from slowapi import Limiter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -687,6 +687,7 @@ class FileTokenRequest(BaseModel):
     sha256: str
     content_type: str
     content_length: int
+    read_only: StrictBool = False
 
 
 class FileTokenResponse(BaseModel):
@@ -695,6 +696,7 @@ class FileTokenResponse(BaseModel):
     expires_at: str
     restore_guard: bool | None = None
     restore_generation: str | None = None
+    read_only: bool | None = None
 
 
 class DownloadUrlResponse(BaseModel):
@@ -781,13 +783,18 @@ def _managed_file_context(db, share, user, payload, path, *, write=False):
         managed_assets.digest(payload.get("sha256"))
     except managed_assets.AssetMismatch as error:
         raise HTTPException(422, {"code": "invalid_attachment_digest"}) from error
-    if write:
+    if write or payload.get("read_only") is True:
+        if not write and (
+            payload.get("restore_guard") is not True or "restore_generation" not in payload
+        ):
+            raise HTTPException(401, "Missing read-only file token binding")
         try:
             binding = payload.get("restore_generation")
             binding = uuid.UUID(binding) if binding is not None else None
         except (ValueError, TypeError, AttributeError) as error:
             raise HTTPException(401, "Invalid file token binding") from error
         collaboration_restore.require_generation(share, binding)
+    if write:
         length = payload.get("content_length")
         if type(length) is not int or length < 0 or length > MAX_SYNC_WRITE_SIZE:
             raise HTTPException(422, {"code": "invalid_attachment_length"})
@@ -904,7 +911,9 @@ def create_file_token(
 
     Minimum bar to mint at all is read access — write is re-checked
     independently at upload-url, so a viewer can verify/download but a
-    write-url request 403s unless they actually have write access.
+    write-url request 403s unless they actually have write access. Explicit
+    read_only requests remove upload authority even for owners; managed
+    inspection reads retain the observed restore generation (including null).
 
     Auth: Authorization: Bearer <user JWT>, or X-Agent-Key with `read` scope
     — symmetric to files-index/download/sync-write (#ee1745ce). An agent key
@@ -983,16 +992,24 @@ def create_file_token(
         expires_minutes=FILE_TOKEN_EXPIRE_MINUTES,
         agent_write=agent_write,
         session_id=session_id,
-        restore_generation=str(restore_generation)
-        if restore_fields and restore_generation
-        else None,
+        read_only=payload.read_only,
+        restore_guard=bool(restore_fields) and payload.read_only,
+        restore_generation=(
+            restore_fields.get("restore_generation")
+            if payload.read_only
+            else str(restore_generation) if restore_fields and restore_generation else None
+        ),
     )
     expires_at = (security.utcnow() + timedelta(minutes=FILE_TOKEN_EXPIRE_MINUTES)).isoformat()
     settings = get_settings()
     base = settings.control_plane_public_url.rstrip("/")
     base_url = f"{base}/shares/{share_id}/files/{quote(path, safe='/')}"
     return FileTokenResponse(
-        token=token, base_url=base_url, expires_at=expires_at, **restore_fields
+        token=token,
+        base_url=base_url,
+        expires_at=expires_at,
+        **restore_fields,
+        **({"read_only": True} if payload.read_only else {}),
     )
 
 
@@ -1211,6 +1228,8 @@ def get_file_upload_url(
     # key's actual scope, explicit and False rather than absent so a read-only
     # key can never fall through: absent (None) means a real user minted this,
     # where ensure_write_access already checks their genuine membership role.
+    if token_payload.get("read_only") is True:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "File token is read-only")
     if token_payload.get("agent_write") is False:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1296,6 +1315,8 @@ async def put_file_content(
     get_file_upload_url's docstring).
     """
     token_payload = _decode_file_token_value(token, share_id, path)
+    if token_payload.get("read_only") is True:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "File token is read-only")
     if token_payload.get("agent_write") is False:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

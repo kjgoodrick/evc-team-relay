@@ -93,6 +93,8 @@ def create_file_token(
     agent_write: bool | None = None,
     session_id: str | None = None,
     restore_generation: str | None = None,
+    read_only: bool = False,
+    restore_guard: bool = False,
 ) -> str:
     """Mint a short-lived, path-scoped token for attachment (CAS) access.
 
@@ -126,7 +128,14 @@ def create_file_token(
     }
     if session_id:
         to_encode["session_id"] = session_id
-    if restore_generation is not None:
+    if read_only:
+        to_encode["read_only"] = True
+    if restore_guard:
+        # Read-only inspection captures the observed generation, including
+        # the original (null) generation, while the inventory lock is held.
+        to_encode["restore_guard"] = True
+        to_encode["restore_generation"] = restore_generation
+    elif restore_generation is not None:
         # The caller supplies its original request binding. Minting a token
         # must never silently rebind an older upload to a restored share.
         to_encode["restore_generation"] = restore_generation
