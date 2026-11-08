@@ -133,3 +133,53 @@ real filesystem readback with two scopes, sanitized historical picture content,
 completion hashes and revoked download refusal. Native client collection evidence
 is recorded in the linked client preview. Larger/paged catalogs, reviewed import
 and coherent service backup/restore remain unfinished.
+
+## Offline archive validation
+
+Run from this repository using the control-plane environment (Python 3.12+):
+
+```sh
+apps/control-plane/.venv/bin/python scripts/validate-discussion-archive.py \
+  '/path/to/Relay Recovery (local only)/DiscussionCollection-UUID'
+```
+
+The same command accepts an individual `Discussions-UUID` folder. It returns a
+JSON report and exit status 0 for a valid archive; invalid/incomplete archives
+return status 1 and a stable diagnostic without copying comment text, private
+paths or parser errors. It reads only listed files. It never changes the archive,
+loads server configuration/database code, opens URLs, renders content, extracts
+files, or imports/replays commands. The package's legacy `from app import app`
+ASGI export remains available through lazy initialization.
+
+Validation checks completion/manifest/content lengths and SHA-256 hashes, strict
+version-one fields, rich bodies/anchors, current revision references, tombstones,
+identity and picture references, and saved-view binding. Selected picture files
+must match their captured rendition descriptors and generated filenames. A
+collection must include every inventoried scope with matching share, exporter,
+entry/view/scope identity, epoch and sufficient sequence; each child's original
+completion hash is verified. It rejects duplicate JSON keys, nonfinite numbers,
+excessive nesting, symlink roots/children/files, hardlinked or special files and
+unsafe embedded paths. Readback has bounded file sizes, total metadata/picture
+budgets, scope/file counts and time checks; files changing while read fail.
+
+The selected root may be anywhere the operator can read. Embedded paths cannot
+escape its held directory handles. Unlisted extras are neither trusted nor read;
+that permits desktop metadata files without accidentally traversing them. Scope
+pictures are limited to 100 MiB, collections to 250 MiB and metadata to 64 MiB.
+A complete child can be validated independently after an interrupted collection.
+
+**A valid report proves consistency of the bytes read, not authentic origin,
+current authorization, or safe restoration.** Archives are unsigned. Picture
+payloads are hashed, not decoded again. Files may change after validation; any
+future importer must validate its own captured input, sanitize pictures and
+perform live access, identity, generation and deduplication checks. No importer,
+coherent backup, restoration or write permission is implied by this command.
+
+November 7 verification: 68 focused tests cover metadata-only exports, historical
+pictures, removed-body injection, rehashed corruption, mixed collection identities,
+missing revisions/children, saved-view mismatch, links/special files, malformed
+JSON and resource bounds. Subprocess checks prevent loading the web app, server
+configuration, SQLAlchemy or sockets and confirm clean machine-readable CLI
+success/failure. Actual native note, Table-view and three-scope Table/Timeline/
+note exports validate without changing their files. Broader server regression
+results are tracked in the root implementation status.
