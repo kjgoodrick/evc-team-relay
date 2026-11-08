@@ -1,5 +1,7 @@
 """Separate comment grants. Never use these capabilities to issue a Yjs write token."""
 
+import uuid
+
 from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -11,7 +13,7 @@ from app.schemas.collaboration import (
     CommentRuleUpdate,
     EntryCapabilities,
 )
-from app.services import managed_service, share_service
+from app.services import collaboration_restore, managed_service, share_service
 
 
 def rules_for(
@@ -96,12 +98,18 @@ def get_rules(db: Session, share: models.Share, user: models.User) -> CommentRul
         )
     )
     return CommentRuleSet(
-        revision=share.comment_rules_revision, rules=[CommentRule.model_validate(r) for r in rules]
+        restore_generation=share.collaboration_restore_generation,
+        revision=share.comment_rules_revision,
+        rules=[CommentRule.model_validate(r) for r in rules],
     )
 
 
 def replace_rules(
-    db: Session, share: models.Share, user: models.User, update: CommentRuleUpdate
+    db: Session,
+    share: models.Share,
+    user: models.User,
+    update: CommentRuleUpdate,
+    restore_generation: uuid.UUID | None = None,
 ) -> CommentRuleSet:
     managed_service.member(db, share, user)
     share_service.ensure_owner_or_admin(user, share)
@@ -117,6 +125,7 @@ def replace_rules(
         raise HTTPException(404, "Share not found")
     managed_service.member(db, share, user)
     share_service.ensure_owner_or_admin(user, share)
+    collaboration_restore.require_generation(share, restore_generation)
     if update.expected_revision != share.comment_rules_revision:
         raise HTTPException(409, "Comment rules changed; reload before saving")
     seen = set()

@@ -320,3 +320,48 @@ def test_permission_restore_header_is_strict_and_does_not_allow_generation_downg
         )
         assert response.status_code == expected, response.text
         assert read(client, team) == before
+
+
+@pytest.mark.parametrize("writer", ["files", "comments"])
+def test_legacy_permission_routes_cannot_bypass_restore_guard(client, db_session, team, writer):
+    before = read(client, team)
+    generation = uuid.uuid4()
+    team[0].collaboration_restore_generation = generation
+    db_session.commit()
+    restored = read(client, team)
+    endpoint_prefix = "/v1/managed" if writer == "files" else "/v1/collaboration"
+    url = f"{endpoint_prefix}/shares/{team[0].id}/" + (
+        "rules" if writer == "files" else "comment-rules"
+    )
+    payload = [] if writer == "files" else {"expected_revision": 0, "rules": [commenter(team)]}
+    for old in [None, str(uuid.uuid4())]:
+        headers = auth(team[1])
+        if old:
+            headers["X-Relay-Restore-Generation"] = old
+        response = client.put(url, json=payload, headers=headers)
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["message"] == {"code": "restore_generation_changed"}
+        assert read(client, team) == restored
+    headers = auth(team[1]) | {"X-Relay-Restore-Generation": str(generation)}
+    assert client.put(url, json=payload, headers=headers).status_code == 200
+    after = read(client, team)
+    if writer == "files":
+        assert after["file_rules"] == [] and after["comment_rules"] == before["comment_rules"]
+    else:
+        assert after["file_rules"] == before["file_rules"] and after["comment_rules"] == [
+            commenter(team)
+        ]
+        rules = client.get(url, headers=auth(team[1])).json()
+        assert rules["restore_guard"] and rules["restore_generation"] == str(generation)
+
+
+def test_legacy_file_guard_remains_enforced_when_comment_preview_is_disabled(
+    client, db_session, team, monkeypatch
+):
+    generation = uuid.uuid4()
+    team[0].collaboration_restore_generation = generation
+    db_session.commit()
+    monkeypatch.setattr(get_settings(), "collaboration_policy_enabled", False)
+    response = client.put(f"/v1/managed/shares/{team[0].id}/rules", json=[], headers=auth(team[1]))
+    assert response.status_code == 409
+    assert response.json()["error"]["message"] == {"code": "restore_generation_changed"}

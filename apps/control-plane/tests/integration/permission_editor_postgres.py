@@ -24,7 +24,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from app.api.routers.managed import Rule, set_rules
 from app.db import models as m
-from app.schemas.collaboration import PermissionPolicyUpdate
+from app.schemas.collaboration import CommentRuleUpdate, PermissionPolicyUpdate
 from app.services import collaboration_policy, permission_editor
 
 
@@ -243,76 +243,107 @@ def main():
             assert error.status_code == 403
         else:
             raise AssertionError("Removed member retained access")
-    # A permission save can have loaded the share before a restore acquired
-    # its lock. The post-wait guard must refresh that identity-map object, and
-    # run even for an unchanged policy and an otherwise-valid revision.
-    with Session(engine) as db:
-        before_restore = snapshot(db)
-        audit_count = len(list(db.scalars(select(m.AuditLog))))
-    old_request = PermissionPolicyUpdate(
-        actor_id=owner_id,
-        expected_revision=before_restore.revision,
-        file_rules=before_restore.file_rules,
-        comment_rules=before_restore.comment_rules,
-    )
-    generation = uuid.uuid4()
-    pids = Queue()
-    with Session(engine) as restorer:
-        restorer.execute(select(m.Share.id).where(m.Share.id == share_id).with_for_update())
-
-        def waiting_save():
-            with Session(engine, autoflush=False) as db:
-                cached = db.get(m.Share, share_id)
-                assert cached.collaboration_restore_generation is None
-                actor = db.get(m.User, owner_id)
-                pids.put(db.scalar(text("SELECT pg_backend_pid()")))
-                try:
-                    permission_editor.replace_policy(db, cached, actor, old_request)
-                except HTTPException as error:
-                    assert error.status_code == 409
-                    assert error.detail == {"code": "restore_generation_changed"}
-                else:
-                    raise AssertionError("An old permission form bypassed the restore guard")
-
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            waiting = pool.submit(waiting_save)
-            try:
-                pid = pids.get(timeout=5)
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline:
-                    with engine.connect() as probe:
-                        locked = (
-                            probe.scalar(
-                                text("SELECT wait_event_type FROM pg_stat_activity WHERE pid=:pid"),
-                                {"pid": pid},
-                            )
-                            == "Lock"
-                        )
-                    if locked:
-                        break
-                    time.sleep(0.01)
-                else:
-                    raise AssertionError("Permission save did not reach the share lock")
-                restorer.get(m.Share, share_id).collaboration_restore_generation = generation
-                restorer.commit()
-            finally:
-                restorer.rollback()
-            waiting.result(timeout=10)
-    with Session(engine) as db:
-        restored = snapshot(db)
-        assert restored.restore_generation == generation and restored.restore_guard
-        assert restored.revision != before_restore.revision
-        assert restored.file_rules == before_restore.file_rules
-        assert restored.comment_rules == before_restore.comment_rules
-        assert len(list(db.scalars(select(m.AuditLog)))) == audit_count
-        fresh = old_request.model_copy(update={"expected_revision": restored.revision})
-        assert (
-            permission_editor.replace_policy(
-                db, db.get(m.Share, share_id), db.get(m.User, owner_id), fresh, generation
-            )
-            == restored
+    for writer_kind in ("combined", "files", "comments"):
+        # A permission save can have loaded the share before a restore acquired
+        # its lock. The post-wait guard must refresh that identity-map object, and
+        # run even for an unchanged policy and an otherwise-valid revision.
+        with Session(engine) as db:
+            before_restore = snapshot(db)
+            audit_count = len(list(db.scalars(select(m.AuditLog))))
+        old_request = PermissionPolicyUpdate(
+            actor_id=owner_id,
+            expected_revision=before_restore.revision,
+            file_rules=before_restore.file_rules,
+            comment_rules=before_restore.comment_rules,
         )
-    print("PASS: waiting permission saves reject restore; fresh reviewed no-op remains valid")
+        generation = uuid.uuid4()
+        pids = Queue()
+        with Session(engine) as restorer:
+            restorer.execute(select(m.Share.id).where(m.Share.id == share_id).with_for_update())
+
+            def waiting_save():
+                with Session(engine, autoflush=False) as db:
+                    cached = db.get(m.Share, share_id)
+                    assert (
+                        cached.collaboration_restore_generation == before_restore.restore_generation
+                    )
+                    actor = db.get(m.User, owner_id)
+                    pids.put(db.scalar(text("SELECT pg_backend_pid()")))
+                    try:
+                        if writer_kind == "combined":
+                            permission_editor.replace_policy(
+                                db, cached, actor, old_request, before_restore.restore_generation
+                            )
+                        elif writer_kind == "files":
+                            set_rules(
+                                share_id,
+                                [Rule(**rule.model_dump()) for rule in before_restore.file_rules],
+                                db,
+                                actor,
+                                before_restore.restore_generation,
+                            )
+                        else:
+                            collaboration_policy.replace_rules(
+                                db,
+                                cached,
+                                actor,
+                                CommentRuleUpdate(
+                                    expected_revision=before_restore.comment_revision,
+                                    rules=before_restore.comment_rules,
+                                ),
+                                before_restore.restore_generation,
+                            )
+                    except HTTPException as error:
+                        assert error.status_code == 409
+                        assert error.detail == {"code": "restore_generation_changed"}
+                    else:
+                        raise AssertionError("An old permission form bypassed the restore guard")
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                waiting = pool.submit(waiting_save)
+                try:
+                    pid = pids.get(timeout=5)
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        with engine.connect() as probe:
+                            locked = (
+                                probe.scalar(
+                                    text(
+                                        "SELECT wait_event_type FROM pg_stat_activity "
+                                        "WHERE pid=:pid"
+                                    ),
+                                    {"pid": pid},
+                                )
+                                == "Lock"
+                            )
+                        if locked:
+                            break
+                        time.sleep(0.01)
+                    else:
+                        raise AssertionError("Permission save did not reach the share lock")
+                    restorer.get(m.Share, share_id).collaboration_restore_generation = generation
+                    restorer.commit()
+                finally:
+                    restorer.rollback()
+                waiting.result(timeout=10)
+        with Session(engine) as db:
+            restored = snapshot(db)
+            assert restored.restore_generation == generation and restored.restore_guard
+            assert restored.revision != before_restore.revision
+            assert restored.file_rules == before_restore.file_rules
+            assert restored.comment_rules == before_restore.comment_rules
+            assert len(list(db.scalars(select(m.AuditLog)))) == audit_count
+            fresh = old_request.model_copy(update={"expected_revision": restored.revision})
+            assert (
+                permission_editor.replace_policy(
+                    db, db.get(m.Share, share_id), db.get(m.User, owner_id), fresh, generation
+                )
+                == restored
+            )
+        print(
+            f"PASS: waiting {writer_kind} policy save rejects restore; "
+            "fresh reviewed no-op remains valid"
+        )
     engine.dispose()
     print(
         "PASS: combined policy 200/409 concurrency, coherent reads, "

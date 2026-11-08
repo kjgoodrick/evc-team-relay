@@ -2,7 +2,7 @@
 
 The revision covers both actual rule sets and the existing policy epoch. Legacy
 writers need no new version counter, and cannot invisibly invalidate this form.
-The unchanged legacy APIs remain independent for backward compatibility.
+The legacy APIs remain independent, with the same restore-generation fence.
 """
 
 import hashlib

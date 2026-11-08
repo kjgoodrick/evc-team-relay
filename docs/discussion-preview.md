@@ -138,7 +138,7 @@ automatic rotation or restore activation command yet. The client transport/store
 preserve explicit bindings and fence local old-generation work. Ordinary-session
 startup, reconnect and intent creation observe these bindings, with actual HTTP
 evidence from `discussions_client.py --restore-guard`. Complete recovery review
-and guards for legacy rule APIs and other mutation paths are still unfinished.
+and guards for other mutation paths are still unfinished.
 This capability describes **discussion commands and withdrawals only**; it is
 not a complete service restore boundary. Do not manually activate it for a live
 share or claim the collaboration restore procedure is complete.
@@ -154,7 +154,16 @@ requires a fresh read and explicit merge/review before another save. A lost
 response is reconciled by reading actual rules, without an automatic retry.
 PostgreSQL verifies a waiting save refreshes a stale ORM share after rotation;
 HTTP and UI tests cover original headers, rejection and reviewed recovery.
-Legacy file/comment rule APIs are not yet guarded by this checkpoint.
+The independent file-rule and comment-rule PUT APIs enforce the same header
+under a refreshed share lock. The file-rule guard remains active if the comment
+preview is disabled; toggling that preview cannot bypass it. Comment-rule reads
+include `restore_guard`/`restore_generation` alongside the existing revision.
+File-rule list responses keep their legacy shape. New administrative clients
+should use the combined snapshot/editor. Headerless legacy clients remain
+compatible with the original NULL lineage and are rejected on restored shares;
+there is no automatic adoption of the current generation. Legacy file-only
+forms therefore cannot save a restored share; use the combined editor. The
+three permission write paths have PostgreSQL lock-wait and HTTP evidence.
 
 Separate capabilities `discussion_picture_restore_guard` and
 `discussion_base_group_restore_guard` cover picture and group writes. Picture

@@ -215,12 +215,16 @@ def put_rules(
     payload: CommentRuleUpdate,
     db: Session = Depends(get_db),
     user: models.User = Depends(collaboration_auth.get_actor),
+    restore_generation: Annotated[
+        uuid.UUID | None, Header(alias="X-Relay-Restore-Generation")
+    ] = None,
 ):
     return collaboration_policy.replace_rules(
         db,
         share_service.get_share(db, share_id),
         user,
         payload,
+        restore_generation,
     )
 
 

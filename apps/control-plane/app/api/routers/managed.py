@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import (
@@ -25,8 +26,8 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db, get_sessionmaker
+from app.services import collaboration_restore, share_service
 from app.services import managed_service as service
-from app.services import share_service
 from app.services.presence_protocol import (
     InvalidPresence,
     PresenceConnection,
@@ -165,13 +166,26 @@ def set_rules(
     payload: list[Rule],
     db: Session = Depends(get_db),
     user: models.User = Depends(deps.get_current_user),
+    restore_generation: Annotated[
+        uuid.UUID | None, Header(alias="X-Relay-Restore-Generation")
+    ] = None,
 ):
     share = share_service.get_share(db, share_id)
     service.member(db, share, user)
     share_service.ensure_owner_or_admin(user, share)
     if len(payload) > 1000:
         raise HTTPException(400, "Too many rules")
-    db.execute(select(models.Share.id).where(models.Share.id == share_id).with_for_update())
+    share = db.scalar(
+        select(models.Share)
+        .where(models.Share.id == share_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if share is None:
+        raise HTTPException(404, "Share not found")
+    service.member(db, share, user)
+    share_service.ensure_owner_or_admin(user, share)
+    collaboration_restore.require_generation(share, restore_generation)
     seen = set()
     for rule in payload:
         service.canonical_path(rule.path, root=rule.recursive)

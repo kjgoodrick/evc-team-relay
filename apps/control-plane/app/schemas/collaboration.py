@@ -23,6 +23,8 @@ class CommentRuleUpdate(BaseModel):
 
 
 class CommentRuleSet(BaseModel):
+    restore_guard: Literal[True] = True
+    restore_generation: uuid.UUID | None = None
     revision: int
     rules: list[CommentRule]
 
