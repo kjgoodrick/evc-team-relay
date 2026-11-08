@@ -3,7 +3,7 @@ import uuid
 from typing import Literal
 
 from anyio import CancelScope
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -51,8 +51,11 @@ def stage(
     payload: PictureStage,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    return service.stage(db, token, share_id, entry_id, payload)
+    return service.stage(
+        db, token, share_id, entry_id, payload, restore_generation=restore_generation
+    )
 
 
 @router.put("/{picture_id}/content")
@@ -63,8 +66,11 @@ async def upload(
     request: Request,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    ticket = await finish_worker(service.prepare_upload, db, token, share_id, entry_id, picture_id)
+    ticket = await finish_worker(
+        service.prepare_upload, db, token, share_id, entry_id, picture_id, restore_generation
+    )
     if not service.upload_slots.acquire(blocking=False):
         raise HTTPException(503, {"code": "picture_capacity"}, headers={"Retry-After": "2"})
     try:

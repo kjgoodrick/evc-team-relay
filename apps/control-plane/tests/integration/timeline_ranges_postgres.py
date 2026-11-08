@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from alembic import command as migrations
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi import HTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -459,7 +460,9 @@ def prove_timeline_ranges(
     else:
         raise AssertionError("Downgrade discarded populated range/group evidence")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        )
     assert totals() == before
     assert read(original)["anchor"] == original_anchor
     assert send(original) == accepted

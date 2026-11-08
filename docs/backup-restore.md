@@ -9,11 +9,13 @@ inputs. They do **not** yet constitute a coherent backup of the collaboration
 preview. Discussions, permissions, command receipts, Bases identities and guarded
 source bytes must match the relay's complete CRDT checkpoints and private picture
 objects. A verified capture/restore coordinator, restore-epoch fencing of old
-client commands, and the full restore drill remain unfinished. A server
-guard now rejects old discussion commands/withdrawals after a share's restore
-generation changes. Client transport/store binding and local quarantine have
-automated and actual HTTP evidence, but ordinary session integration, the remaining
-mutation guards and coordinated activation are unfinished. See the
+client commands across all mutation paths, and the full restore drill remain
+unfinished. Server guards reject old discussion commands/withdrawals, picture
+uploads and Bases group captures after a share's restore generation changes.
+Client transport/store binding, ordinary-session startup/reconnect and local
+quarantine have automated and actual HTTP evidence. Picture object-storage races
+and PostgreSQL group-capture races are covered too. Remaining mutation guards,
+complete request reconciliation and coordinated activation are unfinished. See the
 [protocol contract](discussion-preview.md#restore-generation-command-guard-server-foundation).
 Do not reopen a
 restored collaboration service to clients based only on these older procedures.

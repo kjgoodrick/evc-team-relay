@@ -28,6 +28,66 @@ from app.services import discussion_pictures as pictures
 world = discussion_world
 
 
+def test_restore_generation_guards_stage_retry_and_upload_admission(
+    client, db_session, world, storage, monkeypatch
+):
+    data = raster()
+    payload, _ = stage(client, world, data)
+    generation = uuid.uuid4()
+    world.share.collaboration_restore_generation = generation
+    db_session.commit()
+    url = base(world) + "/pictures"
+    auth = headers(world.tokens["reviewer"])
+    assert client.post(url, json=payload, headers=auth).status_code == 409
+    response = client.put(url + f"/{payload['picture_id']}/content", content=data, headers=auth)
+    assert response.status_code == 409 and "restore_generation_changed" in response.text
+    assert storage.puts == 0
+    auth["X-Relay-Restore-Generation"] = str(generation)
+    assert client.post(url, json=payload, headers=auth).status_code == 200
+    response = client.put(url + f"/{payload['picture_id']}/content", content=data, headers=auth)
+    assert response.status_code == 200 and response.json()["state"] == "verified"
+    assert client.get(url + f"/{payload['picture_id']}", headers=auth).status_code == 200
+
+
+def test_restore_during_body_receipt_invalidates_the_original_upload_ticket(
+    client, db_session, world, storage, monkeypatch
+):
+    data = raster()
+    payload, _ = stage(client, world, data)
+    share_id, entry_id, token = world.share.id, world.entry.id, world.tokens["reviewer"]
+    db_session.commit()
+    ticket = pictures.prepare_upload(
+        db_session, token, share_id, entry_id, uuid.UUID(payload["picture_id"])
+    )
+    assert ticket.restore_generation is None
+    db_session.get(m.Share, share_id).collaboration_restore_generation = uuid.uuid4()
+    db_session.commit()
+    with pytest.raises(HTTPException) as failure:
+        pictures.upload(db_session, token, share_id, entry_id, ticket, data)
+    assert failure.value.status_code == 409
+    assert failure.value.detail == {"code": "restore_generation_changed"}
+    assert storage.puts == 0
+    assert db_session.get(m.DiscussionPicture, ticket.picture_id).state == "staged"
+
+
+def test_restore_during_picture_storage_prevents_final_metadata_commit(
+    client, db_session, world, storage
+):
+    data = raster()
+    payload, _ = stage(client, world, data)
+
+    def restore():
+        world.share.collaboration_restore_generation = uuid.uuid4()
+        db_session.commit()
+
+    storage.after_put = restore
+    _, response = upload(client, world, data, picture_id=payload["picture_id"], expected=409)
+    assert "restore_generation_changed" in str(response)
+    assert storage.puts == 2  # Unreferenced immutable objects are cleanup inputs.
+    picture = db_session.get(m.DiscussionPicture, uuid.UUID(payload["picture_id"]))
+    assert picture.state == "staged" and not picture.renditions
+
+
 def raster(fmt="PNG", size=(48, 32), **options):
     out = BytesIO()
     with Image.new("RGB", size, "#2057a2") as image:

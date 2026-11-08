@@ -1,7 +1,7 @@
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.routers.discussions import BoundedDiscussionRoute, credential
@@ -68,8 +68,11 @@ def capture_group(
     payload: CaptureBaseGroup,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    return base_groups.capture(db, token, share_id, entry_id, payload)
+    return base_groups.capture(
+        db, token, share_id, entry_id, payload, restore_generation=restore_generation
+    )
 
 
 @router.post("/timeline-axis")

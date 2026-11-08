@@ -7,6 +7,7 @@ from queue import Queue
 
 from alembic import command as migrations
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi import HTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -262,7 +263,9 @@ def prove_timeline_markers(engine, tokens, share_id, entry_id, view_id, reviewer
     else:
         raise AssertionError("A downgrade erased marker history")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        )
     assert totals() == before
     assert send(original) == accepted
     assert send(archive) == archived

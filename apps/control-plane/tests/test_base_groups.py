@@ -108,6 +108,46 @@ def counts(db):
     )
 
 
+def test_restore_guards_group_capture_before_source_io_and_receipt_lookup(
+    client, db_session, groups
+):
+    t = groups
+    payload = request(client, t)
+    captured = capture(client, t, payload)
+    before = counts(db_session)
+    generation = uuid.uuid4()
+    t.w.share.collaboration_restore_generation = generation
+    db_session.commit()
+    t.source.calls = 0
+    auth = headers(t.w.tokens["reviewer"])
+    for previous in (None, uuid.uuid4()):
+        attempt = dict(auth)
+        if previous:
+            attempt["X-Relay-Restore-Generation"] = str(previous)
+        response = client.post(path(t.w) + "/group-targets", json=payload, headers=attempt)
+        assert response.status_code == 409 and "restore_generation_changed" in response.text
+    assert t.source.calls == 0 and counts(db_session) == before
+    auth["X-Relay-Restore-Generation"] = str(generation)
+    response = client.post(path(t.w) + "/group-targets", json=payload, headers=auth)
+    assert response.status_code == 200 and response.json() == captured
+    assert t.source.calls == 0 and counts(db_session) == before
+
+
+def test_restore_during_group_source_observation_rolls_back_capture(client, db_session, groups):
+    t = groups
+    payload = request(client, t)
+    before = counts(db_session)
+
+    def restore():
+        t.w.share.collaboration_restore_generation = uuid.uuid4()
+        db_session.commit()
+
+    t.source.before = restore
+    result = capture(client, t, payload, expected=409)
+    assert "restore_generation_changed" in str(result)
+    assert t.source.calls == 1 and counts(db_session) == before
+
+
 def add_record(db, t, path="Notes/Visible.md"):
     record = m.ManagedEntry(
         id=str(uuid.uuid4()),

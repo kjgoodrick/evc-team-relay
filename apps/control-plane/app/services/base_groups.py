@@ -22,6 +22,7 @@ from app.services import (
     base_source_service,
     base_target_definitions,
     bases_definition,
+    collaboration_restore,
     discussion_service,
     managed_service,
 )
@@ -249,7 +250,7 @@ def _link_resolver(db, ctx):
     return resolve
 
 
-def capture(db, token, share_id, entry_id, payload):
+def capture(db, token, share_id, entry_id, payload, restore_generation=None):
     discussion_service.require_clean_session(db)
     payload = payload.model_copy(deep=True)
     digest = _request_hash(share_id, entry_id, payload)
@@ -257,6 +258,7 @@ def capture(db, token, share_id, entry_id, payload):
         ctx = discussion_service.context(
             db, token, share_id, entry_id, write=True, entry_types={"file"}
         )
+        collaboration_restore.require_generation(ctx.share, restore_generation)
         prior = _prior(db, ctx, payload, digest)
         if prior is not None:
             db.commit()
@@ -277,6 +279,7 @@ def capture(db, token, share_id, entry_id, payload):
         ctx = discussion_service.context(
             db, token, share_id, entry_id, write=True, entry_types={"file"}
         )
+        collaboration_restore.require_generation(ctx.share, restore_generation)
         prior = _prior(db, ctx, payload, digest)
         if prior is not None:
             db.commit()

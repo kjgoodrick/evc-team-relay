@@ -64,7 +64,7 @@ def main():
     if (
         sum(bool(value) for value in scenarios) > 1
         or args.pictures_endpoint
-        and (args.inbox or args.search or args.restore_guard)
+        and (args.inbox or args.search)
     ):
         parser.error("Choose one disposable integration scenario")
     if args.pictures_endpoint:

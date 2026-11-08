@@ -78,6 +78,7 @@ def capabilities(
             "discussion_bases": base_discussions.enabled(),
             "discussion_base_definition_catalog": base_discussions.enabled(),
             "discussion_base_groups": base_discussions.groups_enabled(),
+            "discussion_base_group_restore_guard": base_discussions.groups_enabled(),
             "discussion_base_formula_groups": base_discussions.formula_groups_enabled(),
             "discussion_timeline_ranges": base_discussions.timeline_ranges_enabled(),
             "discussion_timeline_markers": timeline_markers.enabled(),
@@ -92,6 +93,7 @@ def capabilities(
                 and get_settings().collaboration_image_files_enabled
             ),
             "discussion_pictures": discussion_pictures.enabled(),
+            "discussion_picture_restore_guard": discussion_pictures.enabled(),
             "discussion_inbox": discussion_inbox.enabled(),
             "discussion_search": discussion_search.enabled(),
             "discussion_export": discussion_export.enabled(),

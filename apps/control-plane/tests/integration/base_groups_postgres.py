@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi import HTTPException
 from pydantic import SecretStr
 from sqlalchemy import func, select, text
@@ -294,7 +295,7 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
             db.commit()
         print("PASS: groups and group summaries cannot substitute a matching readable witness")
 
-        for change in ("permission", "generation", "definition"):
+        for change in ("permission", "generation", "restore", "definition"):
             pending = request()
             before = totals()
             entered, release = threading.Event(), threading.Event()
@@ -322,6 +323,10 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
                                 revoker.add(rule)
                                 revoker.flush()
                                 rule_id = rule.id
+                            elif change == "restore":
+                                revoker.get(
+                                    m.Share, share_id
+                                ).collaboration_restore_generation = uuid.uuid4()
                             else:
                                 revoker.get(
                                     m.ManagedEntry, str(record_id)
@@ -334,6 +339,8 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
                     future.result(timeout=10)
                 except HTTPException as exc:
                     assert exc.status_code == (404 if change == "permission" else 409), exc.detail
+                    if change == "restore":
+                        assert exc.detail == {"code": "restore_generation_changed"}
                 else:
                     raise AssertionError(f"Capture ignored a concurrent {change} change")
             entered, release = None, None
@@ -343,8 +350,13 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
                     db.delete(db.get(m.ManagedRule, rule_id))
                     managed_service.invalidate_discussion_snapshots(db, share_id)
                     db.commit()
+            elif change == "restore":
+                # Reset only this disposable fixture for the remaining race cases.
+                with Session(engine) as db:
+                    db.get(m.Share, share_id).collaboration_restore_generation = None
+                    db.commit()
         print(
-            "PASS: source revocation, lineage changes and definition removal "
+            "PASS: source revocation, source/restore lineage changes and definition removal "
             "during RPC prevent commit"
         )
 
@@ -357,7 +369,8 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
             raise AssertionError("Populated group tables were downgraded")
         with engine.connect() as connection:
             assert (
-                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
             )
         assert totals() == (1, 2, 3)
         print(

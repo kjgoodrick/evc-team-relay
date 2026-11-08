@@ -22,6 +22,7 @@ from app.clients import storage_client
 from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
+from app.services import collaboration_restore
 from app.services import discussion_picture_codec as codec
 from app.services import discussion_service as discussions
 
@@ -121,8 +122,9 @@ def public_data(picture):
 
 
 @transactional
-def stage(db, token, share_id, entry_id, payload):
+def stage(db, token, share_id, entry_id, payload, restore_generation=None):
     ctx = discussions.context(db, token, share_id, entry_id, write=True)
+    collaboration_restore.require_generation(ctx.share, restore_generation)
     require_enabled()
     scope = discussions.scope_for(db, ctx)
     prior = db.get(m.DiscussionPicture, payload.picture_id)
@@ -188,14 +190,18 @@ class UploadTicket:
     scope_id: uuid.UUID
     sha256: str
     size: int
+    restore_generation: uuid.UUID | None = None
 
 
 @transactional
-def prepare_upload(db, token, share_id, entry_id, picture_id):
+def prepare_upload(db, token, share_id, entry_id, picture_id, restore_generation=None):
     ctx = discussions.context(db, token, share_id, entry_id, write=True)
+    collaboration_restore.require_generation(ctx.share, restore_generation)
     require_enabled()
     picture = picture_for(db, ctx, picture_id, own=True)
-    ticket = UploadTicket(picture.id, picture.scope_id, picture.source_sha256, picture.source_size)
+    ticket = UploadTicket(
+        picture.id, picture.scope_id, picture.source_sha256, picture.source_size, restore_generation
+    )
     db.commit()
     return ticket
 
@@ -234,6 +240,7 @@ def upload(db, token, share_id, entry_id, ticket, data):
         discussions.error(422, "picture_digest_mismatch")
     # Recheck after receiving the body, before expensive decoding/storage.
     ctx = discussions.context(db, token, share_id, entry_id, write=True)
+    collaboration_restore.require_generation(ctx.share, ticket.restore_generation)
     require_enabled()
     picture = picture_for(db, ctx, ticket.picture_id, own=True)
     if (
@@ -253,6 +260,7 @@ def upload(db, token, share_id, entry_id, ticket, data):
         name: put_rendition(prefix, getattr(verified, name)) for name in ("content", "thumbnail")
     }
     ctx = discussions.context(db, token, share_id, entry_id, write=True)
+    collaboration_restore.require_generation(ctx.share, ticket.restore_generation)
     require_enabled()
     picture = picture_for(db, ctx, ticket.picture_id, own=True)
     # A concurrent successful retry wins. It is never replaced by this result.

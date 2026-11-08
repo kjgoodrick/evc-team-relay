@@ -22,6 +22,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from base_groups_postgres import prove_groups
 from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select, text
@@ -84,7 +85,9 @@ def main():
     settings.managed_bases_sync_enabled = True
     command.upgrade(Config("alembic.ini"), "head")
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        )
         drift = compare_metadata(MigrationContext.configure(connection), m.Base.metadata)
         assert not [
             item
