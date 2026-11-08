@@ -440,3 +440,89 @@ def test_withdraw_fences_late_saves_and_checks_exact_intent_and_current_permissi
     )
     assert response.json() == {"status": "accepted", "result": accepted}
     assert send(client, world, accepted_body) == accepted
+
+
+def inspect_status(client, world, body, actor="owner", expected=200):
+    response = client.post(path(world) + "/status", headers=headers(world.tokens[actor]), json=body)
+    assert response.status_code == expected, response.text
+    return response.json()
+
+
+def test_read_only_receipts_survive_restore_and_edit_revocation_without_replaying(
+    client, world, content, db_session, monkeypatch
+):
+    rule = db_session.scalar(
+        select(m.ManagedRule).where(m.ManagedRule.user_id == world.reviewer.id)
+    )
+    rule.permission = "write"
+    db_session.commit()
+    body = payload(read(client, world)["state"])
+    accepted = send(client, world, body, actor="reviewer")
+    rule.permission = "read"
+    world.share.collaboration_restore_generation = uuid.uuid4()
+    world.entry.collaboration_generation = uuid.uuid4()
+    db_session.commit()
+    # Historical receipt inspection needs neither publish enablement nor a
+    # coherent current source blob. It still requires current entry read access.
+    monkeypatch.setattr(get_settings(), "managed_bases_sync_enabled", False)
+    before = db_session.scalar(select(func.count()).select_from(m.ManagedBaseReceipt))
+    assert inspect_status(client, world, body, "reviewer") == {
+        "status": "accepted",
+        "result": accepted,
+    }
+    assert inspect_status(client, world, body, "reader")["status"] == "unknown"
+    changed = {**body, "content_base64": base64.b64encode(b"different").decode()}
+    assert (
+        inspect_status(client, world, changed, "reviewer", 409)["error"]["message"]["code"]
+        == "operation_id_conflict"
+    )
+    assert db_session.scalar(select(func.count()).select_from(m.ManagedBaseReceipt)) == before
+    assert db_session.get(m.ManagedBaseContent, world.entry.id).data == CHANGED
+    rule.permission = "none"
+    db_session.commit()
+    inspect_status(client, world, body, "reviewer", 404)
+
+
+def test_unknown_and_withdrawn_status_never_create_a_receipt_or_publish_bytes(
+    client, world, content, db_session
+):
+    body = payload(read(client, world)["state"])
+
+    def count():
+        return db_session.scalar(select(func.count()).select_from(m.ManagedBaseReceipt))
+
+    assert count() == 0
+    assert inspect_status(client, world, body) == {
+        "status": "unknown",
+        "operation_id": body["operation_id"],
+        "entry_id": world.entry.id,
+    }
+    assert count() == 0 and db_session.get(m.ManagedBaseContent, world.entry.id) is None
+    response = client.post(
+        path(world) + "/withdraw", headers=headers(world.tokens["owner"]), json=body
+    )
+    assert response.status_code == 200
+    assert inspect_status(client, world, body) == response.json()
+    assert count() == 1 and db_session.get(m.ManagedBaseContent, world.entry.id) is None
+
+
+def test_receipt_cannot_be_inspected_through_another_readable_base(
+    client, world, content, db_session
+):
+    body = payload(read(client, world)["state"])
+    send(client, world, body)
+    other = m.ManagedEntry(
+        id=str(uuid.uuid4()),
+        share_id=world.share.id,
+        path="Other.base",
+        record={"type": "file"},
+        deleted=False,
+    )
+    db_session.add(other)
+    db_session.commit()
+    response = client.post(
+        path(world).replace(world.entry.id, other.id) + "/status",
+        headers=headers(world.tokens["owner"]),
+        json=body,
+    )
+    assert response.status_code == 404

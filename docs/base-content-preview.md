@@ -173,3 +173,28 @@ Do not claim arbitrary filesystem renames preserve identity.
 Never choose a winning configuration using device timestamps, automatically
 overwrite a differing local file with no known baseline, or silently fall back
 to the old upload protocol when the guarded API refuses a request.
+
+
+## Read-only delivery inspection
+
+`POST /v1/managed/shares/{share}/entries/{entry}/base-content/status` accepts the
+same bounded `PublishBaseContent` envelope and returns `accepted` with the exact
+historical result, or `withdrawn`/`unknown` with the operation and entry IDs. It
+requires current read access and verifies actor ownership, entry identity and
+the original canonical hash. Another actor receives unknown; an altered request
+or a different entry cannot disclose the receipt. It does not publish, withdraw,
+create a receipt or require current edit permission. New-publication disablement
+and changed current source/restore generations do not hide an otherwise readable
+historical receipt. Deleted/inaccessible entries remain unavailable.
+
+Unknown is an observation, not proof of non-acceptance: a restored database may
+have lost an earlier receipt. The client therefore retains the exact pending
+request and shows the result without automatically settling, replacing or
+retrying it. Complete restore-generation binding for content/registry/inventory
+mutations and explicit restored-work reconciliation remain unfinished.
+
+`tests/integration/base_content_status_postgres.py` requires an empty disposable
+loopback `collaboration_test` database. It verifies no INSERT/UPDATE/DELETE occurs
+for known/unknown inspection, and current read revocation wins while a receipt
+check waits for its share lock. The real plugin HTTP harness checks accepted,
+withdrawn and unknown cases with unchanged source and local pending state.

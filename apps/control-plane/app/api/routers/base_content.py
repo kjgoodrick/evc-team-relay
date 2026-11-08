@@ -84,3 +84,15 @@ def withdraw(
 ):
     # Recovery remains available after new guarded saves are disabled.
     return service.withdraw(db, token, share_id, entry_id, payload)
+
+
+@router.post("/status")
+def command_status(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: PublishBaseContent,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    # Historical receipt inspection remains available with current read access.
+    return service.command_status(db, token, share_id, entry_id, payload)

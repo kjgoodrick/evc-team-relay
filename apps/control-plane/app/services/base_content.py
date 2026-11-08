@@ -269,6 +269,46 @@ def withdraw(db, token, share_id, entry_id, payload):
         raise
 
 
+def command_status(db, token, share_id, entry_id, payload):
+    """Inspect an exact historical receipt without replay or withdrawal.
+
+    Current read access is required; current edit permission, source generation
+    and content availability do not determine whether the old request committed.
+    Unknown never authorizes replacing or discarding that request.
+    """
+    _, _, _, request_hash = prepare(share_id, entry_id, payload)
+    try:
+        ctx = discussion_service.context(
+            db, token, share_id, entry_id, entry_types={"file"}, require_comment=False
+        )
+        if not is_base(ctx.entry.path) and db.get(m.ManagedBaseContent, ctx.entry.id) is None:
+            error(404, "target_unavailable")
+        receipt = db.get(m.ManagedBaseReceipt, (ctx.user.id, payload.operation_id))
+        if receipt and receipt.entry_id != ctx.entry.id:
+            error(404, "target_unavailable")
+        if receipt and receipt.request_hash != request_hash:
+            error(409, "operation_id_conflict")
+        if receipt and not receipt.result.get("withdrawn"):
+            result = {"status": "accepted", "result": dict(receipt.result)}
+        else:
+            result = {
+                "status": "withdrawn" if receipt else "unknown",
+                "operation_id": str(payload.operation_id),
+                "entry_id": ctx.entry.id,
+            }
+        db.commit()
+        return result
+    except OperationalError:
+        db.rollback()
+        error(503, "base_content_unavailable")
+    except SQLAlchemyError:
+        db.rollback()
+        error(500, "base_content_unavailable")
+    except Exception:
+        db.rollback()
+        raise
+
+
 def compatible_bytes(db, share, entry_id, token_payload, *, metadata_only=False):
     """Called only after the legacy endpoint's current read authorization."""
     if not share.managed:
