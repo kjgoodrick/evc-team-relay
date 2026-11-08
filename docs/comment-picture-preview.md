@@ -29,9 +29,11 @@ Staging, upload and publication require current read and comment permission on
 the exact entry. A commenter with no note-edit permission can upload. A different
 uploader or entry cannot reuse the reference. Downloads require current entry
 read permission and a visible message/history reference. Removing a picture in
-an edit preserves history access; deleting a message restricts its history to
-author/moderator, and removing a thread restricts it to moderators. Picture bytes
-follow those same rules. There are no bearer tokens, object keys or public image
+an edit preserves live-message history access. Deleting a message or removing a
+thread hides its picture metadata/content/thumbnails from all ordinary readers,
+including its author and moderators. A separate surviving readable reference
+can still authorize the same picture. Restricted moderation recovery is a
+separate unfinished path. There are no bearer tokens, object keys or public image
 URLs in message bodies.
 
 Authorization is checked before upload work and again after object writes.

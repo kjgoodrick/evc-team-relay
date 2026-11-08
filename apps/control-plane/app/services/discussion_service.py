@@ -761,7 +761,7 @@ def list_threads(db, token, share_id, entry_id, *, after=0, limit=50, view_id=No
 
 def read_thread(db, token, share_id, entry_id, thread_id, *, after=0, limit=50):
     ctx = context(db, token, share_id, entry_id)
-    thread = thread_for(db, ctx, thread_id, include_removed=ctx.moderate)
+    thread = thread_for(db, ctx, thread_id)
     anchor = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
     rows = db.execute(
         select(m.DiscussionMessage, m.DiscussionMessageRevision)
@@ -815,7 +815,7 @@ def message_data(db, ctx, rows):
             "author_id": str(message.author_id) if message.author_id else None,
             "revision": message.revision,
             "deleted": message.deleted,
-            "body": revision.body,
+            "body": None if message.deleted else revision.body,
             "created_sequence": message.created_sequence,
             "created_at": utc_timestamp(message.created_at),
             "edited_at": utc_timestamp(message.edited_at),
@@ -893,7 +893,7 @@ def anchor_history(db, token, share_id, entry_id, thread_id, *, after=0, limit=1
 def read_message(db, token, share_id, entry_id, thread_id, message_id):
     """Fetch the current authorized revision/reactions without replaying a long thread."""
     ctx = context(db, token, share_id, entry_id)
-    thread = thread_for(db, ctx, thread_id, include_removed=ctx.moderate)
+    thread = thread_for(db, ctx, thread_id)
     row = db.execute(
         select(m.DiscussionMessage, m.DiscussionMessageRevision)
         .join(
@@ -917,13 +917,14 @@ def read_message(db, token, share_id, entry_id, thread_id, message_id):
 
 def history(db, token, share_id, entry_id, thread_id, message_id, *, after=0, limit=50):
     ctx = context(db, token, share_id, entry_id)
-    thread = thread_for(db, ctx, thread_id, include_removed=ctx.moderate)
+    thread = thread_for(db, ctx, thread_id)
     message = db.scalar(
         select(m.DiscussionMessage).where(
             m.DiscussionMessage.id == message_id, m.DiscussionMessage.thread_id == thread.id
         )
     )
-    if not message or (message.deleted and message.author_id != ctx.user.id and not ctx.moderate):
+    # Ordinary history must not become an unaudited moderation-recovery route.
+    if not message or message.deleted:
         error(404, "target_unavailable")
     rows = list(
         db.scalars(

@@ -15,7 +15,7 @@ from io import BytesIO
 
 from fastapi import HTTPException
 from minio.error import S3Error
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 
 from app.clients import storage_client
@@ -293,8 +293,8 @@ def readable(db, ctx, picture):
         if picture.owner_id != ctx.user.id:
             discussions.error(404, "target_unavailable")
         return
-    # History is visible for live messages; deleted messages are visible only
-    # to their author/moderator. Removed threads remain moderator-only.
+    # Ordinary picture reads require a live reference, even for authors and
+    # moderators. Restricted recovery must be separately authorized and audited.
     query = (
         select(m.DiscussionThread)
         .select_from(m.DiscussionPictureReference)
@@ -305,15 +305,10 @@ def readable(db, ctx, picture):
         .where(
             m.DiscussionPictureReference.picture_id == picture.id,
             m.DiscussionThread.scope_id == picture.scope_id,
+            m.DiscussionThread.deleted.is_(False),
+            m.DiscussionMessage.deleted.is_(False),
         )
     )
-    if not ctx.moderate:
-        query = query.where(
-            m.DiscussionThread.deleted.is_(False),
-            or_(
-                m.DiscussionMessage.deleted.is_(False), m.DiscussionMessage.author_id == ctx.user.id
-            ),
-        )
     for thread in db.scalars(query.distinct()).yield_per(100):
         if discussions.base_discussions.can_read_thread(db, ctx, thread):
             return

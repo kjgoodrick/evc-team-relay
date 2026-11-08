@@ -273,7 +273,7 @@ def test_targeted_message_read_obeys_entry_thread_and_current_session_access(
     assert state.status_code == 200
     assert state.json()["thread"]["removed"] is True
     assert set(state.json()) == {"thread"}
-    assert client.get(path, headers=headers(w.tokens["owner"])).status_code == 200
+    assert client.get(path, headers=headers(w.tokens["owner"])).status_code == 404
     session = db_session.get(m.UserSession, w.sessions["owner"])
     db_session.delete(session)
     db_session.commit()
@@ -440,10 +440,11 @@ def test_message_removal_is_a_tombstone_and_history_does_not_bypass_it(client, w
     message = client.get(url, headers=headers(w.tokens["reader"])).json()["messages"][0]
     assert message["body"] is None and message["deleted"]
     history = url + f"/messages/{made['message_id']}/history"
-    assert client.get(history, headers=headers(w.tokens["reader"])).status_code == 404
-    own_history = client.get(history, headers=headers(w.tokens["reviewer"])).json()["revisions"]
-    assert own_history[-1]["reason"] == "Moderator removal"
-    assert own_history[0]["body"] == body()
+    for actor in ("reader", "reviewer", "owner"):
+        assert client.get(history, headers=headers(w.tokens[actor])).status_code == 404
+        read = client.get(url + f"/messages/{made['message_id']}", headers=headers(w.tokens[actor]))
+        assert read.status_code == 200 and read.json()["message"]["body"] is None
+        assert "Moderator removal" not in read.text and "First comment" not in read.text
 
 
 def test_thread_removal_hides_content_but_delivers_tombstone(client, world):
@@ -464,12 +465,20 @@ def test_thread_removal_hides_content_but_delivers_tombstone(client, world):
         client.get(base(w) + "/threads", headers=headers(w.tokens["reader"])).json()["threads"]
         == []
     )
-    assert (
-        client.get(
-            base(w) + "/threads/" + made["thread_id"], headers=headers(w.tokens["reviewer"])
-        ).status_code
-        == 404
-    )
+    thread_url = base(w) + "/threads/" + made["thread_id"]
+    for actor in ("reader", "reviewer", "owner"):
+        for suffix in (
+            "",
+            f"/messages/{made['message_id']}",
+            f"/messages/{made['message_id']}/history",
+            "/anchor-history",
+        ):
+            assert (
+                client.get(thread_url + suffix, headers=headers(w.tokens[actor])).status_code == 404
+            )
+        state = client.get(thread_url + "/state", headers=headers(w.tokens[actor]))
+        assert state.status_code == 200 and state.json()["thread"]["removed"]
+        assert "anchor" not in state.json() and "First comment" not in state.text
     changes = client.get(base(w) + "/changes", headers=headers(w.tokens["reader"])).json()
     assert changes["events"][-1]["data"]["removed"]
     assert "First comment" not in str(changes)

@@ -40,8 +40,10 @@ Only active managed Markdown entries are currently accepted. Share owners and
 server administrators moderate; any authorized commenter can resolve/reopen.
 Only authors edit their messages. A moderator can delete another author's
 message with a reason, or remove a thread with a reason. Ordinary readers see
-message tombstones, not deleted history. Authors/moderators can inspect deleted
-message history; removed thread bodies are inspectable only by moderators.
+message tombstones, not deleted history. This also applies to authors and
+moderators: ordinary history and picture endpoints cannot retrieve removed
+content, and removed threads reject ordinary thread/message/anchor-history reads.
+Separately authorized, audited moderation recovery is still being implemented.
 Authorized readers can fetch removal state metadata without the body or anchor. Account
 deletion nulls author references and retains history; share deletion cascades
 discussion content and receipts. There is no private-thread feature.
@@ -249,3 +251,27 @@ reading/image mapping, Bases identity/adapters,
 Time & Line bridge, image uploads, inbox, notifications, authenticated presence,
 event WebSockets/snapshots/retention, coherent backups, and native mobile and
 performance acceptance. These routes alone do not advertise those capabilities.
+
+## Ordinary reads after removal (November 7)
+
+The former author/moderator exceptions in ordinary reads have been removed to
+match the agreed deletion policy. All roles now receive `target_unavailable`
+from deleted-message history and removed-thread body/message/anchor-history
+reads. The explicit thread-state endpoint still returns safe removal metadata.
+Deleted-message body serialization also forces `null` independently of the
+stored current-revision body. Normal picture reads require a surviving live
+message in a live, readable thread; a retained historical reference in a deleted
+message alone no longer authorizes its metadata, content or thumbnail.
+
+Authorization is rechecked after picture object I/O, including deletion while a
+download is in flight. Retained database history has not been purged by this
+change. A separately authorized, audited recovery interface and timed retention
+cleanup remain unfinished and cannot be reached through an ordinary History
+button. Existing local/exported copies are not retroactively erased.
+
+The discussion, picture, export and search regression set has 156 passing tests
+across its run and focused correction rerun. Removed-thread/body/history checks
+cover readers, authors and moderators; picture checks include all three roles,
+metadata/content/thumbnails and deletion during storage reads. Actual client HTTP
+and MinIO checks also pass. The client hides tombstone History and invalidates
+open or delayed history for authors/moderators. No production service changed.

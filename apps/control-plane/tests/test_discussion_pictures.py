@@ -379,9 +379,9 @@ def test_history_keeps_pictures_but_deletion_and_moderation_gate_access(client, 
             w, dict(type="message.delete", thread_id=tid, message_id=mid, expected_revision=2)
         ),
     )
-    get_picture(client, w, pid, suffix="/content", expected=404)
-    get_picture(client, w, pid, actor="reviewer", suffix="/content")
-    get_picture(client, w, pid, actor="owner", suffix="/content")
+    for actor in ("reader", "reviewer", "owner"):
+        for suffix in ("", "/content", "/thumbnail"):
+            get_picture(client, w, pid, actor=actor, suffix=suffix, expected=404)
     send(
         client,
         w,
@@ -391,8 +391,8 @@ def test_history_keeps_pictures_but_deletion_and_moderation_gate_access(client, 
         ),
         actor="owner",
     )
-    get_picture(client, w, pid, actor="reviewer", suffix="/content", expected=404)
-    get_picture(client, w, pid, actor="owner", suffix="/content")
+    for actor in ("reader", "reviewer", "owner"):
+        get_picture(client, w, pid, actor=actor, suffix="/content", expected=404)
 
 
 def test_creation_switch_preserves_reads_receipts_and_retained_picture_edits(
@@ -553,3 +553,29 @@ def test_picture_migration_upgrade_downgrade_and_composite_history_reference():
                 migration.upgrade()
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize("actor", ["reader", "reviewer", "owner"])
+def test_deletion_during_picture_download_blocks_every_actor(client, world, storage, actor):
+    w = world
+    pid, _ = upload(client, w, raster())
+    _, made = publish(client, w, pid)
+
+    def remove_while_fetching():
+        send(
+            client,
+            w,
+            envelope(
+                w,
+                dict(
+                    type="message.delete",
+                    thread_id=made["thread_id"],
+                    message_id=made["message_id"],
+                    expected_revision=1,
+                ),
+            ),
+        )
+
+    storage.before_get = remove_while_fetching
+    get_picture(client, w, pid, actor=actor, suffix="/content", expected=404)
+    assert storage.last_response.closed and storage.last_response.released
