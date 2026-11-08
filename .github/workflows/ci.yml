@@ -8,6 +8,9 @@ on:
     paths:
       - 'apps/**'
       - 'infra/**'
+      - 'scripts/collaboration_snapshot.py'
+      - 'scripts/test_collaboration_snapshot*.py'
+      - '.github/workflows/checks-control-plane.yml'
       - '.github/workflows/ci.yml'
 
 jobs:

@@ -4,6 +4,16 @@ This guide covers backing up and restoring EVC Team Relay data.
 
 ## Collaboration backup status
 
+The [cold snapshot tool](collaboration-snapshots.md) now provides explicit
+container-set capture, verified shutdown, complete physical-store archives and
+isolated staging into new empty stores. Fault tests and disposable Podman tests
+cover capture/staging failures; actual PostgreSQL and MinIO stores reopen with
+matching saved references/bytes and accept new writes. The tool leaves services
+stopped. It does not yet rotate restored generations, perform the complete
+application/client rehearsal or activate restored data. Existing unlabelled
+deployments cannot be selected accidentally. See that contract before using any
+of the older independent backup commands below.
+
 The independent PostgreSQL dump and object mirror below are useful recovery
 inputs. They do **not** yet constitute a coherent backup of the collaboration
 preview. Discussions, permissions, command receipts, Bases identities and guarded

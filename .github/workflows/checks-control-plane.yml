@@ -39,6 +39,8 @@ jobs:
           uv sync --extra dev --extra test
           uv run ruff check app/ tests/
           uv run ruff format --check app/ tests/
+          uv run ruff check --config pyproject.toml ../../scripts/collaboration_snapshot.py ../../scripts/test_collaboration_snapshot.py ../../scripts/test_collaboration_snapshot_engine.py
+          uv run ruff format --check --config pyproject.toml ../../scripts/collaboration_snapshot.py ../../scripts/test_collaboration_snapshot.py ../../scripts/test_collaboration_snapshot_engine.py
 
   test-python:
     runs-on: ubuntu-latest
@@ -58,6 +60,7 @@ jobs:
         run: |
           uv sync --extra dev --extra test
           uv run pytest -v --tb=short
+          uv run pytest -q ../../scripts/test_collaboration_snapshot.py
 
   alembic-migration-smoke:
     # Fresh-DB migration smoke — nothing else in this workflow exercises the
