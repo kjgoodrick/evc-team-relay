@@ -24,6 +24,7 @@ from app.services import (
     bases_definition,
     collaboration_restore,
     discussion_service,
+    managed_assets,
     managed_service,
 )
 
@@ -85,8 +86,12 @@ def read_legacy(share_id, entry_id, expected_hash):
     try:
         try:
             with storage_client.storage_errors("base_content_read"):
-                response = storage_client.get_minio_client().get_object(
-                    get_settings().minio_bucket, f"web-assets/{share_id}/{entry_id}"
+                response, _ = managed_assets.open_object(
+                    storage_client.get_minio_client(),
+                    get_settings().minio_bucket,
+                    share_id,
+                    entry_id,
+                    expected_hash,
                 )
                 try:
                     raw = response.read(MAX_BYTES + 1)

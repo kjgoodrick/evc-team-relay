@@ -5,6 +5,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from minio.error import S3Error
 from sqlalchemy import func, select
 from test_discussions import headers
 from test_discussions import world as discussion_world
@@ -33,6 +34,8 @@ def base(world, db_session, monkeypatch):
 
     def get_object(bucket, key):
         assert not storage.request_db.in_transaction(), "Storage read holds SQL transaction"
+        if key.startswith("managed-assets/v1/"):
+            raise S3Error(None, "NoSuchKey", "legacy fixture", "/fixture", "fixture", "fixture")
         assert key == f"web-assets/{world.share.id}/{world.entry.id}"
         storage.gets += 1
         if storage.before_get:

@@ -666,19 +666,18 @@ async def sync_write_file(
 
 # --- Attachment (CAS) file-token routes -------------------------------------
 #
-# TR-09: gives the plugin's CAS.ts a JWT-authed presigned-URL contract for
-# real Obsidian users, matching the shape the agent-key path already uses
-# (web.py's upload_mesh_artifact, same web-assets/{share_id}/{path} bucket
-# layout) — extended to a second auth mode rather than a new architecture.
+# BlobClient uses path-scoped credentials and control-plane byte URLs.
+# Managed attachments use verified hash-addressed revisions; unmanaged web
+# assets retain their existing web-assets/{share_id}/{path} storage contract.
 #
-# CAS.ts requests exactly one token per operation via a single call shape
+# The client requests a token per operation via a single call shape
 # (path, sha256, content_type, content_length — no read/write intent), then
 # reuses that token across HEAD (verify) / GET .../download-url (readFile) /
 # POST .../upload-url (writeFile). So the token itself only proves "this user
 # has SOME access to this exact share+path right now" — each of the three
-# consuming routes below independently re-checks read vs write access via
-# ensure_read_access/ensure_write_access, rather than trusting a mode baked
-# into the token. Least-privilege, short expiry (10 min), single path scope.
+# consuming routes independently re-checks read vs write access. Managed
+# uploads also retain the request's original restore generation. Credentials
+# have a short expiry (10 min), one path, digest, MIME type and byte length.
 
 FILE_TOKEN_EXPIRE_MINUTES = 10
 
@@ -694,6 +693,8 @@ class FileTokenResponse(BaseModel):
     token: str
     base_url: str
     expires_at: str
+    restore_guard: bool | None = None
+    restore_generation: str | None = None
 
 
 class DownloadUrlResponse(BaseModel):
@@ -766,13 +767,138 @@ def _user_from_file_token(db: Session, payload: dict[str, Any]) -> models.User:
     return user
 
 
-@router.post("/{share_id}/file-token", response_model=FileTokenResponse)
+def _managed_file_context(db, share, user, payload, path, *, write=False):
+    """Short authority boundary; no SQL lock may span body or object I/O."""
+    from app.services import base_content, collaboration_restore, managed_assets, managed_service
+
+    share, user = managed_service.lock_inventory(db, share, user, read=not write)
+    # Revalidate the scoped credential/session after any share-lock wait.
+    if payload.get("exp", 0) <= security.utcnow().timestamp():
+        raise HTTPException(401, "Expired file token")
+    _user_from_file_token(db, payload)
+    managed_service.authorize_entry(db, share, user, path, write=write)
+    try:
+        managed_assets.digest(payload.get("sha256"))
+    except managed_assets.AssetMismatch as error:
+        raise HTTPException(422, {"code": "invalid_attachment_digest"}) from error
+    if write:
+        try:
+            binding = payload.get("restore_generation")
+            binding = uuid.UUID(binding) if binding is not None else None
+        except (ValueError, TypeError, AttributeError) as error:
+            raise HTTPException(401, "Invalid file token binding") from error
+        collaboration_restore.require_generation(share, binding)
+        length = payload.get("content_length")
+        if type(length) is not int or length < 0 or length > MAX_SYNC_WRITE_SIZE:
+            raise HTTPException(422, {"code": "invalid_attachment_length"})
+        base_content.reject_legacy_write(db, share, path)
+    return share
+
+
+def _managed_file_read(db, share, user, payload, path, *, metadata_only=False):
+    """Read verified bytes without holding a share lock over object storage."""
+    from app.services import base_content, collaboration_restore, managed_assets
+
+    share = _managed_file_context(db, share, user, payload, path)
+    share_id = share.id
+    observed_restore = share.collaboration_restore_generation
+    guarded = base_content.compatible_bytes(db, share, path, payload, metadata_only=metadata_only)
+    db.close()
+    if guarded is not None:
+        return guarded, "application/yaml"
+    try:
+        with storage_client.storage_errors("attachment_read"):
+            args = (
+                _get_minio_client(),
+                get_settings().minio_bucket,
+                share_id,
+                path,
+                payload["sha256"],
+                MAX_SYNC_WRITE_SIZE,
+            )
+            if metadata_only:
+                managed_assets.present(*args)
+                result = b"", "application/octet-stream"
+            else:
+                data, mime, _ = managed_assets.read(*args)
+                result = data, mime
+    except managed_assets.AssetTooLarge as error:
+        raise HTTPException(413, {"code": "attachment_too_large"}) from error
+    except managed_assets.AssetMismatch as error:
+        raise HTTPException(409, {"code": "attachment_content_changed"}) from error
+    except S3Error as error:
+        if error.code in {"NoSuchKey", "NoSuchObject"}:
+            raise HTTPException(404, "File not found") from error
+        raise HTTPException(503, "Attachment storage unavailable") from error
+    # Re-open authority after storage; permission/session changes or a restore
+    # while reading must not deliver bytes under the old observation.
+    share = share_service.get_share(db, share_id)
+    user = _user_from_file_token(db, payload)
+    share = _managed_file_context(db, share, user, payload, path)
+    collaboration_restore.require_generation(share, observed_restore)
+    base_content.compatible_bytes(db, share, path, payload, metadata_only=True)
+    db.close()
+    return result
+
+
+async def _put_managed_file(request, db, share_id, path, payload):
+    from app.services import managed_assets
+
+    def check():
+        share = share_service.get_share(db, share_id)
+        user = _user_from_file_token(db, payload)
+        _managed_file_context(db, share, user, payload, path, write=True)
+        db.close()
+
+    await run_in_threadpool(check)
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_SYNC_WRITE_SIZE:
+            raise HTTPException(413, {"code": "attachment_too_large"})
+        if len(body) + len(chunk) > payload["content_length"]:
+            raise HTTPException(422, {"code": "attachment_content_mismatch"})
+        body.extend(chunk)
+    try:
+        managed_assets.verify(
+            body, payload["sha256"], MAX_SYNC_WRITE_SIZE, payload["content_length"]
+        )
+    except managed_assets.AssetMismatch as error:
+        raise HTTPException(422, {"code": "attachment_content_mismatch"}) from error
+    await run_in_threadpool(check)
+    settings = get_settings()
+
+    def store():
+        client = _get_minio_client()
+        _ensure_minio_bucket(client, settings.minio_bucket)
+        try:
+            with storage_client.storage_errors("attachment_upload"):
+                client.put_object(
+                    settings.minio_bucket,
+                    managed_assets.object_name(share_id, path, payload["sha256"]),
+                    io.BytesIO(body),
+                    length=len(body),
+                    content_type=payload.get("content_type") or "application/octet-stream",
+                )
+        except S3Error as error:
+            raise HTTPException(503, "Attachment storage unavailable") from error
+
+    await run_in_threadpool(store)
+    # Any bytes written after a restore are separate hash-addressed revisions.
+    # Refuse the stale success as well; SQL locks never span either I/O wait.
+    await run_in_threadpool(check)
+    return Response(status_code=200)
+
+
+@router.post(
+    "/{share_id}/file-token", response_model=FileTokenResponse, response_model_exclude_unset=True
+)
 def create_file_token(
     request: Request,
     share_id: uuid.UUID,
     payload: FileTokenRequest,
     db: Session = Depends(get_db),
     current_user: models.User | None = Depends(deps.get_optional_user),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ) -> FileTokenResponse:
     """Mint a short-lived, path-scoped token for attachment (CAS) access.
 
@@ -794,12 +920,40 @@ def create_file_token(
     which upload-url checks BEFORE trusting the owner-subject's access.
     """
     share = share_service.get_share(db, share_id)
+    restore_fields = {}
+    original = None
     if share.managed:
-        from app.services import managed_service
+        from app.services import collaboration_restore, managed_assets, managed_service
 
         if request.headers.get("X-Agent-Key"):
             raise HTTPException(403, "Agent keys do not grant managed file access")
+        if current_user is None:
+            raise HTTPException(401, "Sign in to access managed files")
+        share, current_user = managed_service.lock_inventory(db, share, current_user, read=True)
+        try:
+            original = security.decode_access_token(
+                request.headers["authorization"].split(" ", 1)[1]
+            )
+        except InvalidTokenError as error:
+            raise HTTPException(401, "Invalid session token") from error
+        _user_from_file_token(db, original)
         managed_service.authorize_entry(db, share, current_user, payload.path)
+        if restore_generation is not None:
+            collaboration_restore.require_generation(share, restore_generation)
+        try:
+            managed_assets.digest(payload.sha256)
+        except managed_assets.AssetMismatch as error:
+            raise HTTPException(422, {"code": "invalid_attachment_digest"}) from error
+        if payload.content_length < 0 or payload.content_length > MAX_SYNC_WRITE_SIZE:
+            raise HTTPException(422, {"code": "invalid_attachment_length"})
+        restore_fields = {
+            "restore_guard": True,
+            "restore_generation": (
+                str(share.collaboration_restore_generation)
+                if share.collaboration_restore_generation
+                else None
+            ),
+        }
         auth_method, agent_key = "user", None
     else:
         auth_method, agent_key = _authorize_share_sync(
@@ -816,8 +970,7 @@ def create_file_token(
         agent_write = agent_key_scopes.satisfies(key_scopes, "write")
 
     session_id = None
-    if share.managed and current_user:
-        original = security.decode_access_token(request.headers["authorization"].split(" ", 1)[1])
+    if original:
         session_id = original.get("session_id")
     db.close()
     token = security.create_file_token(
@@ -830,12 +983,17 @@ def create_file_token(
         expires_minutes=FILE_TOKEN_EXPIRE_MINUTES,
         agent_write=agent_write,
         session_id=session_id,
+        restore_generation=str(restore_generation)
+        if restore_fields and restore_generation
+        else None,
     )
     expires_at = (security.utcnow() + timedelta(minutes=FILE_TOKEN_EXPIRE_MINUTES)).isoformat()
     settings = get_settings()
     base = settings.control_plane_public_url.rstrip("/")
     base_url = f"{base}/shares/{share_id}/files/{quote(path, safe='/')}"
-    return FileTokenResponse(token=token, base_url=base_url, expires_at=expires_at)
+    return FileTokenResponse(
+        token=token, base_url=base_url, expires_at=expires_at, **restore_fields
+    )
 
 
 @router.head("/{share_id}/files/{path:path}")
@@ -849,6 +1007,9 @@ def head_share_file(
     token_payload = _decode_file_token(share_id, path, authorization)
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
+    if share.managed:
+        _managed_file_read(db, share, user, token_payload, path, metadata_only=True)
+        return Response(status_code=200)
     share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
     from app.services import base_content
@@ -902,6 +1063,16 @@ def get_file_download_url(
     token_payload = _decode_file_token(share_id, path, authorization)
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
+    if share.managed:
+        _managed_file_read(db, share, user, token_payload, path, metadata_only=True)
+        _, _, raw_token = authorization.partition(" ")
+        base = get_settings().control_plane_public_url.rstrip("/")
+        return DownloadUrlResponse(
+            downloadUrl=(
+                f"{base}/shares/{share_id}/files/{quote(path, safe='/')}/content"
+                f"?token={quote(raw_token, safe='')}"
+            )
+        )
     share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
     from app.services import base_content
@@ -959,6 +1130,11 @@ def get_file_content(
     token_payload = _decode_file_token_value(token, share_id, path)
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
+    if share.managed:
+        data, mime = _managed_file_read(db, share, user, token_payload, path)
+        return Response(
+            content=data, media_type=mime, headers={"X-Content-Type-Options": "nosniff"}
+        )
     share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 
     from app.services import base_content
@@ -1042,7 +1218,10 @@ def get_file_upload_url(
         )
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
-    share_service.ensure_write_access(db, share, user, managed_entry_id=path)
+    if share.managed:
+        share = _managed_file_context(db, share, user, token_payload, path, write=True)
+    else:
+        share_service.ensure_write_access(db, share, user, managed_entry_id=path)
 
     from app.services import base_content
 
@@ -1063,6 +1242,7 @@ def get_file_upload_url(
     )
 
     if share.managed:
+        db.close()
         return UploadUrlResponse(uploadUrl=url)
 
     now_iso = security.utcnow().isoformat()
@@ -1123,6 +1303,8 @@ async def put_file_content(
         )
     user = _user_from_file_token(db, token_payload)
     share = share_service.get_share(db, share_id)
+    if share.managed:
+        return await _put_managed_file(request, db, share_id, path, token_payload)
     share_service.ensure_write_access(db, share, user, managed_entry_id=path)
 
     from app.services import base_content

@@ -19,6 +19,10 @@ generation across unlocked source reads. Inventory batches, activity and file
 claims now enforce the same guard; manifest reads refresh their context under a
 share read lock. The client preserves old inventory work and pauses automatic
 rebase across restore. [Inventory guard and limits](managed-restore-preview.md)
+Managed source attachments now use verified hash-addressed revisions with scoped
+restore-bound upload credentials and unlocked-I/O revalidation. Backups must
+include both `managed-assets/v1/` and legacy `web-assets/` objects in the asset
+bucket. [Attachment protocol and remaining limits](managed-attachment-restore-preview.md)
 describe this checkpoint. File-content/document and other writers, minimum client
 versions and complete reconciliation still need work.
 Client transport/store binding, ordinary-session startup/reconnect and local

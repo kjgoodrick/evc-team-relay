@@ -23,6 +23,7 @@ from app.services import (
     base_target_definitions,
     collaboration_restore,
     discussion_service,
+    managed_assets,
     managed_service,
 )
 from app.services import bases_definition as codec
@@ -132,8 +133,12 @@ def verified_definition(share_id, entry_id, sha256, stored=None):
                 if stored is not None:
                     raw = stored
                 else:
-                    response = storage_client.get_minio_client().get_object(
-                        settings.minio_bucket, f"web-assets/{share_id}/{entry_id}"
+                    response, _ = managed_assets.open_object(
+                        storage_client.get_minio_client(),
+                        settings.minio_bucket,
+                        share_id,
+                        entry_id,
+                        sha256,
                     )
                     try:
                         raw = response.read(codec.MAX_BYTES + 1)

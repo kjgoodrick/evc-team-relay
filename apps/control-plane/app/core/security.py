@@ -92,6 +92,7 @@ def create_file_token(
     expires_minutes: int = 10,
     agent_write: bool | None = None,
     session_id: str | None = None,
+    restore_generation: str | None = None,
 ) -> str:
     """Mint a short-lived, path-scoped token for attachment (CAS) access.
 
@@ -125,6 +126,10 @@ def create_file_token(
     }
     if session_id:
         to_encode["session_id"] = session_id
+    if restore_generation is not None:
+        # The caller supplies its original request binding. Minting a token
+        # must never silently rebind an older upload to a restored share.
+        to_encode["restore_generation"] = restore_generation
     return jwt.encode(to_encode, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
