@@ -52,6 +52,9 @@ def capabilities(
     managed_service.member(db, share, user)
     return {
         "protocol_version": 1,
+        "restore_generation": str(share.collaboration_restore_generation)
+        if share.collaboration_restore_generation is not None
+        else None,
         "features": {
             "presence_locations_preview": get_settings().collaboration_presence_enabled,
             "presence_surface_locations_preview": get_settings().collaboration_presence_enabled,
@@ -101,6 +104,10 @@ def capabilities(
                 and get_settings().collaboration_discussions_enabled
             ),
             "discussion_command_status": (
+                get_settings().collaboration_policy_enabled
+                and get_settings().collaboration_discussions_enabled
+            ),
+            "discussion_command_restore_guard": (
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled
             ),

@@ -3,7 +3,7 @@
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
@@ -116,16 +116,22 @@ def search(
 
 @router.post("/commands")
 def command(
-    payload: CommandEnvelope, token: str = Depends(credential), db: Session = Depends(get_db)
+    payload: CommandEnvelope,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    return service.apply_command(db, token, payload)
+    return service.apply_command(db, token, payload, restore_generation=restore_generation)
 
 
 @router.post("/commands/withdraw")
 def withdraw(
-    payload: CommandEnvelope, token: str = Depends(credential), db: Session = Depends(get_db)
+    payload: CommandEnvelope,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    return service.withdraw_command(db, token, payload)
+    return service.withdraw_command(db, token, payload, restore_generation=restore_generation)
 
 
 @router.post("/commands/status")

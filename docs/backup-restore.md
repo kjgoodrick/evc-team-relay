@@ -9,7 +9,11 @@ inputs. They do **not** yet constitute a coherent backup of the collaboration
 preview. Discussions, permissions, command receipts, Bases identities and guarded
 source bytes must match the relay's complete CRDT checkpoints and private picture
 objects. A verified capture/restore coordinator, restore-epoch fencing of old
-client commands, and the full restore drill remain unfinished. Do not reopen a
+client commands, and the full restore drill remain unfinished. A server-only
+guard now rejects old discussion commands/withdrawals after a share's restore
+generation changes; client binding, the remaining mutation guards and coordinated
+activation are unfinished. See the [protocol contract](discussion-preview.md#restore-generation-command-guard-server-foundation).
+Do not reopen a
 restored collaboration service to clients based only on these older procedures.
 
 ### Verified relay drain

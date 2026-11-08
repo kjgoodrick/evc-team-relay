@@ -118,6 +118,44 @@ comment body, history or picture bytes. This supplies a recovery building block;
 archive-request reconciliation UI and restore-epoch command fencing remain
 separate unfinished work.
 
+### Restore-generation command guard (server foundation)
+
+Migration `202611070005` adds nullable
+`shares.collaboration_restore_generation`, separate from the cursor epoch.
+`NULL` denotes the original lineage and accepts existing commands without a
+header. A restored share with a generation UUID requires that exact value in
+`X-Relay-Restore-Generation` for both commands and withdrawals. Mismatch or a
+missing header returns `409 restore_generation_changed` before receipt lookup,
+state changes or private anchor validation. The check is repeated under the
+share lock after private anchor validation, so rotation during the network hop
+cannot commit an old command. Existing accepted receipts remain inspectable
+through the read-only status route. Generation is transport context, excluded
+from the immutable command hash.
+
+Capabilities expose `restore_generation` and `discussion_command_restore_guard`.
+Ordinary permission/cursor resets do not change this generation. There is no
+automatic rotation or restore activation command yet. Client binding of the
+generation at original request creation, recovery review and guards for picture,
+group-capture, marker, permission and inbox mutations are still unfinished.
+This capability describes **discussion commands and withdrawals only**; it is
+not a complete service restore boundary. Do not manually activate it for a live
+share or claim the collaboration restore procedure is complete.
+
+The future client must retain an operation's original generation across retries,
+offline storage, export/import and dependent commands. It must never replace that
+generation with a freshly fetched value merely to retry an old request. A newer
+generation requires explicit reconciliation against the restored receipts and
+entities. Ordinary downgrade refuses to drop this column while any share has an
+active generation. Running older application code against a restored database
+would bypass application-level guards; the future deployment/restore coordinator
+must enforce its recorded minimum server/client compatibility, not rely on the
+column alone.
+
+Disposable PostgreSQL evidence covers current-head migration/schema parity,
+empty downgrade/upgrade, active-generation downgrade refusal, current receipt
+reads and old-write rejection, plus rotation during an in-flight private anchor
+validation. The fixture is removed afterward. No production generation is set.
+
 | Type | Additional fields | Offline queue |
 | --- | --- | --- |
 | `thread.create` | `thread_id`, `message_id`, `anchor`, `body` | Yes |

@@ -20,6 +20,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from fastapi import HTTPException
 from pydantic import SecretStr
 from sqlalchemy import create_engine, func, select, text
@@ -51,7 +52,10 @@ def main():
     config = Config("alembic.ini")
     command.upgrade(config, "head")
     with engine.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
+        assert (
+            conn.scalar(text("SELECT version_num FROM alembic_version"))
+            == ScriptDirectory.from_config(config).get_current_head()
+        )
         diffs = compare_metadata(MigrationContext.configure(conn), m.Base.metadata)
 
         def relevant(diff):
@@ -61,6 +65,7 @@ def main():
                 "discussion_" in str(diff)
                 or "collaboration_sequence" in str(diff)
                 or "collaboration_epoch" in str(diff)
+                or "collaboration_restore_generation" in str(diff)
                 or "collaboration_generation" in str(diff)
                 or "collaboration_base" in str(diff)
                 or "managed_base_" in str(diff)
@@ -218,6 +223,46 @@ def main():
             assert revoker.scalar(query.with_for_update(nowait=True)) is not None
     print("PASS: user/session/share/membership guards exclude concurrent revocation until commit")
 
+    # A restored lineage blocks old commands before receipts or other writes,
+    # while exact read-only receipt inspection remains available. An active
+    # generation cannot be removed by an ordinary migration downgrade.
+    generation = uuid.uuid4()
+    with Session(engine) as db:
+        db.get(m.Share, share_id).collaboration_restore_generation = generation
+        db.commit()
+    with Session(engine, autoflush=False) as db:
+        for send in (service.apply_command, service.withdraw_command):
+            try:
+                send(db, token, create)
+            except HTTPException as exc:
+                assert exc.status_code == 409 and exc.detail["code"] == "restore_generation_changed"
+            else:
+                raise AssertionError("Old command crossed the restore generation")
+        receipt = service.command_status(db, token, create)
+        assert receipt["status"] == "accepted"
+        assert (
+            service.apply_command(db, token, create, restore_generation=generation)
+            == receipt["result"]
+        )
+    try:
+        command.downgrade(config, "202611070004")
+    except RuntimeError as exc:
+        assert "activated collaboration restore guard" in str(exc)
+    else:
+        raise AssertionError("Downgrade removed an activated restore guard")
+    with Session(engine) as db:
+        assert db.get(m.Share, share_id).collaboration_restore_generation == generation
+        assert db.scalar(select(func.count()).select_from(m.DiscussionMessage)) == 1
+        assert db.get(m.Share, share_id).collaboration_sequence == 2
+        # Only this disposable fixture returns to its initial lineage so the
+        # pre-existing independent concurrency cases below remain comparable.
+        db.get(m.Share, share_id).collaboration_restore_generation = None
+        db.commit()
+    print(
+        "PASS: restore guard rejects stale writes, permits receipt reads "
+        "and refuses unsafe downgrade"
+    )
+
     # Anchor validation is a network hop between two independent authorized SQL
     # transactions. Prove that *real* row locks are released during that hop,
     # and that a committed revocation/generation change defeats the later commit.
@@ -226,7 +271,12 @@ def main():
     settings.collaboration_discussions_enabled = True
     settings.collaboration_text_anchors_enabled = True
     settings.collaboration_anchor_relay_token = SecretStr("disposable-mocked-private-hop")
-    for change, expected in [("generation", 409), ("permission", 403), ("withdrawal", 410)]:
+    for change, expected in [
+        ("generation", 409),
+        ("permission", 403),
+        ("restore", 409),
+        ("withdrawal", 410),
+    ]:
         with Session(engine) as db:
             generation = db.get(m.ManagedEntry, str(entry_id)).collaboration_generation
         selected = envelope(
@@ -290,6 +340,10 @@ def main():
                             service.withdraw_command(revoker, token, selected)["status"]
                             == "withdrawn"
                         )
+                    elif change == "restore":
+                        revoker.get(
+                            m.Share, share_id
+                        ).collaboration_restore_generation = uuid.uuid4()
                     else:
                         rule = revoker.scalar(
                             select(m.ManagedCommentRule).where(
@@ -306,6 +360,9 @@ def main():
             receipt = db.get(m.DiscussionReceipt, (reviewer_id, selected.operation_id))
             assert (receipt is not None) == (change == "withdrawal")
             assert db.get(m.Share, share_id).collaboration_sequence == 2
+            if change == "restore":
+                db.get(m.Share, share_id).collaboration_restore_generation = None
+                db.commit()
             if change == "permission":
                 db.scalar(
                     select(m.ManagedCommentRule).where(m.ManagedCommentRule.share_id == share_id)
@@ -313,7 +370,7 @@ def main():
                 db.commit()
     print(
         "PASS: private validation releases SQL locks; "
-        "generation changes, revocation and command withdrawal prevent commit"
+        "document/restore generation changes, revocation and command withdrawal prevent commit"
     )
 
     # A stale ORM identity must not resurrect permissions after a committed revoke.

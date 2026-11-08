@@ -30,6 +30,7 @@ from app.services import (
     base_discussions,
     collaboration_auth,
     collaboration_policy,
+    collaboration_restore,
     discussion_reattachment,
     managed_service,
 )
@@ -326,7 +327,7 @@ def command_status(db, token, envelope):
         raise
 
 
-def withdraw_command(db, token, envelope):
+def withdraw_command(db, token, envelope, *, restore_generation=None):
     """Resolve an ambiguous send before replacing it, under the command lock.
 
     A normal receipt wins. Otherwise the SAME receipt primary key becomes a
@@ -338,6 +339,7 @@ def withdraw_command(db, token, envelope):
     try:
         request_hash = anchor_service.command_hash(envelope)
         ctx = context(db, token, envelope.share_id, envelope.entry_id, write=True)
+        collaboration_restore.require_generation(ctx.share, restore_generation)
         prior = existing_receipt(db, ctx, envelope, request_hash, allow_withdrawn=True)
         if prior is not None:
             if prior.get("withdrawn") is True:
@@ -433,8 +435,9 @@ def validate_anchor_target(ctx, anchor):
         # Preserve the observed version, including older offline image hashes.
 
 
-def prepare_text_anchor(db, token, envelope):
+def prepare_text_anchor(db, token, envelope, *, restore_generation=None):
     ctx = context(db, token, envelope.share_id, envelope.entry_id, write=True)
+    collaboration_restore.require_generation(ctx.share, restore_generation)
     prior = existing_receipt(db, ctx, envelope, anchor_service.command_hash(envelope))
     if prior is not None:
         return prior
@@ -458,7 +461,9 @@ def prepare_text_anchor(db, token, envelope):
     return anchor_service.validate(envelope)
 
 
-def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
+def apply_command(
+    db: Session, token: str, envelope: s.CommandEnvelope, *, restore_generation=None
+) -> dict:
     # Do not roll back or expire a caller's unrelated pending changes.
     require_clean_session(db)
     envelope = envelope.model_copy(deep=True)
@@ -481,10 +486,14 @@ def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
         limit = 256 * 1024 if text or group else 65536
         if len(envelope.canonical_json().encode("utf-8")) > limit:
             error(413, "command_too_large")
-        proof = prepare_text_anchor(db, token, envelope) if text else None
+        proof = (
+            prepare_text_anchor(db, token, envelope, restore_generation=restore_generation)
+            if text
+            else None
+        )
         if isinstance(proof, dict):
             return proof
-        return _apply_command(db, token, envelope, proof)
+        return _apply_command(db, token, envelope, proof, restore_generation=restore_generation)
     except IntegrityError:
         db.rollback()
         error(409, "identifier_unavailable")
@@ -501,9 +510,12 @@ def apply_command(db: Session, token: str, envelope: s.CommandEnvelope) -> dict:
         raise
 
 
-def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=None) -> dict:
+def _apply_command(
+    db: Session, token: str, envelope: s.CommandEnvelope, proof=None, *, restore_generation=None
+) -> dict:
     request_hash = hashlib.sha256(envelope.canonical_json().encode("utf-8")).hexdigest()
     ctx = context(db, token, envelope.share_id, envelope.entry_id, write=True)
+    collaboration_restore.require_generation(ctx.share, restore_generation)
     scope = scope_for(db, ctx)
     prior = existing_receipt(db, ctx, envelope, request_hash)
     if prior is not None:

@@ -191,6 +191,11 @@ class Share(Base, TimestampMixin):
         BigInteger, default=0, server_default=text("0"), nullable=False
     )
     collaboration_epoch: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # Separate from visibility/cursor resets: only a service restore changes
+    # this generation. NULL is the original, pre-restore lineage.
+    collaboration_restore_generation: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     kind: Mapped[ShareKind] = mapped_column(
