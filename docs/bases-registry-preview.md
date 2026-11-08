@@ -44,6 +44,10 @@ The response contains `protocol_version: 1`, `definition_id`, `entry_id`,
 this particular verified snapshot; it is never a persistent target identity.
 An `id: null` means the current association is unresolved. The response also
 contains an `unmatched` page of historical identities awaiting review.
+It also advertises `restore_guard: true` and `restore_generation: UUID | null`.
+This share-level restore binding is separate from the entry's `generation` and
+the registry revision. Inspection captures it before unlocked object I/O and
+rechecks it after locking again, even if the definition bytes did not change.
 
 Configuration is valid YAML in Obsidian's format. The registry parses it as
 data, without evaluating formulas, filters or custom view code. Unknown
@@ -116,6 +120,29 @@ than a later registry update; clients must not replace a newer cache with it.
 The registry audit stores identity summaries and results, not a complete version
 history of all base configuration bytes.
 
+Repairs retain the restore generation observed during review. Send a non-null
+binding in `X-Relay-Restore-Generation`; missing means the original null lineage.
+The binding stays outside the canonical body and request hash. The current locked
+share is checked before receipt lookup and again after unlocked definition reads.
+An older or missing binding on a restored share receives
+`409 restore_generation_changed`, including exact retries with existing receipts.
+Inspection remains available to readers and derives mappings from current source;
+it does not replay their saved repairs. No live restore generation is activated
+by this protocol change.
+
+### Read-only repair receipt inspection
+
+`POST .../bases/reconcile/status` accepts the original exact repair body without
+a restore header. Current read permission and the original actor's session are
+required; edit permission and a matching current source generation are not.
+It returns `{"status":"accepted","result":<original snapshot>}` or
+`{"status":"unknown","operation_id":<UUID>,"entry_id":<UUID>}`. Changed
+payloads for a known operation conflict. Another actor cannot inspect that receipt.
+This route does not parse source bytes, initialize a registry, repair mappings,
+create receipts or withdraw work. Unknown does not establish that a request never
+committed before restoration. Accepted is historical evidence; clients must not
+apply it as current state or restamp the original request for another lineage.
+
 `GET .../bases/views?state=unmatched|archived&after=<optional UUID>` returns at
 most 100 identities with `has_more` and `next_after`. Every page rechecks current
 base read access and generation. There is no path-based fallback after revocation.
@@ -140,6 +167,18 @@ the generalized context helper for file records and separate editor authority.
 Old clients ignore the additional capability. No production flag was enabled.
 
 ## Verified checks and remaining work
+
+`tests/integration/bases_registry_restore_postgres.py` uses an empty disposable
+PostgreSQL database. Requests preload stale ORM rows, wait behind a share lock,
+and must reject a concurrent restore before replaying a receipt or creating a
+repair. SQL instrumentation verifies that historical receipt inspection issues
+no INSERT/UPDATE/DELETE, and a waiting permission revocation prevents disclosure.
+Unit tests also rotate the generation during unlocked definition reads for both
+inspection and repair. `base_content_client.py --restore-guard` runs the actual
+plugin transport/store against HTTP for old repair rejection, read-only status,
+retained recovery snapshots and bound lost-response retry through reopening.
+The ordinary HTTP suite retains original-lineage compatibility. These are
+isolated protocol checks, not coordinated restore or native acceptance.
 
 `tests/test_bases_registry.py` covers snapshot lifecycle, parsing limits,
 permission/metadata changes during I/O, exact receipts, explicit repair, paging

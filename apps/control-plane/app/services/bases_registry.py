@@ -18,7 +18,13 @@ from app.clients import storage_client
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas.bases import ReconcileBase
-from app.services import base_content, base_target_definitions, discussion_service, managed_service
+from app.services import (
+    base_content,
+    base_target_definitions,
+    collaboration_restore,
+    discussion_service,
+    managed_service,
+)
 from app.services import bases_definition as codec
 
 error = discussion_service.error
@@ -82,7 +88,7 @@ def view_page(db, definition, state, after=None, limit=100):
     }
 
 
-def snapshot(db, definition):
+def snapshot(db, definition, share):
     active = {
         view.slot: view
         for view in db.scalars(
@@ -93,6 +99,12 @@ def snapshot(db, definition):
     }
     return {
         "protocol_version": 1,
+        "restore_guard": True,
+        "restore_generation": (
+            str(share.collaboration_restore_generation)
+            if share.collaboration_restore_generation
+            else None
+        ),
         "definition_id": str(definition.id),
         "entry_id": definition.entry_id,
         "generation": str(definition.generation),
@@ -167,7 +179,7 @@ def existing_receipt(db, ctx, definition, payload, request_hash):
     return result
 
 
-def synchronize(db, token, share_id, entry_id, payload):
+def synchronize(db, token, share_id, entry_id, payload, restore_generation=None):
     discussion_service.require_clean_session(db)
     payload = payload.model_copy(deep=True)
     manual = isinstance(payload, ReconcileBase)
@@ -176,6 +188,9 @@ def synchronize(db, token, share_id, entry_id, payload):
     )
     try:
         ctx = context(db, token, share_id, entry_id, edit=manual)
+        if manual:
+            collaboration_restore.require_generation(ctx.share, restore_generation)
+        observed_restore = ctx.share.collaboration_restore_generation
         definition = definition_for(db, ctx)
         prior = existing_receipt(db, ctx, definition, payload, request_hash)
         if prior is not None:
@@ -188,7 +203,7 @@ def synchronize(db, token, share_id, entry_id, payload):
         ):
             error(409, "base_definition_not_synced")
         if not manual and definition and definition.content_sha256 == expected_hash:
-            result = snapshot(db, definition)
+            result = snapshot(db, definition, ctx.share)
             db.commit()
             return result
         generation = ctx.entry.collaboration_generation
@@ -197,6 +212,9 @@ def synchronize(db, token, share_id, entry_id, payload):
         db.commit()  # No SQL connection/row lock during storage or YAML parsing.
         verified = verified_definition(share_id, entry_id, expected_hash, stored)
         ctx = context(db, token, share_id, entry_id, write=True, edit=manual)
+        # Inspection derives state from current bytes, but its unlocked object
+        # read must not span a restore. Manual repairs retain their own binding.
+        collaboration_restore.require_generation(ctx.share, observed_restore)
         if (
             ctx.entry.record.get("hash") != expected_hash
             or ctx.entry.collaboration_generation != generation
@@ -207,7 +225,7 @@ def synchronize(db, token, share_id, entry_id, payload):
         if prior is not None:
             return prior
         if not manual and definition and definition.content_sha256 == expected_hash:
-            result = snapshot(db, definition)
+            result = snapshot(db, definition, ctx.share)
             db.commit()
             return result
         if manual and (definition.revision if definition else 0) != payload.expected_revision:
@@ -303,7 +321,7 @@ def synchronize(db, token, share_id, entry_id, payload):
         definition.content_sha256, definition.configuration = expected_hash, verified.value
         db.flush()
         base_target_definitions.synchronize(db, definition)
-        result = snapshot(db, definition)
+        result = snapshot(db, definition, ctx.share)
         db.add(
             m.BaseRegistryRevision(
                 definition_id=definition.id,
@@ -319,6 +337,59 @@ def synchronize(db, token, share_id, entry_id, payload):
     except IntegrityError:
         db.rollback()
         error(409, "base_registry_conflict")
+    except OperationalError:
+        db.rollback()
+        error(503, "base_registry_unavailable")
+    except SQLAlchemyError:
+        db.rollback()
+        error(500, "base_registry_unavailable")
+    except Exception:
+        db.rollback()
+        raise
+
+
+def repair_status(db, token, share_id, entry_id, payload):
+    """Read an actor-owned exact receipt without replaying the repair.
+
+    Current read access is required. A historical receipt does not depend on
+    current view/source identity or edit access and never initializes a registry.
+    """
+    request_hash = codec.fingerprint(
+        {"share_id": str(share_id), "entry_id": str(entry_id), **payload.model_dump(mode="json")}
+    )
+    try:
+        ctx = discussion_service.context(
+            db, token, share_id, entry_id, entry_types={"file"}, require_comment=False
+        )
+        if (
+            not ctx.entry.path.lower().endswith(".base")
+            and db.scalar(
+                select(m.BaseDefinition.id).where(m.BaseDefinition.entry_id == ctx.entry.id)
+            )
+            is None
+        ):
+            error(404, "target_unavailable")
+        receipt = db.scalar(
+            select(m.BaseRegistryRevision).where(
+                m.BaseRegistryRevision.actor_id == ctx.user.id,
+                m.BaseRegistryRevision.operation_id == payload.operation_id,
+            )
+        )
+        if receipt:
+            definition = db.get(m.BaseDefinition, receipt.definition_id)
+            if not definition or definition.entry_id != ctx.entry.id:
+                error(404, "target_unavailable")
+            if receipt.request_hash != request_hash:
+                error(409, "operation_id_conflict")
+            result = {"status": "accepted", "result": dict(receipt.result)}
+        else:
+            result = {
+                "status": "unknown",
+                "operation_id": str(payload.operation_id),
+                "entry_id": ctx.entry.id,
+            }
+        db.commit()
+        return result
     except OperationalError:
         db.rollback()
         error(503, "base_registry_unavailable")

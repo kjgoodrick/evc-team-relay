@@ -312,6 +312,125 @@ def test_exact_repair_receipt_does_not_bypass_lost_edit_permission(client, db_se
     assert inspect(client, world)["revision"] == 2
 
 
+def test_restore_fences_repairs_before_receipts_but_status_remains_read_only(
+    client, db_session, world, base
+):
+    first = inspect(client, world)
+    assert first["restore_guard"] is True and first["restore_generation"] is None
+    bindings = [{"slot": v["slot"], "view_id": v["id"]} for v in first["views"]]
+    accepted, payload = repair(client, world, first, bindings)
+    generation = uuid.uuid4()
+    world.share.collaboration_restore_generation = generation
+    db_session.commit()
+    current = inspect(client, world)
+    assert current["revision"] == accepted["revision"]
+    assert current["restore_generation"] == str(generation)
+    fresh = {**payload, "operation_id": str(uuid.uuid4()), "expected_revision": current["revision"]}
+    for request in (payload, fresh):
+        for extra in ({}, {"X-Relay-Restore-Generation": str(uuid.uuid4())}):
+            rejected = client.post(
+                path(world) + "/reconcile",
+                json=request,
+                headers={**headers(world.tokens["owner"]), **extra},
+            )
+            assert rejected.status_code == 409
+            assert rejected.json()["error"]["message"]["code"] == "restore_generation_changed"
+    status = client.post(
+        path(world) + "/reconcile/status", json=payload, headers=headers(world.tokens["owner"])
+    )
+    assert status.json() == {"status": "accepted", "result": accepted}
+    assert client.post(
+        path(world) + "/reconcile/status", json=fresh, headers=headers(world.tokens["owner"])
+    ).json() == {
+        "status": "unknown",
+        "operation_id": fresh["operation_id"],
+        "entry_id": world.entry.id,
+    }
+    changed = {**payload, "archive": [str(uuid.uuid4())]}
+    assert (
+        client.post(
+            path(world) + "/reconcile/status", json=changed, headers=headers(world.tokens["owner"])
+        ).status_code
+        == 409
+    )
+    # Actor-owned receipts are not disclosed to another authorized reader.
+    assert (
+        client.post(
+            path(world) + "/reconcile/status",
+            json=payload,
+            headers=headers(world.tokens["reviewer"]),
+        ).json()["status"]
+        == "unknown"
+    )
+    db_session.expire_all()
+    assert db_session.scalar(select(func.count()).select_from(m.BaseRegistryRevision)) == 2
+    updated = client.post(
+        path(world) + "/reconcile",
+        json=fresh,
+        headers={**headers(world.tokens["owner"]), "X-Relay-Restore-Generation": str(generation)},
+    )
+    assert updated.status_code == 200 and updated.json()["restore_generation"] == str(generation)
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_restore_during_unlocked_definition_read_cannot_publish_registry(
+    client, db_session, world, base, manual
+):
+    first = inspect(client, world) if manual else None
+    if manual:
+        base.save([view("Changed")])
+    before = db_session.scalar(select(func.count()).select_from(m.BaseRegistryRevision))
+
+    def restore():
+        world.share.collaboration_restore_generation = uuid.uuid4()
+        db_session.commit()
+
+    base.before_get = restore
+    if manual:
+        result, _ = repair(client, world, first, [{"slot": 0, "view_id": None}], expected=409)
+    else:
+        result = inspect(client, world, expected=409)
+    assert result["error"]["message"]["code"] == "restore_generation_changed"
+    db_session.expire_all()
+    assert db_session.scalar(select(func.count()).select_from(m.BaseRegistryRevision)) == before
+
+
+def test_historical_repair_status_uses_current_read_access_without_source_or_edit_access(
+    client, db_session, world, base
+):
+    first = inspect(client, world)
+    rule = db_session.scalar(
+        select(m.ManagedRule).where(m.ManagedRule.user_id == world.reviewer.id)
+    )
+    rule.permission = "write"
+    db_session.commit()
+    accepted, payload = repair(
+        client,
+        world,
+        first,
+        [{"slot": v["slot"], "view_id": v["id"]} for v in first["views"]],
+        actor="reviewer",
+    )
+    rule.permission = "read"
+    world.share.collaboration_restore_generation = uuid.uuid4()
+    world.entry.collaboration_generation = uuid.uuid4()
+    db_session.commit()
+    result = client.post(
+        path(world) + "/reconcile/status", json=payload, headers=headers(world.tokens["reviewer"])
+    )
+    assert result.status_code == 200 and result.json() == {"status": "accepted", "result": accepted}
+    rule.permission = "none"
+    db_session.commit()
+    assert (
+        client.post(
+            path(world) + "/reconcile/status",
+            json=payload,
+            headers=headers(world.tokens["reviewer"]),
+        ).status_code
+        == 404
+    )
+
+
 def test_archived_view_pages_are_bounded_and_resume_without_duplicates(
     client, db_session, world, base
 ):

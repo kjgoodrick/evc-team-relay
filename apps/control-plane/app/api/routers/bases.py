@@ -162,8 +162,20 @@ def reconcile(
     payload: ReconcileBase,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    return service.synchronize(db, token, share_id, entry_id, payload)
+    return service.synchronize(db, token, share_id, entry_id, payload, restore_generation)
+
+
+@router.post("/reconcile/status")
+def repair_status(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: ReconcileBase,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return service.repair_status(db, token, share_id, entry_id, payload)
 
 
 @router.get("/views")

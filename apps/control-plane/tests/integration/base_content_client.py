@@ -26,7 +26,7 @@ def main():
     parser.add_argument(
         "--restore-guard",
         action="store_true",
-        help="Verify bound Bases and marker saves on a synthetic restored share",
+        help="Verify bound Bases content, saved-view repairs and markers after restore",
     )
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="evc-base-content-client-") as temporary:
@@ -289,7 +289,10 @@ def main():
                         str(args.plugin.resolve() / "node_modules/jest/bin/jest.js"),
                         "--runInBand",
                         *(
-                            ["__tests__/collaboration/realTimelineMarkerRestoreStack.test.ts"]
+                            [
+                                "__tests__/collaboration/realTimelineMarkerRestoreStack.test.ts",
+                                "__tests__/bases/realBaseRegistry.test.ts",
+                            ]
                             if args.restore_guard
                             else [
                                 "__tests__/bases/realBaseContent.test.ts",
