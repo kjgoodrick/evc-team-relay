@@ -39,6 +39,11 @@ class Settings(BaseSettings):
         default=False, description="Enable explicit audited reads of retained removed discussions"
     )
     collaboration_removed_content_retention_days: int = Field(default=30, ge=1, le=3650)
+    collaboration_removed_content_cleanup_enabled: bool = Field(
+        default=False, description="Purge expired removed content; disable during backup/restore"
+    )
+    collaboration_removed_content_cleanup_batch_size: int = Field(default=100, ge=1, le=1000)
+    collaboration_removed_content_cleanup_interval_seconds: int = Field(default=60, ge=10, le=86400)
     collaboration_search_enabled: bool = Field(
         default=False,
         description="Preview authorized current-comment search; requires search migration",

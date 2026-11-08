@@ -45,7 +45,14 @@ def main():
         action="store_true",
         help="Verify portable discussion archives, optionally with picture storage",
     )
+    parser.add_argument(
+        "--retention",
+        action="store_true",
+        help="After the picture scenario, advance the test clock and verify purge/reclamation",
+    )
     args = parser.parse_args()
+    if args.retention and (not args.pictures_endpoint or args.export or args.inbox or args.search):
+        parser.error("Retention proof requires the disposable picture scenario")
     if sum(bool(value) for value in (args.inbox, args.search, args.export)) > 1 or (
         args.pictures_endpoint and (args.inbox or args.search)
     ):
@@ -270,6 +277,10 @@ def main():
                 )
                 if result.returncode:
                     raise RuntimeError("Discussion client integration failed")
+                if args.retention:
+                    from discussion_retention_client import prove_retention
+
+                    prove_retention(fixture, session.get_sessionmaker(), picture_store, bucket)
         finally:
             stop(process)
             session.get_engine().dispose()

@@ -4,7 +4,9 @@ November 7, 2026. Ordinary discussion reads hide removed bodies and pictures fro
 every role. This separate administrative API allows an explicit, audited online
 read within the retention window. It does not restore a message, enqueue a
 command, populate an ordinary client cache or reopen a thread. Native recovery
-controls, timed purge and complete release acceptance remain unfinished.
+controls and complete release acceptance remain unfinished. An independently
+gated retention worker now erases expired content and retires its last picture
+references for the existing object sweep.
 
 ## Enablement and authority
 
@@ -82,10 +84,64 @@ is to disable this feature while retaining the audit-aware backend/migration.
 A full production rollback rehearsal remains required. Client rollback must also
 preserve the ordinary removed-content boundary.
 
-The recovery deadline is enforced even before the purge worker exists. Physical
-retention cleanup, private-object reclamation, administrator recovery controls,
-cache/offline disclosure acceptance and native/mobile tests are still pending.
+The recovery deadline applies even with cleanup disabled. Administrator recovery
+controls, cache/offline disclosure acceptance and native/mobile tests remain.
 Existing exports or offline copies cannot be retroactively erased.
+
+## Expired-content cleanup
+
+Apply migration `202611070004` (a message/revision index on picture references),
+then independently opt into `COLLABORATION_REMOVED_CONTENT_CLEANUP_ENABLED=true`.
+It defaults off. The worker starts after 30 seconds and runs every 60 seconds by
+default (`COLLABORATION_REMOVED_CONTENT_CLEANUP_INTERVAL_SECONDS`, 10–86,400).
+Changing environment settings requires the normal controlled process restart;
+editing an environment file alone does not stop a running worker.
+
+Each batch selects at most 100 messages, configurable through
+`COLLABORATION_REMOVED_CONTENT_CLEANUP_BATCH_SIZE` (1–1,000). It uses the same
+retention window as administrative recovery. Missing clocks and live/recent
+content are preserved. A removed thread makes all its messages eligible at the
+thread deadline; an earlier individual removal can make a message eligible
+sooner. Each transaction reacquires the share lock and rechecks identity,
+eligibility and configuration before modifying rows.
+
+For each eligible message, one transaction clears every revision's body and
+removal reason, reactions, search projections and historical picture references,
+and records `content_purged_at`. IDs, revision numbers, authors/times, metadata-only
+events, audit records and idempotency receipts remain. Replaying a previously
+accepted receipt does not recreate content; a new command cannot reuse its IDs.
+When all children of an expired removed thread are purged, its target payloads
+and removal reason are erased too. Such a thread is unavailable even through
+the safe state route. Bases receipts and change feeds cannot use erased target
+evidence to authorize a read; saved-view lists, exports and inboxes omit it.
+
+An attached picture becomes expired in the same transaction only if the message
+held its last retained reference in that scope. Other live or retained-history
+references protect it. SQL purge performs no object-store I/O. Physical
+reclamation requires the existing independent
+`COLLABORATION_PICTURE_CLEANUP_ENABLED` sweep; that sweep retires the namespace
+before deletion and retries interrupted object work. These newly expired
+pictures do not wait an additional orphan grace period. Disabling the picture
+sweep leaves bytes stored but unavailable through ordinary or recovery routes.
+
+PostgreSQL skips shares held by another transaction, uses 5-second lock and
+10-second statement limits, and applies a cooperative 30-second batch budget.
+Each message/finalized thread commits independently, so interruptions preserve
+completed progress and roll back the active erasure. Slow statements may run
+until their statement timeout; the budget is not a hard process deadline.
+Shutdown signals cancellation and drains active work. Progress is stored in the
+purge timestamps, so restart requires no external cursor. Maintenance logs contain
+counts and exception classes, never bodies or target payloads.
+
+Before coherent backup or restore, quiesce writes and drain/disable **both**
+cleanup workers in every process. Keep them disabled while restoring and
+verifying the matching database and private object-store snapshot. The broader
+coherent backup/restore workflow and rollout rehearsal are still outstanding;
+independent live SQL/object copies do not establish a coherent discussion backup.
+Disabling cleanup or downgrading its index does not recover already erased
+content. SQL erasure is logical deletion, not forensic erasure of database pages,
+transaction logs, backups, audit reasons or client-held copies; those stores have
+their own retention policies.
 
 ## Verification
 
@@ -104,3 +160,13 @@ explicit recovery of rich history while ordinary routes remain denied. Actual
 HTTP/MinIO tests verify audited metadata and exact sanitized picture bytes.
 All task-created services/containers are stopped and removed after these drills.
 See the root implementation status for final regression counts.
+
+Retention verification also covers bounded child/anchor erasure, missing clocks,
+configuration changes, cancellation/failure rollback, receipt replay, shared
+picture references and safe purged-Bases polling/export/inbox behavior. A real
+PostgreSQL drill verifies that cleanup skips an active audited read, rolls back
+interrupted erasure and preserves shared pictures until their last reference is
+removed. The actual HTTP/MinIO drill verifies SQL-only erasure first, subsequent
+private-object reclamation, preservation of live pictures, restart idempotency
+and denied administrative recovery after purge. These drills use disposable
+fixtures and leave existing services unchanged.

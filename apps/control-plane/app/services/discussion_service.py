@@ -183,7 +183,11 @@ def thread_for(
         .where(m.DiscussionThread.id == thread_id, m.DiscussionThread.scope_id == scope.id)
         .execution_options(populate_existing=True)
     )
-    if thread is None or (thread.deleted and not include_removed):
+    if (
+        thread is None
+        or thread.content_purged_at is not None
+        or (thread.deleted and not include_removed)
+    ):
         error(404, "target_unavailable")
     base_discussions.authorize_thread(db, ctx, thread, write=write)
     return thread

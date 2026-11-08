@@ -46,6 +46,7 @@ from app.services.billing_service import LimitExceededError, VisibilityNotAllowe
 from app.workers import (
     discussion_inbox_worker,
     discussion_picture_worker,
+    discussion_retention_worker,
     metrics_worker,
     retention_worker,
 )
@@ -368,6 +369,24 @@ Get a token by calling `POST /auth/login` with valid credentials.
         if task is not None:
             task.cancel()
             # Shield/drain an active storage thread before app resources close.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    pass
+
+    @app.on_event("startup")
+    async def _start_removed_content_cleanup() -> None:
+        if get_settings().collaboration_removed_content_cleanup_enabled:
+            app.state.removed_content_cleanup_task = asyncio.create_task(
+                discussion_retention_worker.run_removed_content_cleanup()
+            )
+
+    @app.on_event("shutdown")
+    async def _stop_removed_content_cleanup() -> None:
+        task = getattr(app.state, "removed_content_cleanup_task", None)
+        if task is not None:
+            task.cancel()
             while not task.done():
                 try:
                     await asyncio.shield(task)

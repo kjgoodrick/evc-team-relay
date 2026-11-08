@@ -1356,6 +1356,7 @@ class DiscussionPicture(Base):
 class DiscussionPictureReference(Base):
     __tablename__ = "discussion_picture_references"
     __table_args__ = (
+        Index("ix_discussion_picture_references_message", "message_id", "revision"),
         ForeignKeyConstraint(
             ["message_id", "revision"],
             ["discussion_message_revisions.message_id", "discussion_message_revisions.revision"],
