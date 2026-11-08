@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     collaboration_discussions_enabled: bool = Field(
         default=False, description="Preview whole-note discussion commands and HTTP catch-up"
     )
+    collaboration_export_enabled: bool = Field(
+        default=False, description="Enable bounded read-only discussion archive snapshots"
+    )
     collaboration_search_enabled: bool = Field(
         default=False,
         description="Preview authorized current-comment search; requires search migration",

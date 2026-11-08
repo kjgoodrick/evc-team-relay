@@ -3,7 +3,7 @@
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ from app.core.config import get_settings
 from app.db.session import get_db
 from app.schemas.discussion_search import DiscussionSearch
 from app.schemas.discussions import CommandEnvelope
-from app.services import anchor_service, discussion_search
+from app.services import anchor_service, discussion_export, discussion_search
 from app.services import discussion_service as service
 
 
@@ -149,6 +149,18 @@ def threads(
     return service.list_threads(
         db, token, share_id, entry_id, after=after, limit=limit, view_id=view_id
     )
+
+
+@router.get("/shares/{share_id}/entries/{entry_id}/export")
+def export_snapshot(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    view_id: uuid.UUID | None = None,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    encoded = discussion_export.snapshot(db, token, share_id, entry_id, view_id=view_id)
+    return Response(encoded, media_type="application/json", headers={"Cache-Control": "no-store"})
 
 
 @router.get("/shares/{share_id}/entries/{entry_id}/participants")

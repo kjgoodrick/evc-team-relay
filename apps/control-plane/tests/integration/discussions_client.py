@@ -40,8 +40,15 @@ def main():
         "--pictures-endpoint",
         help="Disposable MinIO at 127.0.0.1:<port>, using synthetic picture-test credentials",
     )
+    parser.add_argument(
+        "--export",
+        action="store_true",
+        help="Verify portable discussion archives, optionally with picture storage",
+    )
     args = parser.parse_args()
-    if sum(bool(value) for value in (args.inbox, args.search, args.pictures_endpoint)) > 1:
+    if sum(bool(value) for value in (args.inbox, args.search, args.export)) > 1 or (
+        args.pictures_endpoint and (args.inbox or args.search)
+    ):
         parser.error("Choose one disposable integration scenario")
     if args.pictures_endpoint:
         match = re.fullmatch(r"127\.0\.0\.1:(\d+)", args.pictures_endpoint)
@@ -54,6 +61,7 @@ def main():
             JWT_SECRET=secrets.token_hex(32),
             COLLABORATION_POLICY_ENABLED="true",
             COLLABORATION_DISCUSSIONS_ENABLED="true",
+            COLLABORATION_EXPORT_ENABLED="true" if args.export else "false",
             COLLABORATION_SEARCH_ENABLED="true" if args.search else "false",
             LOG_LEVEL="WARNING",
             CONTROL_PLANE_PUBLIC_URL=f"http://127.0.0.1:{number}",
@@ -221,7 +229,9 @@ def main():
                         "test",
                         "--",
                         "--runInBand",
-                        "__tests__/collaboration/realInboxStack.test.ts"
+                        "__tests__/collaboration/realDiscussionExportStack.test.ts"
+                        if args.export
+                        else "__tests__/collaboration/realInboxStack.test.ts"
                         if args.inbox
                         else "__tests__/collaboration/realDiscussionSearchStack.test.ts"
                         if args.search
@@ -232,7 +242,9 @@ def main():
                     cwd=args.plugin.resolve(),
                     env={
                         **os.environ,
-                        "EVC_INBOX_FIXTURE"
+                        "EVC_EXPORT_FIXTURE"
+                        if args.export
+                        else "EVC_INBOX_FIXTURE"
                         if args.inbox
                         else "EVC_SEARCH_FIXTURE"
                         if args.search
@@ -253,7 +265,9 @@ def main():
                     picture_store.remove_object(bucket, obj.object_name)
                 picture_store.remove_bucket(bucket)
     print(
-        "PASS: actual application inbox worker, HTTP client and offline recovery"
+        "PASS: actual discussion archive snapshot, picture files, hashes and permission rechecks"
+        if args.export
+        else "PASS: actual application inbox worker, HTTP client and offline recovery"
         if args.inbox
         else "PASS: actual authorized search, edits, filters, navigation and revocation"
         if args.search
