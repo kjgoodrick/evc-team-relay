@@ -8,9 +8,11 @@ new, empty, network-isolated containers and reads every restored store back.
 
 This is not yet the complete collaboration restore workflow. A separate
 [offline generation-rotation command](collaboration-restore-rotation.md) now has
-transaction and PostgreSQL CLI evidence. Its integration with this maintenance
-lifecycle, application-level restore/rollback rehearsal, minimum-client enforcement and safe
-client source activation remain required before a restored service admits users.
+transaction and PostgreSQL CLI evidence. The [disposable full-stack rehearsal](collaboration-restore-rehearsal.md)
+now passes capture, staging, generation rotation, actual application/client
+checks and rollback. Production maintenance orchestration, minimum-client
+enforcement and safe client source activation remain required before a restored
+service admits users.
 The tool never starts services, changes networks, overwrites existing stores,
 removes containers or force-kills a process. Both successful capture and failed
 capture leave services stopped where shutdown reached them. An operator must
@@ -112,6 +114,12 @@ The application preserves these few server lifecycle messages and its final
 `WARNING`. Informational WebSocket connection/request messages remain suppressed;
 enabling shutdown evidence must not expose token-bearing URLs. Older application
 images that suppress the server's lifecycle messages cannot satisfy v2 capture.
+
+A valid zero-entry archive, such as an unused uploads store, needs no copy into
+its verified-empty target. Readback still verifies the empty tree. An archive
+containing only its root directory is copied because that entry carries mode and
+ownership metadata. This avoids Podman's rejection of zero-entry input without
+loosening destination or content verification.
 
 Both [Docker's stop timeout](https://docs.docker.com/reference/cli/docker/container/stop/)
 and [Podman's stop time](https://docs.podman.io/en/latest/markdown/podman-stop.1.html)

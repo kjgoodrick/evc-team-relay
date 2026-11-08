@@ -10,7 +10,9 @@ and sequence numbers remain intact.
 This is an administrative operation on an **isolated restored PostgreSQL copy**.
 It is not an HTTP endpoint and never runs at application startup. It neither
 starts services nor makes a restored deployment ready for clients. Safe client
-source activation and the complete application/rollback rehearsal remain open.
+source activation and production maintenance orchestration remain open. The
+[disposable application/rollback rehearsal](collaboration-restore-rehearsal.md)
+now verifies this CLI against physically restored application stores.
 Do not use it to reset a live service's cursors or to repair a single note.
 
 ## Preconditions and scope
