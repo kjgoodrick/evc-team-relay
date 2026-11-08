@@ -11,13 +11,14 @@ from datetime import timedelta, timezone
 
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from starlette.responses import JSONResponse, Response
 
 from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
+from app.services import base_discussions
 from app.services import discussion_pictures as pictures
 from app.services import discussion_service as discussions
 
@@ -37,27 +38,51 @@ def aware(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
-def target(db, token, share_id, entry_id, thread_id, message_id):
+def view_for(db, ctx, thread):
+    if ctx.entry.record.get("type") != "file":
+        return None
+    row = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
+    return base_discussions.stored_anchor(row.payload if row else None).view_id
+
+
+def deadline(thread, message):
+    if not (thread.deleted or message.deleted):
+        return None
+    if thread.content_purged_at is not None or message.content_purged_at is not None:
+        return None
+    removed = [row.deleted_at for row in (thread, message) if row.deleted]
+    if any(stamp is None for stamp in removed):
+        return None
+    until = min(aware(stamp) for stamp in removed) + timedelta(
+        days=get_settings().collaboration_removed_content_retention_days
+    )
+    return until if security.utcnow() < until else None
+
+
+def identity(db, ctx, thread, message):
+    view = view_for(db, ctx, thread)
+    return {
+        "entry_id": ctx.entry.id,
+        "view_id": str(view) if view else None,
+        "thread_id": str(thread.id),
+        "message_id": str(message.id),
+    }
+
+
+def target(db, token, share_id, entry_id, thread_id, message_id, *, view_id=None):
     ctx = discussions.context(db, token, share_id, entry_id)
     if not ctx.moderate:
         discussions.error(403, "moderation_required")
     thread = discussions.thread_for(db, ctx, thread_id, include_removed=True)
+    if view_id is not None and view_for(db, ctx, thread) != view_id:
+        discussions.error(404, "target_unavailable")
     message = db.scalar(
         select(m.DiscussionMessage).where(
             m.DiscussionMessage.id == message_id, m.DiscussionMessage.thread_id == thread.id
         )
     )
-    if message is None or not (thread.deleted or message.deleted):
-        discussions.error(404, "target_unavailable")
-    if thread.content_purged_at is not None or message.content_purged_at is not None:
-        discussions.error(404, "target_unavailable")
-    removed = [row.deleted_at for row in (thread, message) if row.deleted]
-    if any(stamp is None for stamp in removed):
-        discussions.error(404, "target_unavailable")
-    until = min(aware(stamp) for stamp in removed) + timedelta(
-        days=get_settings().collaboration_removed_content_retention_days
-    )
-    if security.utcnow() >= until:
+    until = deadline(thread, message) if message else None
+    if until is None:
         discussions.error(404, "target_unavailable")
     return ctx, thread, message, until
 
@@ -114,7 +139,9 @@ def _read(db, work):
 
 def history(db, token, share_id, entry_id, thread_id, message_id, request):
     def capture():
-        ctx, thread, message, until = target(db, token, share_id, entry_id, thread_id, message_id)
+        ctx, thread, message, until = target(
+            db, token, share_id, entry_id, thread_id, message_id, view_id=request.view_id
+        )
         rows = list(
             db.scalars(
                 select(m.DiscussionMessageRevision)
@@ -141,8 +168,7 @@ def history(db, token, share_id, entry_id, thread_id, message_id, request):
                 {
                     "protocol_version": 1,
                     "audit_id": str(audit_id),
-                    "thread_id": str(thread.id),
-                    "message_id": str(message.id),
+                    **identity(db, ctx, thread, message),
                     "recoverable_until": until,
                     "thread_removed": thread.deleted,
                     "message_removed": message.deleted,
@@ -170,8 +196,10 @@ def history(db, token, share_id, entry_id, thread_id, message_id, request):
     return _read(db, capture)
 
 
-def _picture(db, token, share_id, entry_id, thread_id, message_id, picture_id):
-    ctx, thread, message, until = target(db, token, share_id, entry_id, thread_id, message_id)
+def _picture(db, token, share_id, entry_id, thread_id, message_id, picture_id, request):
+    ctx, thread, message, until = target(
+        db, token, share_id, entry_id, thread_id, message_id, view_id=request.view_id
+    )
     picture = db.scalar(
         select(m.DiscussionPicture)
         .where(
@@ -200,7 +228,7 @@ def _picture(db, token, share_id, entry_id, thread_id, message_id, picture_id):
 def picture_metadata(db, token, share_id, entry_id, thread_id, message_id, picture_id, request):
     def capture():
         ctx, thread, message, picture, revision = _picture(
-            db, token, share_id, entry_id, thread_id, message_id, picture_id
+            db, token, share_id, entry_id, thread_id, message_id, picture_id, request
         )
         audit_id = audit(
             db,
@@ -216,6 +244,7 @@ def picture_metadata(db, token, share_id, entry_id, thread_id, message_id, pictu
             {
                 "protocol_version": 1,
                 "audit_id": str(audit_id),
+                **identity(db, ctx, thread, message),
                 "picture": pictures.public_data(picture),
             },
             headers={"Cache-Control": "no-store"},
@@ -232,7 +261,7 @@ def picture_content(
 
     def prepare():
         _, _, _, picture, _ = _picture(
-            db, token, share_id, entry_id, thread_id, message_id, picture_id
+            db, token, share_id, entry_id, thread_id, message_id, picture_id, request
         )
         rendition = (picture.renditions or {}).get(variant)
         if rendition is None:
@@ -249,7 +278,7 @@ def picture_content(
 
         def deliver():
             ctx, thread, message, picture, revision = _picture(
-                db, token, share_id, entry_id, thread_id, message_id, picture_id
+                db, token, share_id, entry_id, thread_id, message_id, picture_id, request
             )
             if (picture.renditions or {}).get(variant) != rendition:
                 discussions.error(409, "picture_changed")
@@ -277,3 +306,102 @@ def picture_content(
         return _read(db, deliver)
     finally:
         pictures.download_slots.release()
+
+
+def catalog(db, token, share_id, entry_id, request):
+    """A bounded, explicitly audited inventory; never returns bodies or anchors."""
+
+    def capture():
+        ctx = discussions.context(db, token, share_id, entry_id)
+        if not ctx.moderate:
+            discussions.error(403, "moderation_required")
+        discussions.requested_view(db, ctx, request.view_id)
+        scope = discussions.scope_for(db, ctx)
+        rows = []
+        if scope is not None:
+            query = (
+                select(m.DiscussionMessage, m.DiscussionThread)
+                .join(m.DiscussionThread, m.DiscussionThread.id == m.DiscussionMessage.thread_id)
+                .where(
+                    m.DiscussionThread.scope_id == scope.id,
+                    m.DiscussionThread.content_purged_at.is_(None),
+                    m.DiscussionMessage.content_purged_at.is_(None),
+                    or_(
+                        m.DiscussionThread.deleted.is_(True), m.DiscussionMessage.deleted.is_(True)
+                    ),
+                    m.DiscussionMessage.created_sequence > request.after,
+                )
+            )
+            if request.view_id is not None:
+                query = query.join(
+                    m.DiscussionAnchorRevision,
+                    and_(
+                        m.DiscussionAnchorRevision.thread_id == m.DiscussionThread.id,
+                        m.DiscussionAnchorRevision.revision == m.DiscussionThread.anchor_revision,
+                    ),
+                ).where(
+                    m.DiscussionAnchorRevision.payload["view_id"].as_string()
+                    == str(request.view_id)
+                )
+            rows = db.execute(
+                query.order_by(m.DiscussionMessage.created_sequence).limit(request.limit + 1)
+            ).all()
+        items = []
+        for message, thread in rows[: request.limit]:
+            until = deadline(thread, message)
+            if until is None or not base_discussions.can_read_thread(db, ctx, thread):
+                continue
+            items.append(
+                {
+                    "thread_id": str(thread.id),
+                    "message_id": str(message.id),
+                    "author_id": str(message.author_id) if message.author_id else None,
+                    "created_at": discussions.utc_timestamp(message.created_at),
+                    "removed_at": min(
+                        aware(row.deleted_at) for row in (thread, message) if row.deleted
+                    ),
+                    "recoverable_until": until,
+                    "thread_removed": thread.deleted,
+                    "message_removed": message.deleted,
+                    "revision": message.revision,
+                }
+            )
+        audit_id = uuid.uuid4()
+        db.add(
+            m.AuditLog(
+                id=audit_id,
+                action=m.AuditAction.DISCUSSION_RECOVERY_READ,
+                actor_user_id=ctx.user.id,
+                target_share_id=ctx.share.id,
+                details={
+                    "protocol_version": 1,
+                    "resource": "removed_catalog",
+                    "reason": request.reason,
+                    "share_id": str(ctx.share.id),
+                    "entry_id": ctx.entry.id,
+                    "view_id": str(request.view_id) if request.view_id else None,
+                    "messages": [
+                        {"thread_id": item["thread_id"], "message_id": item["message_id"]}
+                        for item in items
+                    ],
+                },
+            )
+        )
+        return JSONResponse(
+            jsonable_encoder(
+                {
+                    "protocol_version": 1,
+                    "audit_id": str(audit_id),
+                    "entry_id": ctx.entry.id,
+                    "view_id": str(request.view_id) if request.view_id else None,
+                    "items": items,
+                    "has_more": len(rows) > request.limit,
+                    "next_after": rows[min(len(rows), request.limit) - 1][0].created_sequence
+                    if rows
+                    else request.after,
+                }
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    return _read(db, capture)

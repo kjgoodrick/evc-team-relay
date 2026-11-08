@@ -3,8 +3,9 @@
 November 7, 2026. Ordinary discussion reads hide removed bodies and pictures from
 every role. This separate administrative API allows an explicit, audited online
 read within the retention window. It does not restore a message, enqueue a
-command, populate an ordinary client cache or reopen a thread. Native recovery
-controls and complete release acceptance remain unfinished. An independently
+command, populate an ordinary client cache or reopen a thread. Recovery controls
+now have an Obsidian client implementation; native/mobile acceptance remains
+unfinished. An independently
 gated retention worker now erases expired content and retires its last picture
 references for the existing object sweep.
 
@@ -24,6 +25,12 @@ It rejects live messages in live threads, removed content with missing clocks,
 expired windows and purged content. The normal History and picture routes remain
 unavailable even after a successful administrative read.
 
+The client also requires `discussion_moderation_catalog`. The current server
+advertises both under the same flag. New history and picture-metadata responses
+include the entry, saved-view (or null), thread and message identities. Clients
+validate these before display. An optional `view_id` on a targeted request must
+match the authorized thread; the catalog requires the saved view for Bases.
+
 `COLLABORATION_REMOVED_CONTENT_RETENTION_DAYS` defaults to 30 (configurable from
 1 through 3,650). The earliest applicable message/thread removal timestamp starts
 the window. A later thread removal cannot extend an already removed message's
@@ -40,6 +47,23 @@ All paths below are under
 | `/moderation-history` | Reason, optional `after` revision and `limit` (default 20, maximum 50) | Immutable revisions with bodies, actors/timestamps and removal reasons, removal flags, deadline, audit ID and keyset pagination. |
 | `/moderation-pictures/{picture}` | Reason | Sanitized public picture metadata and audit ID; no private object keys. |
 | `/moderation-pictures/{picture}/{content\|thumbnail}` | Reason | Verified sanitized image bytes, `X-Discussion-Audit-Id`, `Cache-Control: no-store` and `nosniff`. |
+
+`POST /v1/collaboration/shares/{share}/entries/{entry}/moderation-catalog` accepts
+the same reason, optional saved-view identity, `after` creation sequence and
+`limit` (20 default, 50 maximum). It scans a bounded page of removed messages or
+messages in removed threads and returns only currently authorized, unpurged,
+unexpired metadata: IDs, author, creation/removal/deadline times, revision and
+removal flags. It includes no body, anchor, picture metadata or removal reason.
+Every page commits a `removed_catalog` audit containing the disclosed identities
+and supplied review reason before returning. Failed audit commits disclose no
+prepared metadata.
+
+Pagination is a current inventory, not a frozen backup. Ineligible candidates can
+produce an empty page with `has_more=true`; `next_after` still advances through
+the scanned creation sequences. Refresh from the first page to pick up a newly
+removed older message. Expiry, purge and exact Bases record authorization are
+rechecked per request. The inventory does not grant access to subsequent history
+or pictures; each of those requests reauthorizes independently.
 
 A picture must be attached to the same scope and referenced by a revision of the
 exact requested message. A staged, expired, unrelated or unavailable picture is
@@ -84,8 +108,8 @@ is to disable this feature while retaining the audit-aware backend/migration.
 A full production rollback rehearsal remains required. Client rollback must also
 preserve the ordinary removed-content boundary.
 
-The recovery deadline applies even with cleanup disabled. Administrator recovery
-controls, cache/offline disclosure acceptance and native/mobile tests remain.
+The recovery deadline applies even with cleanup disabled. Native administrator
+control acceptance, broader cache/offline disclosure acceptance and mobile tests remain.
 Existing exports or offline copies cannot be retroactively erased.
 
 ## Expired-content cleanup

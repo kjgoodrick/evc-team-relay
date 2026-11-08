@@ -224,10 +224,23 @@ def main():
             raise AssertionError("Revoked session recovered content")
         except HTTPException as exc:
             assert exc.status_code == 401
+    with Session(engine, autoflush=False) as db:
+        login, _ = session_service.create_session(db, owner_id)
+        catalog_token = security.create_access_token(str(owner_id), session_id=str(login.id))
+        db.commit()
+        response = moderation.catalog(db, catalog_token, share_id, entry_id, request)
+        catalog = json.loads(response.body)
+        assert [item["message_id"] for item in catalog["items"]] == [str(mid)]
+        assert b"before" not in response.body and catalog["view_id"] is None
+    with Session(engine) as db:
+        audit = db.get(m.AuditLog, uuid.UUID(catalog["audit_id"]))
+        assert audit.details["resource"] == "removed_catalog"
+        assert audit.details["messages"] == [{"thread_id": str(tid), "message_id": str(mid)}]
     engine.dispose()
     print(
         "PASS: PostgreSQL old audit enum upgrade, removal-clock backfill, audit-before-disclosure, "
-        "commit failure rollback, session revocation lock and subsequent refusal"
+        "commit failure rollback, session revocation lock and subsequent refusal, "
+        "bounded removed-content catalog and committed metadata audit"
     )
 
 

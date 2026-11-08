@@ -278,6 +278,17 @@ def changes(
     )
 
 
+@router.post("/shares/{share_id}/entries/{entry_id}/moderation-catalog")
+def moderation_catalog(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    request: ModerationRead,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return discussion_moderation.catalog(db, token, share_id, entry_id, request)
+
+
 @router.post(
     "/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/messages/{message_id}/moderation-history"
 )

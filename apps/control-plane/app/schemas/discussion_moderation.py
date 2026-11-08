@@ -1,5 +1,7 @@
 """Explicit online administrative reads; never a queued discussion command."""
 
+import uuid
+
 from pydantic import Field, field_validator
 
 from app.schemas.discussions import StrictModel
@@ -8,6 +10,7 @@ from app.schemas.discussions import StrictModel
 class ModerationReason(StrictModel):
     protocol_version: int = Field(default=1, ge=1, le=1, strict=True)
     reason: str = Field(min_length=1, max_length=512, strict=True)
+    view_id: uuid.UUID | None = None
 
     @field_validator("reason")
     @classmethod

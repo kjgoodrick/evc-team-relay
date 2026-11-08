@@ -93,6 +93,7 @@ def capabilities(
             "discussion_search": discussion_search.enabled(),
             "discussion_export": discussion_export.enabled(),
             "discussion_moderation_recovery": discussion_moderation.enabled(),
+            "discussion_moderation_catalog": discussion_moderation.enabled(),
             "discussion_export_catalog": discussion_export.enabled(),
             "discussion_reattach": discussion_reattachment.enabled(),
             "discussion_recovery": (
