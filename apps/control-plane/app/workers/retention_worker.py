@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db import models
 from app.db.session import get_sessionmaker
+from app.workers.drain import run_drained
 
 logger = get_logger(__name__)
 
@@ -74,6 +75,16 @@ def _run_cleanup() -> None:
         db.close()
 
 
+async def finish_cleanup() -> None:
+    """Let an admitted transaction finish before acknowledging cancellation.
+
+    Cancelling an executor future does not stop its thread. Keep the actual job
+    shielded, including across repeated shutdown cancellation, so callers can
+    wait until commit/rollback and session cleanup have finished.
+    """
+    await run_drained(_run_cleanup)
+
+
 async def run_retention_cleanup() -> None:
     """Async loop started at app startup. Purges old PII-bearing rows every 24h.
 
@@ -89,8 +100,7 @@ async def run_retention_cleanup() -> None:
     await asyncio.sleep(INITIAL_DELAY_SECONDS)
     while True:
         try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _run_cleanup)
+            await finish_cleanup()
         except Exception as exc:
             logger.error("retention_worker: unexpected error", extra={"error": str(exc)})
         await asyncio.sleep(RETENTION_CLEANUP_INTERVAL_SECONDS)

@@ -351,10 +351,15 @@ Get a token by calling `POST /auth/login` with valid credentials.
 
     @app.on_event("shutdown")
     async def _stop_retention_cleanup() -> None:
-        """Cancel background retention cleanup loop on shutdown."""
+        """Drain its admitted database transaction before shutdown completes."""
         task = getattr(app.state, "retention_task", None)
         if task is not None:
             task.cancel()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    pass
 
     @app.on_event("startup")
     async def _start_picture_cleanup() -> None:

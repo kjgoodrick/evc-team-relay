@@ -5,26 +5,13 @@ import threading
 
 from app.core.logging import get_logger
 from app.services.discussion_inbox import enabled, run_batch
+from app.workers.drain import run_drained
 
 logger = get_logger(__name__)
 
 
 async def finish_batch(stop):
-    task = asyncio.create_task(asyncio.to_thread(run_batch, stop))
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-            stop.set()
-        except Exception:
-            break
-    if cancelled:
-        if not task.cancelled():
-            task.exception()
-        raise asyncio.CancelledError
-    return task.result()
+    return await run_drained(lambda: run_batch(stop), stop)
 
 
 async def run_inbox_projection():

@@ -7,27 +7,14 @@ from dataclasses import asdict
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.services.discussion_retention import run_batch
+from app.workers.drain import run_drained
 
 logger = get_logger(__name__)
 INITIAL_DELAY_SECONDS = 30
 
 
 async def finish_batch(stop):
-    job = asyncio.create_task(asyncio.to_thread(run_batch, stop))
-    cancelled = False
-    while not job.done():
-        try:
-            await asyncio.shield(job)
-        except asyncio.CancelledError:
-            cancelled = True
-            stop.set()
-        except Exception:
-            break
-    if cancelled:
-        if not job.cancelled():
-            job.exception()
-        raise asyncio.CancelledError
-    return job.result()
+    return await run_drained(lambda: run_batch(stop), stop)
 
 
 async def run_removed_content_cleanup():

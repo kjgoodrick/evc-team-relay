@@ -9,9 +9,13 @@ pattern) that hard-deletes rows older than settings.data_retention_days.
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -156,3 +160,107 @@ class TestCleanupOldRecords:
             ).scalar_one_or_none()
             is not None
         )
+
+
+def test_shutdown_hook_waits_for_retention_commit_even_after_repeated_cancellation(
+    monkeypatch, tmp_path
+):
+    from app.main import build_app
+
+    path = tmp_path / "retention-drain.sqlite"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE completed (value INTEGER)")
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+
+    def work():
+        calls.append("admitted")
+        with sqlite3.connect(path) as db:
+            db.execute("INSERT INTO completed VALUES (1)")
+            started.set()
+            assert release.wait(5)
+        finished.set()
+
+    monkeypatch.setattr(retention_worker, "_run_cleanup", work)
+    monkeypatch.setattr(retention_worker, "INITIAL_DELAY_SECONDS", 0)
+    app = build_app()
+    start = next(
+        hook for hook in app.router.on_startup if hook.__name__ == "_start_retention_cleanup"
+    )
+    stop = next(
+        hook for hook in app.router.on_shutdown if hook.__name__ == "_stop_retention_cleanup"
+    )
+
+    async def exercise():
+        await start()
+        shutdown = None
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            shutdown = asyncio.create_task(stop())
+            await asyncio.sleep(0)
+            app.state.retention_task.cancel()
+            shutdown.cancel()
+            await asyncio.sleep(0)
+            assert not finished.is_set()
+            assert not app.state.retention_task.done()
+            assert not shutdown.done()
+            with sqlite3.connect(path) as db:
+                assert db.execute("SELECT COUNT(*) FROM completed").fetchone()[0] == 0
+        finally:
+            release.set()
+            if shutdown is not None:
+                await shutdown
+            else:
+                await stop()
+        assert finished.is_set()
+        assert app.state.retention_task.cancelled()
+        assert calls == ["admitted"]
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT COUNT(*) FROM completed").fetchone()[0] == 1
+
+    asyncio.run(exercise())
+
+
+def test_cancellation_during_initial_delay_does_not_start_retention(monkeypatch):
+    calls = []
+    monkeypatch.setattr(retention_worker, "_run_cleanup", lambda: calls.append("unexpected"))
+
+    async def exercise():
+        task = asyncio.create_task(retention_worker.run_retention_cleanup())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert calls == []
+
+    asyncio.run(exercise())
+
+
+def test_cancelled_cleanup_retrieves_a_late_worker_failure(monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    def fail():
+        started.set()
+        assert release.wait(5)
+        raise RuntimeError("fixture failure after rollback")
+
+    monkeypatch.setattr(retention_worker, "_run_cleanup", fail)
+
+    async def exercise():
+        errors = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: errors.append(context)
+        )
+        task = asyncio.create_task(retention_worker.finish_cleanup())
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        assert errors == []
+
+    asyncio.run(exercise())

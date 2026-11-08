@@ -62,6 +62,30 @@ checkpoint. Rust regressions also verify all-document failure reporting,
 retryable dirty state and a final update after the ordinary persistence worker
 has stopped. These are shutdown checks, not a complete service restore drill.
 
+### Control-plane background worker drain
+
+The ordinary email/webhook retention loop now retains its admitted database
+thread across cancellation, and the application's shutdown hook waits for that
+transaction and its session cleanup to finish. Repeated cancellation cannot
+report the worker stopped while its thread is still committing. Cancelling
+during the initial delay admits no cleanup work.
+
+The picture cleanup, removed-content retention and inbox projector use the same
+drain helper with their cooperative stop events. An admitted job completes
+before its owner acknowledges cancellation; no next iteration is admitted.
+Late failures are consumed by the owning coroutine and logged by exception type
+only. This avoids cancelled-shield diagnostics exposing raw exception payloads
+on runtimes that log late shield failures. Ordinary non-cancellation failures
+still reach the existing worker error handler.
+
+Tests use a disposable SQLite writer to hold an uncommitted transaction while
+the actual shutdown hook runs. The hook remains pending across repeated
+cancellation until commit finishes. Additional worker checks cover cooperative
+stops, late failure diagnostics and initial-delay cancellation. This is a worker
+drain guarantee, not a full admission barrier or a verified control-plane process
+shutdown. HTTP/socket writers, standalone workers, object-store writers and the
+coherent capture/restore coordinator still require their own quiescence proof.
+
 ## Data Locations
 
 The Compose stack uses both bind-mounted directories and a PostgreSQL named
