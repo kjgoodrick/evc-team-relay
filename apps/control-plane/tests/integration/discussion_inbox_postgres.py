@@ -17,6 +17,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from base_discussions_postgres import wait_for_lock
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event, func, select, text
@@ -70,7 +71,8 @@ def main():
                 )
             ], drift
             assert (
-                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == ScriptDirectory.from_config(config).get_current_head()
             )
         command.downgrade(config, "202611060006")
         command.upgrade(config, "head")
@@ -280,6 +282,77 @@ def main():
             assert sorted(pool.map(choose, [True, False])) == [200, 409]
         print("PASS: conflicting subscription updates do not silently overwrite each other")
 
+        # A waiting mutation must refresh its Share after acquiring the lock.
+        # Both paths must reject old lineage before versions/exact retry logic.
+        for kind in ("state", "subscription"):
+            with factory() as db:
+                previous = inbox.subscription(db, tokens[recipient_id], share_id, entry_id, tid)
+            before = page()["items"][0]
+            restore_pids = Queue()
+
+            def restore_backend_pid(connection, _record, _proxy):
+                restore_pids.put(connection.info.backend_pid)
+
+            def stale_choice():
+                with factory() as db:
+                    # Retain a stale ORM instance across the real lock wait.
+                    cached = db.get(m.Share, share_id)
+                    assert cached.collaboration_restore_generation is None
+                    if kind == "state":
+                        return inbox.update_item(
+                            db,
+                            tokens[recipient_id],
+                            share_id,
+                            entry_id,
+                            tid,
+                            InboxUpdate(seen_version=before["version"], action="dismiss"),
+                        )
+                    return inbox.subscription(
+                        db,
+                        tokens[recipient_id],
+                        share_id,
+                        entry_id,
+                        tid,
+                        SubscriptionUpdate(
+                            expected_version=previous["version"],
+                            following=not previous["following"],
+                            muted=True,
+                        ),
+                    )
+
+            with ThreadPoolExecutor(1) as pool:
+                with factory.begin() as guard:
+                    share = guard.scalar(
+                        select(m.Share).where(m.Share.id == share_id).with_for_update()
+                    )
+                    event.listen(engine, "checkout", restore_backend_pid)
+                    try:
+                        future = pool.submit(stale_choice)
+                        pid = restore_pids.get(timeout=5)
+                    finally:
+                        event.remove(engine, "checkout", restore_backend_pid)
+                    wait_for_lock(engine, pid)
+                    share.collaboration_restore_generation = uuid.uuid4()
+                try:
+                    future.result(timeout=15)
+                except HTTPException as exc:
+                    assert exc.status_code == 409
+                    assert exc.detail == {"code": "restore_generation_changed"}
+                else:
+                    raise AssertionError(f"Waiting {kind} choice bypassed restore guard")
+            assert page()["items"][0] == before
+            with factory() as db:
+                assert (
+                    inbox.subscription(db, tokens[recipient_id], share_id, entry_id, tid)
+                    == previous
+                )
+            # Reset only the disposable fixture to exercise remaining legacy cases.
+            with factory.begin() as db:
+                db.scalar(
+                    select(m.Share).where(m.Share.id == share_id).with_for_update()
+                ).collaboration_restore_generation = None
+        print("PASS: waiting inbox/read and follow/mute writes reject a concurrent restore")
+
         for _ in range(50):
             send(message())
         for _ in range(50):
@@ -381,7 +454,8 @@ def main():
             raise AssertionError("Populated inbox was discarded")
         with engine.connect() as connection:
             assert (
-                connection.scalar(text("SELECT version_num FROM alembic_version")) == "202611070002"
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == ScriptDirectory.from_config(config).get_current_head()
             )
         print("PASS: populated downgrade refuses to lose inbox/read/preferences")
     finally:

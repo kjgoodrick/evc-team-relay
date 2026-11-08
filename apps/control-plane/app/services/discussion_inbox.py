@@ -21,7 +21,12 @@ from app.core.config import get_settings
 from app.db import models as m
 from app.db.session import get_sessionmaker
 from app.schemas import discussions as s
-from app.services import base_discussions, collaboration_auth, managed_service
+from app.services import (
+    base_discussions,
+    collaboration_auth,
+    collaboration_restore,
+    managed_service,
+)
 from app.services import discussion_service as discussions
 
 LEASE_TTL = timedelta(seconds=60)
@@ -301,11 +306,13 @@ def preference_data(db, user_id, thread_id):
     }
 
 
-def subscription(db, token, share_id, entry_id, thread_id, update=None):
+def subscription(db, token, share_id, entry_id, thread_id, update=None, restore_generation=None):
     require_enabled()
     ctx = discussions.context(
         db, token, share_id, entry_id, write=update is not None, require_comment=False
     )
+    if update is not None:
+        collaboration_restore.require_generation(ctx.share, restore_generation)
     thread = discussions.thread_for(db, ctx, thread_id)
     if update is not None:
         pref = db.get(m.DiscussionSubscription, (ctx.user.id, thread.id))
@@ -341,9 +348,10 @@ def item_state(item):
     }
 
 
-def update_item(db, token, share_id, entry_id, thread_id, update):
+def update_item(db, token, share_id, entry_id, thread_id, update, restore_generation=None):
     require_enabled()
     ctx = discussions.context(db, token, share_id, entry_id, write=True, require_comment=False)
+    collaboration_restore.require_generation(ctx.share, restore_generation)
     thread = discussions.thread_for(db, ctx, thread_id)
     item = db.get(m.DiscussionInboxItem, (ctx.user.id, thread.id))
     if item is None or item.share_id != ctx.share.id:

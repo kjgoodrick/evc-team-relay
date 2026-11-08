@@ -95,6 +95,7 @@ def capabilities(
             "discussion_pictures": discussion_pictures.enabled(),
             "discussion_picture_restore_guard": discussion_pictures.enabled(),
             "discussion_inbox": discussion_inbox.enabled(),
+            "discussion_inbox_restore_guard": discussion_inbox.enabled(),
             "discussion_search": discussion_search.enabled(),
             "discussion_export": discussion_export.enabled(),
             "discussion_moderation_recovery": discussion_moderation.enabled(),

@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.orm import Session
 
 from app.api.routers.discussions import BoundedDiscussionRoute, credential, require_preview
@@ -58,8 +58,11 @@ def set_subscription(
     payload: SubscriptionUpdate,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    return service.subscription(db, token, share_id, entry_id, thread_id, payload)
+    return service.subscription(
+        db, token, share_id, entry_id, thread_id, payload, restore_generation=restore_generation
+    )
 
 
 @router.post("/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/inbox")
@@ -70,5 +73,8 @@ def set_inbox_state(
     payload: InboxUpdate,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
-    return service.update_item(db, token, share_id, entry_id, thread_id, payload)
+    return service.update_item(
+        db, token, share_id, entry_id, thread_id, payload, restore_generation=restore_generation
+    )

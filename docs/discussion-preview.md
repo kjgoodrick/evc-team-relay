@@ -138,7 +138,7 @@ automatic rotation or restore activation command yet. The client transport/store
 preserve explicit bindings and fence local old-generation work. Ordinary-session
 startup, reconnect and intent creation observe these bindings, with actual HTTP
 evidence from `discussions_client.py --restore-guard`. Complete recovery review
-and guards for marker, permission and inbox mutations are still unfinished.
+and guards for marker, permission and other mutation paths are still unfinished.
 This capability describes **discussion commands and withdrawals only**; it is
 not a complete service restore boundary. Do not manually activate it for a live
 share or claim the collaboration restore procedure is complete.
@@ -154,6 +154,16 @@ validation. The generation stays outside the canonical capture hash. The client
 requires each guard before using that authoring path on a restored share, and
 retains the original binding through offline delivery and retries. Real HTTP/MinIO
 picture delivery and PostgreSQL group-capture rotation tests cover these paths.
+
+`discussion_inbox_restore_guard` covers read/unread/dismiss and follow/mute
+mutations. The guard runs under the current share lock before target lookup,
+version comparison or exact subscription retry recognition. Read-only listing
+and subscription retrieval do not need the header. Client inbox choices retain
+their binding through offline saves, multiwindow delivery and reload; restoring
+locally preserves them for review and invalidates old leases. Late responses
+cannot remove the retained choice. PostgreSQL lock-wait tests prove stale ORM
+state cannot bypass the guard; actual HTTP tests run the inbox projection worker
+and ordinary client session with a synthetic restored share.
 
 The client must retain an operation's original generation across retries,
 offline storage, export/import and dependent commands. It must never replace that

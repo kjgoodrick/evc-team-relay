@@ -96,15 +96,19 @@ def main():
         from app.core import security
         from app.core.config import get_settings
 
-        if args.inbox:
+        if args.inbox or args.restore_guard:
             private_key, _ = security.generate_ed25519_keypair()
             os.environ.update(
                 COLLABORATION_INBOX_ENABLED="true",
                 RELAY_PRIVATE_KEY=private_key,
                 RELAY_PUBLIC_URL="ws://127.0.0.1:9",
-                MINIO_ENDPOINT="127.0.0.1:9",
-                MINIO_ACCESS_KEY="inbox-test",
-                MINIO_SECRET_KEY="disposable-inbox-test",
+                MINIO_ENDPOINT=args.pictures_endpoint or "127.0.0.1:9",
+                MINIO_ACCESS_KEY="picture-test" if args.pictures_endpoint else "inbox-test",
+                MINIO_SECRET_KEY=(
+                    "disposable-picture-test-password"
+                    if args.pictures_endpoint
+                    else "disposable-inbox-test"
+                ),
                 BOOTSTRAP_ADMIN_EMAIL="bootstrap@inbox.fixture",
                 BOOTSTRAP_ADMIN_PASSWORD=secrets.token_hex(32),
             )
@@ -249,7 +253,7 @@ def main():
                         str(number),
                         "--no-access-log",
                         "--lifespan",
-                        "on" if args.inbox else "off",
+                        "on" if args.inbox or args.restore_guard else "off",
                     ],
                     cwd=ROOT,
                     stdout=log,
@@ -258,9 +262,8 @@ def main():
                 ready(number, process)
                 result = subprocess.run(
                     [
-                        "npm",
-                        "test",
-                        "--",
+                        "node",
+                        str(args.plugin.resolve() / "node_modules/jest/bin/jest.js"),
                         "--runInBand",
                         "__tests__/collaboration/realRestoreStack.test.ts"
                         if args.restore_guard

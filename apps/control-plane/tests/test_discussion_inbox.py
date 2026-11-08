@@ -83,6 +83,52 @@ def mark(client, w, tid, version, action="read", *, actor="owner", expected=200)
     return response.json()
 
 
+def test_restore_guards_inbox_choices_and_exact_subscription_retries(client, db_session, world):
+    w = world
+    _, result = new_thread(client, w, w.owner)
+    tid = result["thread_id"]
+    assert inbox.run_batch() == 1
+    original = listing(client, w)["items"][0]
+    payload = {"expected_version": 0, "following": True, "muted": True}
+    accepted = preference(client, w, tid, **payload)
+    generation = uuid.uuid4()
+    w.share.collaboration_restore_generation = generation
+    db_session.commit()
+    auth = headers(w.tokens["owner"])
+    for old in (None, uuid.uuid4()):
+        stale = dict(auth)
+        if old:
+            stale["X-Relay-Restore-Generation"] = str(old)
+        # A prior exact receipt/version match must not bypass the restore guard.
+        response = client.post(
+            base(w) + f"/threads/{tid}/subscription", json=payload, headers=stale
+        )
+        assert response.status_code == 409 and "restore_generation_changed" in response.text
+        for action in ("read", "unread", "dismiss"):
+            response = client.post(
+                base(w) + f"/threads/{tid}/inbox",
+                json={"seen_version": original["version"], "action": action},
+                headers=stale,
+            )
+            assert response.status_code == 409 and "restore_generation_changed" in response.text
+    # Read-only retrieval still works without a mutation generation.
+    current = client.get(base(w) + f"/threads/{tid}/subscription", headers=auth)
+    assert current.status_code == 200 and current.json() == accepted
+    item = listing(client, w, include_muted=True)["items"][0]
+    assert item["read_version"] == 0 and item["dismissed_version"] == 0
+    auth["X-Relay-Restore-Generation"] = str(generation)
+    response = client.post(base(w) + f"/threads/{tid}/subscription", json=payload, headers=auth)
+    assert response.status_code == 200 and response.json() == accepted
+    response = client.post(
+        base(w) + f"/threads/{tid}/inbox",
+        json={"seen_version": original["version"], "action": "dismiss"},
+        headers=auth,
+    )
+    assert (
+        response.status_code == 200 and response.json()["dismissed_version"] == original["version"]
+    )
+
+
 def test_mentions_commit_with_message_and_exact_retry_never_duplicates(client, db_session, world):
     w = world
     payload, result = new_thread(client, w, w.owner, w.owner, w.reviewer)
