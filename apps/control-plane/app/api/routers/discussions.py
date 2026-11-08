@@ -15,7 +15,13 @@ from app.db.session import get_db
 from app.schemas.discussion_moderation import ModerationRead, ModerationReason
 from app.schemas.discussion_search import DiscussionSearch
 from app.schemas.discussions import CommandEnvelope
-from app.services import anchor_service, discussion_export, discussion_moderation, discussion_search
+from app.services import (
+    anchor_service,
+    discussion_export,
+    discussion_moderation,
+    discussion_search,
+    discussion_snapshot,
+)
 from app.services import discussion_service as service
 
 
@@ -191,6 +197,18 @@ def export_snapshot(
     db: Session = Depends(get_db),
 ):
     encoded = discussion_export.snapshot(db, token, share_id, entry_id, view_id=view_id)
+    return Response(encoded, media_type="application/json", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/shares/{share_id}/entries/{entry_id}/snapshot")
+def current_snapshot(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    view_id: uuid.UUID | None = None,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    encoded = discussion_snapshot.snapshot(db, token, share_id, entry_id, view_id=view_id)
     return Response(encoded, media_type="application/json", headers={"Cache-Control": "no-store"})
 
 

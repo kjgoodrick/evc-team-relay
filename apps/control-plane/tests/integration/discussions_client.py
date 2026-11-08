@@ -46,6 +46,11 @@ def main():
         help="Disposable MinIO at 127.0.0.1:<port>, using synthetic picture-test credentials",
     )
     parser.add_argument(
+        "--snapshot",
+        action="store_true",
+        help="Verify current-state baseline and cursor recovery with the real TypeScript client",
+    )
+    parser.add_argument(
         "--export",
         action="store_true",
         help="Verify portable discussion archives, optionally with picture storage",
@@ -57,14 +62,19 @@ def main():
     )
     args = parser.parse_args()
     if args.retention and (
-        not args.pictures_endpoint or args.export or args.inbox or args.search or args.restore_guard
+        not args.pictures_endpoint
+        or args.export
+        or args.inbox
+        or args.search
+        or args.restore_guard
+        or args.snapshot
     ):
         parser.error("Retention proof requires the disposable picture scenario")
-    scenarios = (args.inbox, args.search, args.export, args.restore_guard)
+    scenarios = (args.inbox, args.search, args.export, args.restore_guard, args.snapshot)
     if (
         sum(bool(value) for value in scenarios) > 1
         or args.pictures_endpoint
-        and (args.inbox or args.search)
+        and (args.inbox or args.search or args.snapshot)
     ):
         parser.error("Choose one disposable integration scenario")
     if args.pictures_endpoint:
@@ -80,6 +90,7 @@ def main():
             COLLABORATION_DISCUSSIONS_ENABLED="true",
             COLLABORATION_MODERATION_RECOVERY_ENABLED="true",
             COLLABORATION_EXPORT_ENABLED="true" if args.export else "false",
+            COLLABORATION_SNAPSHOT_ENABLED="true" if args.snapshot else "false",
             COLLABORATION_SEARCH_ENABLED="true" if args.search else "false",
             LOG_LEVEL="WARNING",
             CONTROL_PLANE_PUBLIC_URL=f"http://127.0.0.1:{number}",
@@ -267,6 +278,8 @@ def main():
                         "--runInBand",
                         "__tests__/collaboration/realRestoreStack.test.ts"
                         if args.restore_guard
+                        else "__tests__/collaboration/realDiscussionSnapshotStack.test.ts"
+                        if args.snapshot
                         else "__tests__/collaboration/realDiscussionExportStack.test.ts"
                         if args.export
                         else "__tests__/collaboration/realInboxStack.test.ts"
@@ -282,6 +295,8 @@ def main():
                         **os.environ,
                         "EVC_RESTORE_FIXTURE"
                         if args.restore_guard
+                        else "EVC_SNAPSHOT_FIXTURE"
+                        if args.snapshot
                         else "EVC_EXPORT_FIXTURE"
                         if args.export
                         else "EVC_INBOX_FIXTURE"
@@ -311,6 +326,8 @@ def main():
     print(
         "PASS: actual restore-generation HTTP guard, immutable queue and read-only receipts"
         if args.restore_guard
+        else "PASS: actual snapshot baseline, cursor recovery, catch-up and permission rechecks"
+        if args.snapshot
         else "PASS: actual discussion archive snapshot, pictures, hashes and permission rechecks"
         if args.export
         else "PASS: actual application inbox worker, HTTP client and offline recovery"

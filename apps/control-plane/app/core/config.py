@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     collaboration_export_enabled: bool = Field(
         default=False, description="Enable bounded read-only discussion archive snapshots"
     )
+    collaboration_snapshot_enabled: bool = Field(
+        default=False, description="Enable consistent current-state discussion synchronization"
+    )
     collaboration_moderation_recovery_enabled: bool = Field(
         default=False, description="Enable explicit audited reads of retained removed discussions"
     )
