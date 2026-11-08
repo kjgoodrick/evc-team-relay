@@ -32,8 +32,9 @@ read permission and a visible message/history reference. Removing a picture in
 an edit preserves live-message history access. Deleting a message or removing a
 thread hides its picture metadata/content/thumbnails from all ordinary readers,
 including its author and moderators. A separate surviving readable reference
-can still authorize the same picture. Restricted moderation recovery is a
-separate unfinished path. There are no bearer tokens, object keys or public image
+can still authorize the same picture. [Restricted moderation recovery](discussion-moderation-recovery-preview.md)
+uses separately audited POSTs and no ordinary picture cache; native recovery
+controls and timed purge remain unfinished. There are no bearer tokens, object keys or public image
 URLs in message bodies.
 
 Authorization is checked before upload work and again after object writes.

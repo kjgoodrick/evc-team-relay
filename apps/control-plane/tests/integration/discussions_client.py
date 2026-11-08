@@ -61,6 +61,7 @@ def main():
             JWT_SECRET=secrets.token_hex(32),
             COLLABORATION_POLICY_ENABLED="true",
             COLLABORATION_DISCUSSIONS_ENABLED="true",
+            COLLABORATION_MODERATION_RECOVERY_ENABLED="true",
             COLLABORATION_EXPORT_ENABLED="true" if args.export else "false",
             COLLABORATION_SEARCH_ENABLED="true" if args.search else "false",
             LOG_LEVEL="WARNING",

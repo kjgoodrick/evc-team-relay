@@ -24,6 +24,7 @@ from app.services import (
     collaboration_policy,
     discussion_export,
     discussion_inbox,
+    discussion_moderation,
     discussion_pictures,
     discussion_reattachment,
     discussion_search,
@@ -91,6 +92,7 @@ def capabilities(
             "discussion_inbox": discussion_inbox.enabled(),
             "discussion_search": discussion_search.enabled(),
             "discussion_export": discussion_export.enabled(),
+            "discussion_moderation_recovery": discussion_moderation.enabled(),
             "discussion_export_catalog": discussion_export.enabled(),
             "discussion_reattach": discussion_reattachment.enabled(),
             "discussion_recovery": (

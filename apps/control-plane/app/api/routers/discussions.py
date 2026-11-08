@@ -12,9 +12,10 @@ from starlette.requests import Request as StarletteRequest
 from app.api import deps
 from app.core.config import get_settings
 from app.db.session import get_db
+from app.schemas.discussion_moderation import ModerationRead, ModerationReason
 from app.schemas.discussion_search import DiscussionSearch
 from app.schemas.discussions import CommandEnvelope
-from app.services import anchor_service, discussion_export, discussion_search
+from app.services import anchor_service, discussion_export, discussion_moderation, discussion_search
 from app.services import discussion_service as service
 
 
@@ -274,4 +275,60 @@ def changes(
         limit=limit,
         view_id=view_id,
         include_timeline_markers=timeline_markers,
+    )
+
+
+@router.post(
+    "/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/messages/{message_id}/moderation-history"
+)
+def moderation_history(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    request: ModerationRead,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return discussion_moderation.history(
+        db, token, share_id, entry_id, thread_id, message_id, request
+    )
+
+
+@router.post(
+    "/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/messages/{message_id}"
+    "/moderation-pictures/{picture_id}"
+)
+def moderation_picture_metadata(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    picture_id: uuid.UUID,
+    request: ModerationReason,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return discussion_moderation.picture_metadata(
+        db, token, share_id, entry_id, thread_id, message_id, picture_id, request
+    )
+
+
+@router.post(
+    "/shares/{share_id}/entries/{entry_id}/threads/{thread_id}/messages/{message_id}"
+    "/moderation-pictures/{picture_id}/{variant}"
+)
+def moderation_picture_content(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    message_id: uuid.UUID,
+    picture_id: uuid.UUID,
+    variant: str,
+    request: ModerationReason,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return discussion_moderation.picture_content(
+        db, token, share_id, entry_id, thread_id, message_id, picture_id, variant, request
     )

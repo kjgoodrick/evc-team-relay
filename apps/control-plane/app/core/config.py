@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     collaboration_export_enabled: bool = Field(
         default=False, description="Enable bounded read-only discussion archive snapshots"
     )
+    collaboration_moderation_recovery_enabled: bool = Field(
+        default=False, description="Enable explicit audited reads of retained removed discussions"
+    )
+    collaboration_removed_content_retention_days: int = Field(default=30, ge=1, le=3650)
     collaboration_search_enabled: bool = Field(
         default=False,
         description="Preview authorized current-comment search; requires search migration",

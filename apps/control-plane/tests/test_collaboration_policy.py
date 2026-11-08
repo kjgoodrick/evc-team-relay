@@ -276,6 +276,7 @@ def test_preview_disabled_and_no_unimplemented_feature_advertised(client, team, 
         discussion_reattach=False,
         discussion_recovery=False,
         discussion_export=False,
+        discussion_moderation_recovery=False,
         discussion_export_catalog=False,
     )
     assert (

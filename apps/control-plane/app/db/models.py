@@ -47,6 +47,7 @@ class ShareMemberRole(str, Enum):
 
 
 class AuditAction(str, Enum):
+    DISCUSSION_RECOVERY_READ = "discussion_recovery_read"
     USER_CREATED = "user_created"
     USER_UPDATED = "user_updated"
     USER_DELETED = "user_deleted"
@@ -1201,6 +1202,7 @@ class DiscussionThread(Base):
         CheckConstraint("state IN ('open', 'resolved')", name="ck_discussion_thread_state"),
         CheckConstraint("state_revision >= 1", name="ck_discussion_state_revision"),
         Index("ix_discussion_threads_scope_created", "scope_id", "created_sequence"),
+        Index("ix_discussion_threads_deleted_at", "deleted_at"),
     )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     scope_id: Mapped[uuid.UUID] = mapped_column(
@@ -1213,6 +1215,10 @@ class DiscussionThread(Base):
     state_revision: Mapped[int] = mapped_column(default=1, nullable=False)
     deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
     removal_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    content_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     anchor_revision: Mapped[int] = mapped_column(default=1, nullable=False)
     created_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     activity_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -1243,6 +1249,7 @@ class DiscussionMessage(Base):
     __table_args__ = (
         CheckConstraint("revision >= 1", name="ck_discussion_message_revision"),
         Index("ix_discussion_messages_thread_created", "thread_id", "created_sequence"),
+        Index("ix_discussion_messages_deleted_at", "deleted_at"),
     )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     thread_id: Mapped[uuid.UUID] = mapped_column(
@@ -1253,6 +1260,10 @@ class DiscussionMessage(Base):
     )
     revision: Mapped[int] = mapped_column(default=1, nullable=False)
     deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    content_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False

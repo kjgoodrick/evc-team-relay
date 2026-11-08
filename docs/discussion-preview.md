@@ -43,7 +43,8 @@ message with a reason, or remove a thread with a reason. Ordinary readers see
 message tombstones, not deleted history. This also applies to authors and
 moderators: ordinary history and picture endpoints cannot retrieve removed
 content, and removed threads reject ordinary thread/message/anchor-history reads.
-Separately authorized, audited moderation recovery is still being implemented.
+Separately authorized, audited reads are available in the default-off
+[moderation recovery preview](discussion-moderation-recovery-preview.md).
 Authorized readers can fetch removal state metadata without the body or anchor. Account
 deletion nulls author references and retains history; share deletion cascades
 discussion content and receipts. There is no private-thread feature.
@@ -265,9 +266,10 @@ message alone no longer authorizes its metadata, content or thumbnail.
 
 Authorization is rechecked after picture object I/O, including deletion while a
 download is in flight. Retained database history has not been purged by this
-change. A separately authorized, audited recovery interface and timed retention
-cleanup remain unfinished and cannot be reached through an ordinary History
-button. Existing local/exported copies are not retroactively erased.
+change. The separate [audited recovery API](discussion-moderation-recovery-preview.md)
+is available behind its own disabled flag; native administrator controls and
+timed cleanup remain unfinished. It cannot be reached through an ordinary
+History button. Existing local/exported copies are not retroactively erased.
 
 The discussion, picture, export and search regression set has 156 passing tests
 across its run and focused correction rerun. Removed-thread/body/history checks

@@ -552,6 +552,7 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
             if not ctx.moderate or not command.reason.strip():
                 error(403, "moderation_required")
             thread.deleted = True
+            thread.deleted_at = security.utcnow()
             thread.removal_reason = command.reason
         else:
             changed = thread.state != command.state
@@ -580,6 +581,8 @@ def _apply_command(db: Session, token: str, envelope: s.CommandEnvelope, proof=N
             message.revision += 1
             message.edited_at = security.utcnow()
             message.deleted = isinstance(command, s.MessageDelete)
+            if message.deleted:
+                message.deleted_at = message.edited_at
             body = (
                 command.body.model_dump(mode="json") if isinstance(command, s.MessageEdit) else None
             )
