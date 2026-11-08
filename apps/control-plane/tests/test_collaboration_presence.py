@@ -2307,7 +2307,7 @@ def test_base_position_discovery_feature_gate(client, team, surface_team, monkey
     "patch",
     [
         {"version": True},
-        {"version": 3},
+        {"version": 4},
         {"path": "private"},
         {"pointer": {}},
         {"viewport": {"x": 1}},
@@ -2727,7 +2727,7 @@ def test_extended_target_versions_coordinates_and_duplicates_are_strict():
 
 
 @pytest.mark.parametrize(
-    "version,states", [(True, True), (2.0, True), ("2", True), (3, True), (2, False)]
+    "version,states", [(True, True), (2.0, True), ("2", True), (4, True), (2, False)]
 )
 def test_extended_watch_requires_explicit_valid_base_negotiation(
     client, team, surface_team, version, states
@@ -3055,3 +3055,119 @@ def test_connection_output_budget_combines_all_subscription_and_control_frames(m
         owner.remove(viewer)
 
     asyncio.run(run())
+
+
+def configure_formula_presence(db, surfaces, monkeypatch):
+    monkeypatch.setattr(get_settings(), "collaboration_presence_formula_groups_enabled", True)
+    monkeypatch.setattr(get_settings(), "collaboration_discussions_enabled", False)
+    monkeypatch.setattr(get_settings(), "collaboration_bases_formula_groups_enabled", False)
+    configure_presence_groups(db, surfaces)
+    surfaces.definition.configuration = {
+        "formulas": {
+            "double": "order * 2",
+            "bucket": 'if(status == "Ready", formula.double, linked)',
+        }
+    }
+    for view in surfaces.views:
+        view.descriptor = {**view.descriptor, "groupBy": {"property": "formula.bucket"}}
+    db.commit()
+
+
+def test_formula_presence_context_is_negotiated_read_only_and_independent_of_comments(
+    client, db_session, engine, team, surface_team, monkeypatch
+):
+    configure_formula_presence(db_session, surface_team, monkeypatch)
+    legacy = base_context(client, team, surface_team.base)
+    assert legacy.status_code == 200 and "formula_groups" not in legacy.json()
+    statements = []
+
+    def record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        response = client.get(
+            "/v1/collaboration/base-context",
+            params={
+                "share_id": str(team.share.id),
+                "entry_id": surface_team.base.id,
+                "base_target_version": 3,
+            },
+            headers={"Authorization": "Bearer " + team.tokens["viewer"]},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["formula_groups"] == [
+        {
+            "view_id": str(view.id),
+            "property": {"source": "formula", "name": "bucket"},
+            "inputs": [{"source": "note", "name": key} for key in ("linked", "order", "status")],
+        }
+        for view in surface_team.views
+    ]
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    assert len([s for s in statements if "collaboration_bases.configuration" in s]) == 1
+    assert "order * 2" not in response.text
+
+
+@pytest.mark.parametrize("timeline", [False, True])
+@pytest.mark.parametrize("older", [1, 2])
+def test_formula_groups_negotiate_without_breaking_older_receivers(
+    client, db_session, team, surface_team, monkeypatch, timeline, older
+):
+    configure_formula_presence(db_session, surface_team, monkeypatch)
+    location = surface_team.locations[2 if timeline else 1]
+    group = extended_group(team.notes["first"], (team.notes["second"],))
+    group["property"] = {"source": "formula", "name": "bucket"}
+    state = {
+        **extended_state(
+            extended_range(group) if timeline else group, base_position(team.notes["first"])
+        ),
+        "version": 3,
+    }
+    with connected(client, team.tokens["viewer"], protocol_version=2) as (publisher, _):
+        publish(publisher, location)
+        with connected(client, team.tokens["owner"], protocol_version=2) as (legacy, _):
+            watch_base(legacy, location, older)
+            with connected(client, team.tokens["owner"], protocol_version=2) as (modern, _):
+                watch_base(modern, location, 3)
+                move_base(publisher, location, state)
+                assert recv(modern)["peers"][0]["state"] == state
+                assert recv(legacy)["peers"][0]["state"] == {
+                    "version": older,
+                    "pointer": None,
+                    "viewport": state["viewport"],
+                }
+
+
+@pytest.mark.parametrize("loss", ["flag", "syntax", "linked_access", "member_type"])
+def test_formula_group_presence_checks_gate_syntax_and_every_declared_input(
+    db_session, team, surface_team, monkeypatch, loss
+):
+    configure_formula_presence(db_session, surface_team, monkeypatch)
+    group = extended_group(team.notes["first"], (team.notes["second"],))
+    group["property"] = {"source": "formula", "name": "bucket"}
+    state = presence.BaseState.model_validate({**extended_state(group), "version": 3})
+    location = presence.BaseLocation.model_validate(surface_team.locations[1])
+    presence.authorize_base_state(db_session, team.viewer, location, state)
+    if loss == "flag":
+        monkeypatch.setattr(get_settings(), "collaboration_presence_formula_groups_enabled", False)
+    elif loss == "syntax":
+        surface_team.definition.configuration = {"formulas": {"bucket": 'file("Private").score'}}
+    elif loss == "linked_access":
+        db_session.add(
+            models.ManagedRule(
+                share_id=team.share.id,
+                user_id=team.viewer.id,
+                path="Second.md",
+                recursive=False,
+                permission="none",
+            )
+        )
+    else:
+        team.notes["first"].record = {"type": "image", "hash": "c" * 64}
+    db_session.commit()
+    with pytest.raises(HTTPException):
+        presence.authorize_base_state(db_session, team.viewer, location, state)

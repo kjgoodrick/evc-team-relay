@@ -194,9 +194,7 @@ class BasePresenceGroup(BasePresenceItem):
     def supported_group(self):
         from app.services.base_file_group_values import PROPERTIES
 
-        if self.property.source == "formula" or (
-            self.property.source == "file" and self.property.name.lower() not in PROPERTIES
-        ):
+        if self.property.source == "file" and self.property.name.lower() not in PROPERTIES:
             raise ValueError("Unsupported presence group")
         ids = [self.record_id, *(ref.record_id for ref in self.references)]
         if len(set(ids)) != len(ids):
@@ -253,12 +251,17 @@ class BasePosition(BaseModel):
 
 class BaseState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    version: int = Field(strict=True, ge=1, le=2)
+    version: int = Field(strict=True, ge=1, le=3)
     pointer: BasePosition | None
     viewport: BasePosition | None
 
     @model_validator(mode="after")
     def negotiated_targets(self):
+        if self.version < 3 and any(
+            position and formula_group_target(position.target)
+            for position in (self.pointer, self.viewport)
+        ):
+            raise ValueError("Formula groups require version three")
         if self.version == 1 and any(
             position and isinstance(position.target, (BasePresenceGroup, BasePresenceRange))
             for position in (self.pointer, self.viewport)
@@ -270,6 +273,12 @@ class BaseState(BaseModel):
 
     def for_version(self, version: int) -> dict:
         result = self.model_dump(mode="json")
+        result["version"] = min(self.version, version)
+        if version < 3:
+            for field in ("pointer", "viewport"):
+                position = getattr(self, field)
+                if position and formula_group_target(position.target):
+                    result[field] = None
         if version == 1:
             result["version"] = 1
             for field in ("pointer", "viewport"):
@@ -288,6 +297,11 @@ class BaseState(BaseModel):
             sort_keys=True,
             separators=(",", ":"),
         )
+
+
+def formula_group_target(target):
+    group = target.lane if isinstance(target, BasePresenceRange) else target
+    return isinstance(group, BasePresenceGroup) and group.property.source == "formula"
 
 
 class BaseRecordContext(BaseModel):
@@ -314,6 +328,13 @@ class BasePresenceView(BaseModel):
         return value
 
 
+class BasePresenceFormulaGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    view_id: uuid.UUID
+    property: BasePresenceProperty
+    inputs: list[BasePresenceProperty] = Field(max_length=32)
+
+
 class BasePresenceContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     protocol_version: Literal[1] = 1
@@ -324,6 +345,7 @@ class BasePresenceContext(BaseModel):
     registry_revision: int = Field(strict=True, ge=1, le=9007199254740991)
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     views: list[BasePresenceView] = Field(max_length=64)
+    formula_groups: list[BasePresenceFormulaGroup] | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def unique_views(self):
@@ -445,12 +467,26 @@ def authorize_embed(db, user, location: Location, embed: EmbeddedImage) -> None:
 
 
 def authorize_base_state(db, user, location: BaseLocation, state: BaseState) -> None:
-    from app.services import base_target_definitions, timeline_axes
+    from app.services import base_presence_formulas, base_target_definitions, timeline_axes
 
     share = share_service.get_share(db, location.share_id)
     records = {}
     descriptor = None
     axis_candidate = None
+    configuration = None
+
+    def config():
+        nonlocal configuration
+        if configuration is None:
+            configuration = (
+                db.scalar(
+                    select(models.BaseDefinition.configuration).where(
+                        models.BaseDefinition.id == location.definition_id
+                    )
+                )
+                or {}
+            )
+        return configuration
 
     def record(record_id, generation, *, markdown=False):
         if record_id not in records:
@@ -487,10 +523,17 @@ def authorize_base_state(db, user, location: BaseLocation, state: BaseState) -> 
             != target.property.model_dump(mode="json")
         ):
             raise HTTPException(403, "Position unavailable")
+        if target.property.source == "formula" and (
+            not base_presence_formulas.enabled()
+            or base_presence_formulas.plan(config(), view()) is None
+        ):
+            raise HTTPException(403, "Position unavailable")
         # A fingerprint is only a local matching hint, never an authority proof.
         # Both parties must read the selected member and every linked input.
         record(
-            target.record_id, target.record_generation, markdown=target.property.source == "note"
+            target.record_id,
+            target.record_generation,
+            markdown=target.property.source in {"note", "formula"},
         )
         for reference in target.references:
             record(reference.record_id, reference.record_generation)
@@ -507,17 +550,12 @@ def authorize_base_state(db, user, location: BaseLocation, state: BaseState) -> 
                     else ("startDateProp", "endDateProp")
                 )
             ]
-            configuration = {}
-            if any(prop and prop["source"] == "formula" for prop in properties):
-                configuration = (
-                    db.scalar(
-                        select(models.BaseDefinition.configuration).where(
-                            models.BaseDefinition.id == location.definition_id
-                        )
-                    )
-                    or {}
-                )
-            axis_candidate = timeline_axes.candidate(configuration, saved)
+            axis_candidate = timeline_axes.candidate(
+                config()
+                if any(prop and prop["source"] == "formula" for prop in properties)
+                else {},
+                saved,
+            )
         return axis_candidate
 
     for position in (state.pointer, state.viewport):
@@ -598,13 +636,18 @@ def image_location(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> Imag
             raise HTTPException(403, "Location unavailable") from None
 
 
-def base_context(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> BasePresenceContext:
+def base_context(
+    token: str, share_id: uuid.UUID, entry_id: uuid.UUID, base_target_version=1
+) -> BasePresenceContext:
     """Read existing active identities only: no inspection, repair or object I/O.
 
     Presence must not initialize a registry or change the saved configuration.
     Clients prove their native source against this hash before choosing a slot.
-    Unmatched/archived descriptors, formulas, filters and record data stay out.
+    Unmatched/archived descriptors, formula text, filters and record data stay out.
+    Version-three callers may receive bounded static formula-input names only.
     """
+    from app.services import base_presence_formulas
+
     authenticate(token)
     with get_sessionmaker()() as db:
         user = deps._get_user_from_token(db, token)
@@ -625,6 +668,7 @@ def base_context(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> BasePr
                 view.slot,
                 view.descriptor["name"].label("name"),
                 view.descriptor["type"].label("type"),
+                view.descriptor,
             )
             .outerjoin(view, and_(view.definition_id == definition.id, view.state == "active"))
             .where(
@@ -638,6 +682,27 @@ def base_context(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> BasePr
         if not rows:
             raise HTTPException(403, "Location unavailable")
         current = rows[0]
+        formula_groups = None
+        if base_target_version >= 3 and base_presence_formulas.enabled():
+            # Fetch the configuration once, only for opted-in callers. Exact
+            # revision/hash predicates prevent mixing a concurrent reconcile.
+            configuration = db.scalar(
+                select(definition.configuration).where(
+                    definition.id == current.id,
+                    definition.revision == current.revision,
+                    definition.content_sha256 == current.content_sha256,
+                )
+            )
+            formula_groups, remaining = [], 16_382
+            for row in rows:
+                candidate = base_presence_formulas.plan(configuration, row.descriptor)
+                if row.view_id is None or candidate is None:
+                    continue
+                candidate = {"view_id": str(row.view_id), **candidate}
+                size = len(json.dumps(candidate, ensure_ascii=True)) + 2
+                if size <= remaining:
+                    formula_groups.append(candidate)
+                    remaining -= size
         try:
             return BasePresenceContext(
                 share_id=share_id,
@@ -651,6 +716,7 @@ def base_context(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> BasePr
                     for row in rows
                     if row.view_id is not None
                 ],
+                formula_groups=formula_groups,
             )
         except (ValueError, AttributeError):
             raise HTTPException(403, "Location unavailable") from None

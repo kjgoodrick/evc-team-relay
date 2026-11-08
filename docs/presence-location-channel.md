@@ -508,8 +508,9 @@ generation, a 64-character value fingerprint and at most eight additional record
 references. Current read access and generation are checked for every input for
 both publisher and observer, including on idle revalidation. A denied input
 withdraws the entire precise state without withdrawing an otherwise readable
-Base participant. Note groups require a Markdown member. Formula groups and
-non-inventory file groups are not accepted by this initial adapter. Group labels,
+Base participant. Note groups require a Markdown member. Formula groups require the separately negotiated
+[version-three extension](base-formula-presence.md); non-inventory file groups
+remain unsupported. Group labels,
 values and paths are not transmitted. Fingerprints are only client matching hints;
 the server does not attest membership or treat a hash as an authorization proof.
 

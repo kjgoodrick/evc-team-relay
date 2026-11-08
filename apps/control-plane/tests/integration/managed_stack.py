@@ -83,6 +83,11 @@ def main():
         help="Run offline Bases deletion and recovery against the managed inventory",
     )
     parser.add_argument(
+        "--base-formula-presence",
+        action="store_true",
+        help="Run formula group presence and live input revocation over real sockets",
+    )
+    parser.add_argument(
         "--image-anchors",
         action="store_true",
         help="Run image occurrence comments through the private relay barrier",
@@ -106,6 +111,7 @@ def main():
         (
             args.base_groups,
             args.base_formula_groups,
+            args.base_formula_presence,
             args.base_sources,
             args.text_anchors,
             args.image_anchors,
@@ -115,7 +121,7 @@ def main():
         )
     ):
         parser.error("Choose the Bases lifecycle fixture by itself")
-    if args.base_formula_groups:
+    if args.base_formula_groups or args.base_formula_presence:
         args.base_groups = True
     if args.image_anchors or args.base_sources or args.base_groups:
         args.text_anchors = True
@@ -200,6 +206,11 @@ allowed_token_types = ["server"]
 
         if args.presence_locations:
             os.environ["COLLABORATION_PRESENCE_ENABLED"] = "true"
+        if args.base_formula_presence:
+            os.environ.update(
+                COLLABORATION_PRESENCE_ENABLED="true",
+                COLLABORATION_PRESENCE_FORMULA_GROUPS_ENABLED="true",
+            )
         if args.image_anchors:
             os.environ["COLLABORATION_IMAGE_ANCHORS_ENABLED"] = "true"
         if args.image_files:
@@ -424,7 +435,9 @@ path = "{temp / "relay-data"}"
                         time.sleep(0.2)
                     return 0
                 fixture_variable = (
-                    "EVC_BASE_LIFECYCLE_FIXTURE"
+                    "EVC_BASE_FORMULA_PRESENCE_FIXTURE"
+                    if args.base_formula_presence
+                    else "EVC_BASE_LIFECYCLE_FIXTURE"
                     if args.base_lifecycle
                     else "EVC_BASE_GROUP_FIXTURE"
                     if args.base_groups
@@ -441,7 +454,9 @@ path = "{temp / "relay-data"}"
                     else "EVC_MANAGED_FIXTURE"
                 )
                 test_file = (
-                    "__tests__/bases/realBaseLifecycle.test.ts"
+                    "__tests__/presence/realBaseFormulaPresence.test.ts"
+                    if args.base_formula_presence
+                    else "__tests__/bases/realBaseLifecycle.test.ts"
                     if args.base_lifecycle
                     else "__tests__/collaboration/realBaseGroupStack.test.ts"
                     if args.base_groups

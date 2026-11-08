@@ -135,6 +135,9 @@ class Settings(BaseSettings):
     collaboration_presence_enabled: bool = Field(
         default=False, description="Enable the single-process collaboration location channel"
     )
+    collaboration_presence_formula_groups_enabled: bool = Field(
+        default=False, description="Enable bounded same-record formula group presence"
+    )
     access_token_expire_minutes: int = Field(default=60)
     refresh_token_expire_days: int = Field(default=30)
 

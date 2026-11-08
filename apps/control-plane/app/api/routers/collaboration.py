@@ -18,6 +18,7 @@ from app.services import (
     anchor_service,
     base_discussions,
     base_file_group_values,
+    base_presence_formulas,
     bases_registry,
     collaboration_auth,
     collaboration_policy,
@@ -60,6 +61,7 @@ def capabilities(
             and bases_registry.enabled(),
             "presence_base_targets_v2_preview": get_settings().collaboration_presence_enabled
             and bases_registry.enabled(),
+            "presence_base_targets_v3_preview": base_presence_formulas.enabled(),
             "presence_image_states_preview": get_settings().collaboration_presence_enabled,
             "presence_embedded_images_preview": get_settings().collaboration_presence_enabled,
             "presence_multi_watch_preview": get_settings().collaboration_presence_enabled,

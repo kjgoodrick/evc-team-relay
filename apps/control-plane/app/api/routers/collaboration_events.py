@@ -13,6 +13,7 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    Query,
     Request,
     Response,
     WebSocket,
@@ -59,14 +60,17 @@ async def base_context(
     entry_id: uuid.UUID,
     response: Response,
     token: str | None = Depends(deps.oauth2_scheme),
+    base_target_version: int = Query(default=1, ge=1, le=3),
 ):
     if not enabled() or not presence.bases_registry.enabled():
         raise HTTPException(404, "Bases presence context disabled")
     if not token:
         raise HTTPException(401, "Missing credentials")
-    context = await run_in_threadpool(presence.base_context, token, share_id, entry_id)
+    context = await run_in_threadpool(
+        presence.base_context, token, share_id, entry_id, base_target_version
+    )
     response.headers["Cache-Control"] = "no-store"
-    return context.model_dump(mode="json")
+    return context.model_dump(mode="json", exclude_none=True)
 
 
 @router.post("/socket-ticket")
@@ -294,7 +298,7 @@ async def handle(
                     raise ValueError("Invalid Bases observation")
                 if (
                     type(base_target_version) is not int
-                    or base_target_version not in (1, 2)
+                    or base_target_version not in (1, 2, 3)
                     or "base_target_version" in message
                     and not base_states
                 ):
@@ -571,7 +575,7 @@ async def deliver_watch(
         return
     limit = (
         presence.MAX_BASE_TARGET_BYTES
-        if base_states and watch.base_target_version == 2
+        if base_states and watch.base_target_version >= 2
         else presence.MAX_ROSTER_BYTES
     )
     if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > limit:
