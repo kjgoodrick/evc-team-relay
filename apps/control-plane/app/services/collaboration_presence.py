@@ -30,6 +30,9 @@ from app.services import bases_registry, managed_service, share_service
 from app.services.presence_protocol import PresenceIdentity, identity_for, relative_position
 
 MAX_CONNECTIONS = 128
+MAX_OBSERVATIONS = 8
+MAX_OUTPUT_BURST = 2 * 1024 * 1024
+OUTPUT_BYTES_PER_SECOND = 1024 * 1024
 MAX_TICKETS = 512
 TICKET_SECONDS = 30
 IDLE_SECONDS = 30
@@ -759,6 +762,14 @@ class Follow:
     target: PeerKey
 
 
+@dataclass
+class WatchDelivery:
+    roster_pending: bool = False
+    states_pending: bool = False
+    last_roster: bytes | None = None
+    last_image_states: bytes | None = None
+
+
 @dataclass(frozen=True)
 class Watch:
     subscription_id: str
@@ -767,6 +778,7 @@ class Watch:
     embedded_images: bool = False
     base_states: bool = False
     base_target_version: int = 1
+    delivery: WatchDelivery = field(default_factory=WatchDelivery, compare=False)
 
 
 @dataclass(eq=False)
@@ -783,6 +795,7 @@ class Connection:
     base_revision: int = 0
     follow: Follow | None = None
     watch: Watch | None = None
+    observations: dict[str, Watch] = field(default_factory=dict)
     revision: int = 0
     closed: bool = False
     last_seen: float = field(default_factory=time.monotonic)
@@ -792,14 +805,32 @@ class Connection:
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     controls: list[dict] = field(default_factory=list)
     last_location: dict | None = None
-    last_roster: dict | None = None
-    last_image_states: dict | None = None
+    output_allowance: float = MAX_OUTPUT_BURST
+    output_time: float = field(default_factory=time.monotonic)
     allowance: float = 20
     allowance_time: float = field(default_factory=time.monotonic)
 
     @property
     def key(self) -> PeerKey:
         return self.actor.key(self.instance_id)
+
+    def watches(self) -> tuple[Watch, ...]:
+        return ((self.watch,) if self.watch else ()) + tuple(self.observations.values())
+
+    def has_watch(self, watch: Watch) -> bool:
+        return self.watch is watch or self.observations.get(watch.subscription_id) is watch
+
+    def permit_output(self, size: int) -> bool:
+        now = time.monotonic()
+        self.output_allowance = min(
+            MAX_OUTPUT_BURST,
+            self.output_allowance + (now - self.output_time) * OUTPUT_BYTES_PER_SECOND,
+        )
+        self.output_time = now
+        if size > self.output_allowance:
+            return False
+        self.output_allowance -= size
+        return True
 
     def permit_message(self) -> bool:
         now = time.monotonic()
@@ -890,16 +921,29 @@ class PresenceBroker:
         if publisher and publisher.location:
             self.notify_room(publisher.location)
 
-    def notify_room(self, location: SurfaceLocation) -> None:
-        for viewer in self.watchers.get(room_location(location), ()):
-            if viewer.watch and not viewer.watch.embedded_images:
-                viewer.roster_dirty.set()
-            if viewer.watch and (
-                viewer.watch.image_states
-                or viewer.watch.embedded_images
-                or viewer.watch.base_states
-            ):
-                viewer.image_dirty.set()
+    def mark_watch(self, connection: Connection, watch: Watch, *, roster=True, states=True) -> None:
+        if roster and not watch.embedded_images:
+            watch.delivery.roster_pending = True
+            connection.roster_dirty.set()
+        if states and (watch.image_states or watch.embedded_images or watch.base_states):
+            watch.delivery.states_pending = True
+            connection.image_dirty.set()
+
+    def notify_room(self, location: SurfaceLocation, *, roster=True) -> None:
+        room = room_location(location)
+        for viewer in self.watchers.get(room, ()):
+            for watch in viewer.watches():
+                if room_location(watch.location) == room:
+                    self.mark_watch(viewer, watch, roster=roster)
+
+    def notify_movement(self, publisher: Connection, location: SurfaceLocation) -> None:
+        room = room_location(location)
+        for viewer in self.watchers.get(room, ()):
+            if viewer is publisher:
+                continue
+            for watch in viewer.watches():
+                if room_location(watch.location) == room:
+                    self.mark_watch(viewer, watch, roster=False)
 
     def move(
         self, connection: Connection, location: ImageLocation, state: ImageState | None
@@ -913,9 +957,7 @@ class PresenceBroker:
         connection.image_state = state
         # Movement never invalidates the participant roster or Follow identity.
         # Each observer holds one replaceable snapshot, not a movement queue.
-        for viewer in self.watchers.get(location, ()):
-            if viewer is not connection and viewer.watch and viewer.watch.image_states:
-                viewer.image_dirty.set()
+        self.notify_movement(connection, location)
 
     def room_peers(self, location: SurfaceLocation, viewer: Connection) -> list[Connection]:
         return sorted(
@@ -936,9 +978,7 @@ class PresenceBroker:
         if not previous or not state or previous.semantic_key() != state.semantic_key():
             connection.base_revision += 1
         connection.base_state = state
-        for viewer in self.watchers.get(location, ()):
-            if viewer is not connection and viewer.watch and viewer.watch.base_states:
-                viewer.image_dirty.set()
+        self.notify_movement(connection, location)
 
     def move_embed(
         self, connection: Connection, location: Location, embed: EmbeddedImage | None
@@ -953,26 +993,54 @@ class PresenceBroker:
         if not previous or not embed or previous.semantic_key() != embed.semantic_key():
             connection.embed_revision += 1
         connection.image_embed = embed
-        for viewer in self.watchers.get(room_location(location), ()):
-            if viewer is not connection and viewer.watch and viewer.watch.embedded_images:
-                viewer.image_dirty.set()
+        self.notify_movement(connection, location)
 
-    def watch(self, connection: Connection, watch: Watch | None) -> None:
-        if connection.watch:
-            group = self.watchers.get(room_location(connection.watch.location))
+    def _watch_rooms(self, connection: Connection) -> set[SurfaceLocation]:
+        return {room_location(watch.location) for watch in connection.watches()}
+
+    def _reindex_watches(self, connection: Connection, previous: set[SurfaceLocation]) -> None:
+        current = self._watch_rooms(connection)
+        for room in previous - current:
+            group = self.watchers.get(room)
             if group is not None:
                 group.discard(connection)
                 if not group:
-                    self.watchers.pop(room_location(connection.watch.location), None)
+                    self.watchers.pop(room, None)
+        for room in current - previous:
+            self.watchers.setdefault(room, set()).add(connection)
+
+    def watch(self, connection: Connection, watch: Watch | None) -> None:
+        if watch and watch.subscription_id in connection.observations:
+            raise ValueError("Duplicate observation identifier")
+        previous = self._watch_rooms(connection)
         connection.watch = watch
-        connection.last_roster = None
-        connection.last_image_states = None
+        self._reindex_watches(connection, previous)
         if watch:
-            self.watchers.setdefault(room_location(watch.location), set()).add(connection)
-            if not watch.embedded_images:
-                connection.roster_dirty.set()
-            if watch.image_states or watch.embedded_images or watch.base_states:
-                connection.image_dirty.set()
+            self.mark_watch(connection, watch)
+
+    def observe(self, connection: Connection, watch: Watch) -> None:
+        if connection.watch and connection.watch.subscription_id == watch.subscription_id:
+            raise ValueError("Duplicate observation identifier")
+        if (
+            watch.subscription_id not in connection.observations
+            and len(connection.observations) >= MAX_OBSERVATIONS
+        ):
+            raise OverflowError("Too many presence observations")
+        previous = self._watch_rooms(connection)
+        connection.observations[watch.subscription_id] = watch
+        self._reindex_watches(connection, previous)
+        self.mark_watch(connection, watch)
+
+    def unobserve(self, connection: Connection, subscription: str) -> None:
+        previous = self._watch_rooms(connection)
+        connection.observations.pop(subscription, None)
+        self._reindex_watches(connection, previous)
+
+    def remove_watch(self, connection: Connection, watch: Watch) -> None:
+        if connection.watch is watch:
+            self.watch(connection, None)
+        elif connection.observations.get(watch.subscription_id) is watch:
+            self.unobserve(connection, watch.subscription_id)
 
     def subscribe(self, connection: Connection, follow: Follow | None) -> None:
         if connection.follow:
@@ -992,6 +1060,8 @@ class PresenceBroker:
         connection.closed = True
         self.subscribe(connection, None)
         self.watch(connection, None)
+        for subscription in tuple(connection.observations):
+            self.unobserve(connection, subscription)
         if self.connections.get(connection.key) is connection:
             self.connections.pop(connection.key)
             self.notify(connection.key)

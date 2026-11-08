@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import time
 import uuid
@@ -264,7 +265,7 @@ async def handle(
                 subscription = identifier(message["subscription_id"])
                 if connection.follow and connection.follow.subscription_id == subscription:
                     owner.subscribe(connection, None)
-            elif kind == "watch" and connection.protocol_version == 2:
+            elif kind in ("watch", "observe") and connection.protocol_version == 2:
                 fields(
                     message,
                     {"type", "subscription_id", "location"}
@@ -274,7 +275,7 @@ async def handle(
                 )
                 subscription = identifier(message["subscription_id"])
                 location = presence.parse_location(message["location"], 2)
-                if isinstance(location, presence.Location):
+                if kind == "watch" and isinstance(location, presence.Location):
                     raise ValueError("Notes use managed awareness")
                 image_states = message.get("image_states", False)
                 base_states = message.get("base_states", False)
@@ -298,17 +299,42 @@ async def handle(
                     and not base_states
                 ):
                     raise ValueError("Invalid Bases target version")
-                await run_in_threadpool(presence.authenticate, connection.token, location)
-                owner.watch(
-                    connection,
-                    presence.Watch(
+                if (
+                    kind == "observe"
+                    and subscription not in connection.observations
+                    and len(connection.observations) >= presence.MAX_OBSERVATIONS
+                ):
+                    raise OverflowError("Too many presence observations")
+                try:
+                    await run_in_threadpool(presence.authenticate, connection.token, location)
+                except HTTPException as error:
+                    if kind != "observe" or error.status_code not in (403, 404):
+                        raise
+                    # One inaccessible passive pane must not disconnect the
+                    # foreground publisher or other authorized observations.
+                    owner.unobserve(connection, subscription)
+                    connection.control(
+                        {
+                            "type": "image_embeds"
+                            if isinstance(location, presence.Location)
+                            else "roster",
+                            "subscription_id": subscription,
+                            "status": "unavailable",
+                        }
+                    )
+                else:
+                    watch = presence.Watch(
                         subscription,
                         location,
                         image_states,
+                        embedded_images=isinstance(location, presence.Location),
                         base_states=base_states,
                         base_target_version=base_target_version,
-                    ),
-                )
+                    )
+                    if kind == "observe":
+                        owner.observe(connection, watch)
+                    else:
+                        owner.watch(connection, watch)
             elif kind == "watch_embeds" and connection.protocol_version == 2:
                 fields(message, {"type", "subscription_id", "location"})
                 subscription = identifier(message["subscription_id"])
@@ -322,6 +348,9 @@ async def handle(
                 subscription = identifier(message["subscription_id"])
                 if connection.watch and connection.watch.subscription_id == subscription:
                     owner.watch(connection, None)
+            elif kind == "unobserve" and connection.protocol_version == 2:
+                fields(message, {"type", "subscription_id"})
+                owner.unobserve(connection, identifier(message["subscription_id"]))
             elif kind == "ping":
                 fields(message, {"type"})
                 connection.control({"type": "pong"})
@@ -342,6 +371,9 @@ async def send(
         async with connection.send_lock:
             if current and not current():
                 return False
+            size = len(json.dumps(message, ensure_ascii=False).encode("utf-8"))
+            if not connection.permit_output(size):
+                raise OverflowError("Presence output budget exceeded")
             await websocket.send_json(message)
             return True
 
@@ -419,156 +451,161 @@ async def deliver_roster(
         if image_states:
             await asyncio.sleep(presence.IMAGE_STATE_INTERVAL)
         dirty.clear()
-        watch, token = viewer.watch, viewer.token
-        if (
-            not watch
-            or (
-                image_states
-                and not (watch.image_states or watch.embedded_images or watch.base_states)
-            )
-            or (not image_states and watch.embedded_images)
-        ):
-            continue
-        peers = owner.room_peers(watch.location, viewer)
-        captured = [(peer, peer.revision, peer.token) for peer in peers]
-        embed_revisions = (
-            {peer: peer.embed_revision for peer in peers} if watch.embedded_images else {}
-        )
-        base_states = image_states and watch.base_states
-        base_revisions = {peer: peer.base_revision for peer in peers} if base_states else {}
-        result = {
-            "type": "image_embeds"
-            if watch.embedded_images
-            else "base_states"
-            if base_states
-            else "image_states"
-            if image_states
-            else "roster",
-            "subscription_id": watch.subscription_id,
-            "status": "unavailable",
-        }
-        try:
-            if base_states:
-                identities = await run_in_threadpool(
-                    presence.base_state_snapshot,
-                    token,
-                    watch.location,
-                    [
-                        (peer.key, saved_token, peer.base_state)
-                        for peer, _, saved_token in captured
-                        if peer.base_state is not None
-                    ],
-                )
-                latest = {peer.key: peer.base_state for peer in peers}
-                for item in identities:
-                    value = latest.get(
-                        tuple(
-                            item["target"][key] for key in ("user_id", "session_id", "instance_id")
-                        )
-                    )
-                    if value:
-                        item["state"] = value.for_version(watch.base_target_version)
-            elif watch.embedded_images:
-                identities = await run_in_threadpool(
-                    presence.embed_snapshot,
-                    token,
-                    watch.location,
-                    [
-                        (peer.key, saved_token, peer.image_embed)
-                        for peer, _, saved_token in captured
-                        if peer.image_embed is not None
-                    ],
-                )
-                latest = {peer.key: peer.image_embed for peer in peers}
-                for item in identities:
-                    value = latest.get(
-                        tuple(
-                            item["target"][key] for key in ("user_id", "session_id", "instance_id")
-                        )
-                    )
-                    if value:
-                        item["embed"]["state"] = value.state.model_dump(mode="json")
-            else:
-                identities = await run_in_threadpool(
-                    presence.roster_snapshot,
-                    token,
-                    watch.location,
-                    [(peer.key, saved_token) for peer, _, saved_token in captured],
-                )
-            if image_states and not watch.embedded_images and not base_states:
-                authorized = {
-                    tuple(item["target"][key] for key in ("user_id", "session_id", "instance_id"))
-                    for item in identities
-                }
-                # Read the latest movement after authorization; movement itself
-                # does not invalidate authorization or starve slow lookups.
-                identities = [
-                    {
-                        "target": {
-                            "user_id": peer.key[0],
-                            "session_id": peer.key[1],
-                            "instance_id": peer.key[2],
-                        },
-                        "state": peer.image_state.model_dump(mode="json"),
-                    }
-                    for peer in peers
-                    if peer.key in authorized and peer.image_state is not None
-                ]
-            result.update(status="available", peers=identities)
-        except HTTPException:
-            pass
-        if viewer.closed or viewer.watch != watch:
-            continue
-        if (
-            viewer.token != token
-            or peers != owner.room_peers(watch.location, viewer)
-            or any(
-                peer.revision != revision or peer.token != saved_token
-                for peer, revision, saved_token in captured
-            )
-            or any(peer.embed_revision != revision for peer, revision in embed_revisions.items())
-            or any(peer.base_revision != revision for peer, revision in base_revisions.items())
-        ):
-            dirty.set()
-            continue
-        limit = (
-            presence.MAX_BASE_TARGET_BYTES
-            if base_states and watch.base_target_version == 2
-            else presence.MAX_ROSTER_BYTES
-        )
-        if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > limit:
-            raise OverflowError("Presence roster too large")
-        if result != (viewer.last_image_states if image_states else viewer.last_roster):
-
-            def current():
-                return (
-                    not viewer.closed
-                    and viewer.watch == watch
-                    and viewer.token == token
-                    and peers == owner.room_peers(watch.location, viewer)
-                    and all(
-                        peer.revision == revision and peer.token == saved_token
-                        for peer, revision, saved_token in captured
-                    )
-                    and all(
-                        peer.embed_revision == revision
-                        for peer, revision in embed_revisions.items()
-                    )
-                    and all(
-                        peer.base_revision == revision for peer, revision in base_revisions.items()
-                    )
-                )
-
-            if not await send(websocket, viewer, result, current):
-                dirty.set()
+        # Two fixed workers per connection process only dirty subscriptions.
+        # A slow pane retains one latest-state bit, never a movement queue.
+        for watch in viewer.watches():
+            delivery = watch.delivery
+            pending = delivery.states_pending if image_states else delivery.roster_pending
+            if not pending or not viewer.has_watch(watch):
                 continue
-            if viewer.watch == watch:
-                if image_states:
-                    viewer.last_image_states = result
-                else:
-                    viewer.last_roster = result
-        if result["status"] == "unavailable" and viewer.watch == watch:
-            owner.watch(viewer, None)
+            if image_states:
+                delivery.states_pending = False
+            else:
+                delivery.roster_pending = False
+            await deliver_watch(websocket, owner, viewer, watch, image_states)
+
+
+async def deliver_watch(
+    websocket: WebSocket,
+    owner: presence.PresenceBroker,
+    viewer: presence.Connection,
+    watch: presence.Watch,
+    image_states: bool,
+):
+    token = viewer.token
+    peers = owner.room_peers(watch.location, viewer)
+    captured = [(peer, peer.revision, peer.token) for peer in peers]
+    embed_revisions = {peer: peer.embed_revision for peer in peers} if watch.embedded_images else {}
+    base_states = image_states and watch.base_states
+    base_revisions = {peer: peer.base_revision for peer in peers} if base_states else {}
+    result = {
+        "type": "image_embeds"
+        if watch.embedded_images
+        else "base_states"
+        if base_states
+        else "image_states"
+        if image_states
+        else "roster",
+        "subscription_id": watch.subscription_id,
+        "status": "unavailable",
+    }
+    try:
+        if base_states:
+            identities = await run_in_threadpool(
+                presence.base_state_snapshot,
+                token,
+                watch.location,
+                [
+                    (peer.key, saved_token, peer.base_state)
+                    for peer, _, saved_token in captured
+                    if peer.base_state is not None
+                ],
+            )
+            latest = {peer.key: peer.base_state for peer in peers}
+            for item in identities:
+                value = latest.get(
+                    tuple(item["target"][key] for key in ("user_id", "session_id", "instance_id"))
+                )
+                if value:
+                    item["state"] = value.for_version(watch.base_target_version)
+        elif watch.embedded_images:
+            identities = await run_in_threadpool(
+                presence.embed_snapshot,
+                token,
+                watch.location,
+                [
+                    (peer.key, saved_token, peer.image_embed)
+                    for peer, _, saved_token in captured
+                    if peer.image_embed is not None
+                ],
+            )
+            latest = {peer.key: peer.image_embed for peer in peers}
+            for item in identities:
+                value = latest.get(
+                    tuple(item["target"][key] for key in ("user_id", "session_id", "instance_id"))
+                )
+                if value:
+                    item["embed"]["state"] = value.state.model_dump(mode="json")
+        else:
+            identities = await run_in_threadpool(
+                presence.roster_snapshot,
+                token,
+                watch.location,
+                [(peer.key, saved_token) for peer, _, saved_token in captured],
+            )
+        if image_states and not watch.embedded_images and not base_states:
+            authorized = {
+                tuple(item["target"][key] for key in ("user_id", "session_id", "instance_id"))
+                for item in identities
+            }
+            # Read the latest movement after authorization; movement itself
+            # does not invalidate authorization or starve slow lookups.
+            identities = [
+                {
+                    "target": {
+                        "user_id": peer.key[0],
+                        "session_id": peer.key[1],
+                        "instance_id": peer.key[2],
+                    },
+                    "state": peer.image_state.model_dump(mode="json"),
+                }
+                for peer in peers
+                if peer.key in authorized and peer.image_state is not None
+            ]
+        result.update(status="available", peers=identities)
+    except HTTPException:
+        pass
+    if viewer.closed or not viewer.has_watch(watch):
+        return
+    if (
+        viewer.token != token
+        or peers != owner.room_peers(watch.location, viewer)
+        or any(
+            peer.revision != revision or peer.token != saved_token
+            for peer, revision, saved_token in captured
+        )
+        or any(peer.embed_revision != revision for peer, revision in embed_revisions.items())
+        or any(peer.base_revision != revision for peer, revision in base_revisions.items())
+    ):
+        owner.mark_watch(viewer, watch, roster=not image_states, states=image_states)
+        return
+    limit = (
+        presence.MAX_BASE_TARGET_BYTES
+        if base_states and watch.base_target_version == 2
+        else presence.MAX_ROSTER_BYTES
+    )
+    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > limit:
+        raise OverflowError("Presence roster too large")
+    fingerprint = hashlib.sha256(json.dumps(result, sort_keys=True).encode("utf-8")).digest()
+    delivery = watch.delivery
+    if fingerprint != (delivery.last_image_states if image_states else delivery.last_roster):
+
+        def current():
+            return (
+                not viewer.closed
+                and viewer.has_watch(watch)
+                and viewer.token == token
+                and peers == owner.room_peers(watch.location, viewer)
+                and all(
+                    peer.revision == revision and peer.token == saved_token
+                    for peer, revision, saved_token in captured
+                )
+                and all(
+                    peer.embed_revision == revision for peer, revision in embed_revisions.items()
+                )
+                and all(peer.base_revision == revision for peer, revision in base_revisions.items())
+            )
+
+        if not await send(websocket, viewer, result, current):
+            owner.mark_watch(viewer, watch, roster=not image_states, states=image_states)
+            return
+        if viewer.has_watch(watch):
+            if image_states:
+                delivery.last_image_states = fingerprint
+            else:
+                delivery.last_roster = fingerprint
+    if result["status"] == "unavailable" and viewer.has_watch(watch):
+        owner.remove_watch(viewer, watch)
 
 
 async def check_live(owner: presence.PresenceBroker, connection: presence.Connection):
@@ -617,14 +654,8 @@ async def check_live(owner: presence.PresenceBroker, connection: presence.Connec
                     and connection.base_revision == base_revision
                 ):
                     owner.move_base(connection, location, None)
-        if connection.watch:
-            connection.roster_dirty.set()
-            if (
-                connection.watch.image_states
-                or connection.watch.embedded_images
-                or connection.watch.base_states
-            ):
-                connection.image_dirty.set()
+        for watch in connection.watches():
+            owner.mark_watch(connection, watch)
 
 
 @router.websocket("/events")

@@ -537,3 +537,44 @@ idle revocation with preserved roster, obsolete axes/grouping, strict input and
 full-room output budgets, and concurrent target changes. The actual client/service
 fixture exchanges groups and lane ranges without roster churn. No migration or
 production deployment is part of this increment.
+
+## Multiple passive observations
+
+`presence_multi_watch_preview: true` advertises an additive version-two extension
+under the existing presence enable switch. Old clients keep their single `watch`
+or `watch_embeds` slot unchanged. A new client may also send `observe` with a
+fresh UUID `subscription_id` and a validated `location`, and optional image/Bases
+state flags identical to `watch`. A note location observes embedded-image state;
+text selections and identities still come from the existing managed awareness
+connection. `unobserve` removes only the matching additional subscription.
+
+Each connection allows eight additional observations plus its foreground watch.
+An inaccessible initial observation receives an unavailable event for that
+subscription without ending the foreground watch, publication, Follow or other
+observations. Invalid authentication still ends the connection. Every delivery
+and idle recheck validates the subscription's own entry/version and publisher
+permissions. Revocation removes only that observation. Replacement/removal fences
+in-flight authorization and writes by the exact subscription object.
+
+The two existing roster/state workers service all subscriptions; no task or
+connection is created per pane. Dirty bits are per subscription, so image motion
+does not reauthorize unrelated rooms. A slow consumer retains only the latest
+state. Cached output comparisons retain SHA-256 fingerprints, not roster payloads.
+Per-message limits still apply, with a shared output allowance of 1 MiB/second
+and a 2 MiB burst across roster, state, Follow and control frames. Exceeding the
+observation or output budget closes with 4429. These are protective preview bounds,
+not a measured capacity claim; small-group/mobile resource acceptance remains.
+
+The plugin transport deduplicates scopes (including editor/Reading variants of
+one note), isolates observation callbacks from foreground callbacks, rejects more
+than eight scopes before mutation, ignores removed subscription IDs, clears local
+observation state on disconnect, and obtains fresh IDs on reconnect. Ordinary
+refreshes do not restart a denied observation; explicit Retry or reconnect does.
+
+Validation includes 244 presence tests and 11 capability/policy tests; the new
+checks cover mixed scope ownership, denial/revocation isolation, same-room
+foreground/passive cleanup, capacity, delayed replacement, coalesced movement and
+combined output limits. The actual plugin transport also passes disposable HTTP/
+WebSocket tests with simultaneous foreground Bases and passive image/note scopes.
+Native different-document pane wiring and acceptance are the next step; this
+transport checkpoint alone does not claim that UI behavior is complete.

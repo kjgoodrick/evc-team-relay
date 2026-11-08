@@ -62,6 +62,7 @@ def capabilities(
             and bases_registry.enabled(),
             "presence_image_states_preview": get_settings().collaboration_presence_enabled,
             "presence_embedded_images_preview": get_settings().collaboration_presence_enabled,
+            "presence_multi_watch_preview": get_settings().collaboration_presence_enabled,
             "comment_permissions": get_settings().collaboration_policy_enabled,
             "permission_editor_v1": get_settings().collaboration_policy_enabled,
             "comments": False,

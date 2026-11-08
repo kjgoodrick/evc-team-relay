@@ -1925,7 +1925,7 @@ def test_sent_roster_denial_cannot_cancel_a_new_observation(monkeypatch):
         )
         try:
             await asyncio.wait_for(retried.wait(), 1)
-            assert viewer.watch == replacement and viewer.last_roster is None
+            assert viewer.watch == replacement and viewer.watch.delivery.last_roster is None
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -2812,3 +2812,246 @@ def test_extended_snapshot_budget_supports_full_bounded_room(monkeypatch, versio
                 owner.remove(peer)
 
     asyncio.run(scenario())
+
+
+def observe(socket, location, **options):
+    subscription = guid()
+    socket.send_json(
+        {"type": "observe", "subscription_id": subscription, "location": location, **options}
+    )
+    return subscription
+
+
+def test_passive_note_image_and_base_observations_keep_foreground_and_access_isolated(
+    client, db_session, team, surface_team, monkeypatch
+):
+    monkeypatch.setattr(presence, "CHECK_SECONDS", 0.05)
+    image, base, other_base = surface_team.locations
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, ready):
+        publish(publisher, image)
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            foreground = watch(viewer, base)
+            assert recv(viewer) == roster(foreground)
+            image_id = observe(viewer, image, image_states=True)
+            frames = [recv(viewer), recv(viewer)]
+            assert {frame["type"] for frame in frames} == {"roster", "image_states"}
+            assert all(frame["subscription_id"] == image_id for frame in frames)
+            assert (
+                next(frame for frame in frames if frame["type"] == "roster")["peers"][0]["target"][
+                    "instance_id"
+                ]
+                == ready["instance_id"]
+            )
+            note_id = observe(viewer, team.location())
+            assert recv(viewer) == embed_frame(note_id)
+            base_id = observe(viewer, other_base)
+            assert recv(viewer) == roster(base_id)
+            denied = observe(viewer, team.location("private"))
+            assert recv(viewer) == {
+                "type": "image_embeds",
+                "subscription_id": denied,
+                "status": "unavailable",
+            }
+            owner = client.app.state.collaboration_presence
+            connection = next(peer for peer in owner.connections.values() if peer.watch)
+            assert connection.location is None  # Passive observations never publish.
+            assert set(connection.observations) == {image_id, note_id, base_id}
+            surface_team.image.record = {"type": "image", "hash": "c" * 64}
+            db_session.commit()
+            revoked = recv(viewer)
+            while revoked["status"] == "available":
+                assert revoked["subscription_id"] == image_id and revoked["peers"] == []
+                revoked = recv(viewer)
+            assert revoked["subscription_id"] == image_id and revoked["status"] == "unavailable"
+            # An invalidated image leaves the other observations and publisher intact.
+            assert connection.watch.subscription_id == foreground
+            for _ in range(50):
+                if image_id not in connection.observations:
+                    break
+                time.sleep(0.01)
+            assert set(connection.observations) == {note_id, base_id}
+            viewer.send_json({"type": "ping"})
+            while (frame := recv(viewer))["type"] != "pong":
+                assert frame["subscription_id"] == image_id
+    assert not owner.watchers and not owner.rooms and not owner.connections
+
+
+def test_passive_and_foreground_same_room_ownership_survives_independent_unwatch(
+    client, team, surface_team
+):
+    location = surface_team.locations[0]
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, _):
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            foreground = watch(viewer, location)
+            assert recv(viewer) == roster(foreground)
+            passive = observe(viewer, location)
+            assert recv(viewer) == roster(passive)
+            viewer.send_json({"type": "unwatch", "subscription_id": foreground})
+            publish(publisher, location)
+            assert recv(viewer)["subscription_id"] == passive
+            viewer.send_json({"type": "unobserve", "subscription_id": guid()})
+            publish(publisher, None)
+            assert recv(viewer) == roster(passive)
+            viewer.send_json({"type": "unobserve", "subscription_id": passive})
+            viewer.send_json({"type": "ping"})
+            assert recv(viewer) == {"type": "pong"}
+            assert not client.app.state.collaboration_presence.watchers
+
+
+def test_passive_subscription_capacity_is_bounded_and_disconnect_releases_every_room(client, team):
+    with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+        for _ in range(presence.MAX_OBSERVATIONS):
+            subscription = observe(viewer, team.location())
+            assert recv(viewer) == embed_frame(subscription)
+        observe(viewer, team.location("second"))
+        with pytest.raises(WebSocketDisconnect) as error:
+            recv(viewer)
+        assert error.value.code == 4429
+    assert not client.app.state.collaboration_presence.watchers
+
+
+def test_passive_watch_replacement_fences_late_authorization_and_keeps_other_observers(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer = owner.add("viewer", actor(), guid(), 2)
+        location = presence.ImageLocation(
+            kind="image",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            content_sha256="a" * 64,
+        )
+        first = presence.Watch(guid(), location)
+        replacement = presence.Watch(first.subscription_id, location)
+        other = presence.Watch(guid(), location.model_copy(update={"entry_id": guid()}))
+        owner.observe(viewer, first)
+        owner.observe(viewer, other)
+        captured, release, delivered = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        calls, sent = [], []
+
+        async def authorize(_fn, _token, checked_location, _peers):
+            calls.append(checked_location)
+            if len(calls) == 1:
+                captured.set()
+                await release.wait()
+                return [{"name": "Must not escape"}]
+            return []
+
+        async def emit(value):
+            sent.append(value)
+            if len(sent) == 2:
+                delivered.set()
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer)
+        )
+        try:
+            await asyncio.wait_for(captured.wait(), 1)
+            owner.observe(viewer, replacement)
+            release.set()
+            await asyncio.wait_for(delivered.wait(), 1)
+            assert {frame["subscription_id"] for frame in sent} == {
+                first.subscription_id,
+                other.subscription_id,
+            }
+            assert all(frame["peers"] == [] for frame in sent)
+            assert viewer.observations[first.subscription_id] is replacement
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(viewer)
+        assert not owner.watchers and not owner.connections
+
+    asyncio.run(run())
+
+
+def test_passive_movement_only_rechecks_its_own_scope_and_coalesces_bursts(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer, publisher = (
+            owner.add("viewer", actor(), guid(), 2),
+            owner.add("publisher", actor(), guid(), 2),
+        )
+        location = presence.ImageLocation(
+            kind="image",
+            share_id=guid(),
+            entry_id=guid(),
+            generation=guid(),
+            content_sha256="a" * 64,
+        )
+        foreground = presence.Watch(guid(), location.model_copy(update={"entry_id": guid()}), True)
+        passive = presence.Watch(guid(), location, True)
+        owner.watch(viewer, foreground)
+        owner.observe(viewer, passive)
+        owner.publish(publisher, location)
+        calls, sent = [], []
+        initial, moved = asyncio.Event(), asyncio.Event()
+
+        async def authorize(_fn, _token, checked_location, peers):
+            calls.append(checked_location)
+            return [
+                {
+                    "target": dict(
+                        zip(("user_id", "session_id", "instance_id"), peer[0], strict=True)
+                    )
+                }
+                for peer in peers
+            ]
+
+        async def emit(value):
+            sent.append(value)
+            if len(sent) == 2:
+                initial.set()
+            if len(sent) == 3:
+                moved.set()
+
+        monkeypatch.setattr(events, "run_in_threadpool", authorize)
+        monkeypatch.setattr(presence, "IMAGE_STATE_INTERVAL", 0)
+        task = asyncio.create_task(
+            events.deliver_roster(SimpleNamespace(send_json=emit), owner, viewer, True)
+        )
+        try:
+            await asyncio.wait_for(initial.wait(), 1)
+            for x in range(1001):
+                owner.move(
+                    publisher,
+                    location,
+                    presence.ImageState(pointer={"x": x / 1000, "y": 0.5}, viewport=None),
+                )
+            await asyncio.wait_for(moved.wait(), 1)
+            assert calls == [foreground.location, location, location]
+            assert sent[-1]["subscription_id"] == passive.subscription_id
+            assert sent[-1]["peers"][0]["state"]["pointer"] == {"x": 1, "y": 0.5}
+            assert (
+                len(passive.delivery.last_image_states) == 32
+            )  # Fingerprint, not a retained payload.
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            owner.remove(viewer)
+            owner.remove(publisher)
+
+    asyncio.run(run())
+
+
+def test_connection_output_budget_combines_all_subscription_and_control_frames(monkeypatch):
+    async def run():
+        owner = presence.PresenceBroker()
+        viewer = owner.add("viewer", actor(), guid(), 2)
+        monkeypatch.setattr(presence, "MAX_OUTPUT_BURST", 100)
+        monkeypatch.setattr(presence.time, "monotonic", lambda: viewer.output_time)
+        sent = []
+
+        async def emit(value):
+            sent.append(value)
+
+        socket = SimpleNamespace(send_json=emit)
+        assert await events.send(socket, viewer, {"type": "pong"})
+        assert await events.send(socket, viewer, {"type": "roster", "peers": []})
+        with pytest.raises(OverflowError):
+            await events.send(socket, viewer, {"type": "image_states", "peers": ["x" * 100]})
+        assert len(sent) == 2
+        owner.remove(viewer)
+
+    asyncio.run(run())
