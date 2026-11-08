@@ -27,6 +27,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", type=Path, required=True)
     parser.add_argument(
+        "--restore-guard",
+        action="store_true",
+        help="Verify immutable request lineage against a disposable restored share",
+    )
+    parser.add_argument(
         "--search",
         action="store_true",
         help="Run authorized search with the real TypeScript client",
@@ -51,10 +56,15 @@ def main():
         help="After the picture scenario, advance the test clock and verify purge/reclamation",
     )
     args = parser.parse_args()
-    if args.retention and (not args.pictures_endpoint or args.export or args.inbox or args.search):
+    if args.retention and (
+        not args.pictures_endpoint or args.export or args.inbox or args.search or args.restore_guard
+    ):
         parser.error("Retention proof requires the disposable picture scenario")
-    if sum(bool(value) for value in (args.inbox, args.search, args.export)) > 1 or (
-        args.pictures_endpoint and (args.inbox or args.search)
+    scenarios = (args.inbox, args.search, args.export, args.restore_guard)
+    if (
+        sum(bool(value) for value in scenarios) > 1
+        or args.pictures_endpoint
+        and (args.inbox or args.search or args.restore_guard)
     ):
         parser.error("Choose one disposable integration scenario")
     if args.pictures_endpoint:
@@ -116,6 +126,7 @@ def main():
                 managed=True,
                 visibility=m.ShareVisibility.PRIVATE,
                 owner_user_id=owner.id,
+                collaboration_restore_generation=uuid.uuid4() if args.restore_guard else None,
             )
             db.add(share)
             db.flush()
@@ -164,6 +175,8 @@ def main():
                     str(owner.id), session_id=str(owner_session.id)
                 ),
             }
+            if args.restore_guard:
+                fixture["restoreGeneration"] = str(share.collaboration_restore_generation)
         if args.export:
             with session.get_sessionmaker()() as db:
                 second = m.ManagedEntry(
@@ -249,7 +262,9 @@ def main():
                         "test",
                         "--",
                         "--runInBand",
-                        "__tests__/collaboration/realDiscussionExportStack.test.ts"
+                        "__tests__/collaboration/realRestoreStack.test.ts"
+                        if args.restore_guard
+                        else "__tests__/collaboration/realDiscussionExportStack.test.ts"
                         if args.export
                         else "__tests__/collaboration/realInboxStack.test.ts"
                         if args.inbox
@@ -262,7 +277,9 @@ def main():
                     cwd=args.plugin.resolve(),
                     env={
                         **os.environ,
-                        "EVC_EXPORT_FIXTURE"
+                        "EVC_RESTORE_FIXTURE"
+                        if args.restore_guard
+                        else "EVC_EXPORT_FIXTURE"
                         if args.export
                         else "EVC_INBOX_FIXTURE"
                         if args.inbox
@@ -289,7 +306,9 @@ def main():
                     picture_store.remove_object(bucket, obj.object_name)
                 picture_store.remove_bucket(bucket)
     print(
-        "PASS: actual discussion archive snapshot, picture files, hashes and permission rechecks"
+        "PASS: actual restore-generation HTTP guard, immutable queue and read-only receipts"
+        if args.restore_guard
+        else "PASS: actual discussion archive snapshot, pictures, hashes and permission rechecks"
         if args.export
         else "PASS: actual application inbox worker, HTTP client and offline recovery"
         if args.inbox

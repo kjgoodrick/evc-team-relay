@@ -134,14 +134,16 @@ from the immutable command hash.
 
 Capabilities expose `restore_generation` and `discussion_command_restore_guard`.
 Ordinary permission/cursor resets do not change this generation. There is no
-automatic rotation or restore activation command yet. Client binding of the
-generation at original request creation, recovery review and guards for picture,
+automatic rotation or restore activation command yet. The client transport/store
+now preserve explicit bindings and fence local old-generation work, with actual
+HTTP evidence from `discussions_client.py --restore-guard`. Integration with the
+ordinary session's intent creation and lifecycle, recovery review, and guards for picture,
 group-capture, marker, permission and inbox mutations are still unfinished.
 This capability describes **discussion commands and withdrawals only**; it is
 not a complete service restore boundary. Do not manually activate it for a live
 share or claim the collaboration restore procedure is complete.
 
-The future client must retain an operation's original generation across retries,
+The client must retain an operation's original generation across retries,
 offline storage, export/import and dependent commands. It must never replace that
 generation with a freshly fetched value merely to retry an old request. A newer
 generation requires explicit reconciliation against the restored receipts and
