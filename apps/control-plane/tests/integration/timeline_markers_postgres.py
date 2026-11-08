@@ -287,11 +287,23 @@ def prove_timeline_markers(engine, tokens, share_id, entry_id, view_id, reviewer
     assert totals() == before
     # Reset only this disposable fixture for the populated downgrade checks.
     with Session(engine) as db:
+        assert timeline_markers.command_status(
+            db, tokens["owner"], share_id, entry_id, original
+        ) == {"status": "accepted", "result": accepted}
+        assert (
+            timeline_markers.command_status(
+                db, tokens["owner"], share_id, entry_id, pending_restore
+            )["status"]
+            == "unknown"
+        )
+    assert totals() == before
+    with Session(engine) as db:
         db.scalar(
             select(m.Share).where(m.Share.id == share_id).with_for_update()
         ).collaboration_restore_generation = None
         db.commit()
     print("PASS: waiting marker writes refresh stale ORM state and reject concurrent restore")
+    print("PASS: restored marker receipt reads neither replay known work nor accept unknown work")
 
     before = totals()
     try:

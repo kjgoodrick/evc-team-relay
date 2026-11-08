@@ -462,3 +462,84 @@ def test_marker_commit_failure_leaves_no_partial_definition_placement_or_receipt
         db_session, t.w.tokens["owner"], t.w.share.id, uuid.UUID(t.w.entry.id), payload
     )
     assert result["marker"]["revision"] == result["catalog_revision"] == 1
+
+
+def test_marker_status_reads_exact_actor_receipt_after_restore_without_edit_authority(
+    client, db_session, markers
+):
+    t = markers
+    rule = m.ManagedRule(
+        share_id=t.w.share.id,
+        user_id=t.w.reviewer.id,
+        path=t.w.entry.path,
+        recursive=False,
+        permission="write",
+    )
+    db_session.add(rule)
+    db_session.commit()
+    payload = put(client, t)
+    saved = mutate(client, t, payload, actor="reviewer")
+    rule.permission = "read"
+    t.w.share.collaboration_restore_generation = uuid.uuid4()
+    # Receipt inspection is historical; current source lineage need not match it.
+    t.w.entry.collaboration_generation = uuid.uuid4()
+    db_session.commit()
+    url = marker_path(t) + "/commands/status"
+    auth = headers(t.w.tokens["reviewer"])
+    response = client.post(url, json=payload, headers=auth)
+    assert response.status_code == 200 and response.json() == {
+        "status": "accepted",
+        "result": saved,
+    }
+    other = client.post(url, json=payload, headers=headers(t.w.tokens["owner"]))
+    assert other.status_code == 200 and other.json()["status"] == "unknown"
+    changed = copy.deepcopy(payload)
+    changed["command"]["content"]["label"] = "Different intent"
+    response = client.post(url, json=changed, headers=auth)
+    assert response.status_code == 409 and "operation_id_conflict" in response.text
+    assert db_session.scalar(select(func.count()).select_from(m.BaseTimelineMarkerReceipt)) == 1
+    assert db_session.scalar(select(func.count()).select_from(m.BaseTimelineMarkerRevision)) == 1
+    rule.permission = "none"
+    db_session.commit()
+    response = client.post(url, json=payload, headers=auth)
+    assert response.status_code == 404
+
+
+def test_unknown_marker_status_never_creates_replays_or_withdraws_an_operation(
+    client, db_session, markers
+):
+    t = markers
+    payload = put(client, t)
+    t.w.share.collaboration_restore_generation = uuid.uuid4()
+    db_session.commit()
+    for _ in range(2):
+        response = client.post(
+            marker_path(t) + "/commands/status",
+            json=payload,
+            headers=headers(t.w.tokens["reviewer"]),
+        )
+        assert response.status_code == 200 and response.json() == {
+            "status": "unknown",
+            "operation_id": payload["operation_id"],
+            "entry_id": t.w.entry.id,
+        }
+    for model in (m.BaseTimelineMarker, m.BaseTimelineMarkerRevision, m.BaseTimelineMarkerReceipt):
+        assert db_session.scalar(select(func.count()).select_from(model)) == 0
+
+
+def test_marker_receipt_cannot_be_read_through_a_different_base(client, db_session, markers):
+    t = markers
+    payload = put(client, t)
+    mutate(client, t, payload)
+    other = m.ManagedEntry(
+        id=str(uuid.uuid4()),
+        share_id=t.w.share.id,
+        path="Notes/Other.base",
+        deleted=False,
+        record={"type": "file"},
+    )
+    db_session.add(other)
+    db_session.commit()
+    url = marker_path(t).replace(t.w.entry.id, other.id) + "/commands/status"
+    response = client.post(url, json=payload, headers=headers(t.w.tokens["owner"]))
+    assert response.status_code == 404

@@ -173,8 +173,19 @@ authoring is disabled, allowing same-generation accepted-receipt recovery. The
 client captures the generation before axis validation, persists it with the
 original request and checks local completion against it. A lost-response/reopen
 HTTP proof and a PostgreSQL concurrent-restore lock-wait proof pass. Old pending
-marker requests remain saved and inspectable with retry suppressed; read-only
-receipt reconciliation for them is still unfinished.
+marker requests remain saved and inspectable with retry suppressed.
+
+`POST /shares/{share}/entries/{entry}/bases/timeline-markers/commands/status`
+accepts the exact original marker command for read-only receipt lookup.
+`discussion_timeline_marker_command_status` advertises this separately. Current
+read access to the base is required, but edit authority and a restore-generation
+header are not. Receipts are actor-scoped, bound to the requested base, and must
+match the canonical request hash, definition and original source generation.
+Current source/restore generation may differ. A mismatch is an error; missing
+receipts return `unknown`, never proof of nonacceptance. The route writes no
+marker, revision or receipt. The client can complete a saved slot from a matching
+receipt while retaining its original binding; unknown requests stay unchanged.
+Late results cannot replace a changed slot or cross a newly observed restore.
 
 The client must retain an operation's original generation across retries,
 offline storage, export/import and dependent commands. It must never replace that

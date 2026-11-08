@@ -122,6 +122,17 @@ def timeline_marker_command(
     )
 
 
+@router.post("/timeline-markers/commands/status")
+def timeline_marker_command_status(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: TimelineMarkerCommand,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return timeline_markers.command_status(db, token, share_id, entry_id, payload)
+
+
 @router.get("/timeline-markers/{marker_id}")
 def timeline_marker(
     share_id: uuid.UUID,

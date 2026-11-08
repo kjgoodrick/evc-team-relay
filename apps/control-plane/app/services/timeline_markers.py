@@ -38,6 +38,10 @@ def enabled():
     )
 
 
+def status_enabled():
+    return bases_registry.enabled() and get_settings().collaboration_discussions_enabled
+
+
 def scope(db, token, share_id, entry_id, *, write=False):
     ctx = bases_registry.context(db, token, share_id, entry_id, write=write, edit=write)
     definition = base_discussions.definition_for(db, ctx)
@@ -214,12 +218,57 @@ def checked_placement(db, definition, requested, content):
     return axis
 
 
-def apply_command(db, token, share_id, entry_id, payload, restore_generation=None):
-    discussions.require_clean_session(db)
+def command_hash(payload):
     encoded = json.dumps(payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     if len(encoded.encode()) > 65536:
         error(413, "command_too_large")
-    request_hash = hashlib.sha256(encoded.encode()).hexdigest()
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def command_status(db, token, share_id, entry_id, payload):
+    """Read this actor's exact receipt without replay or revision reconciliation.
+
+    Missing receipts remain unknown, including after restore. Current read access
+    to the base is required; prior edit authority never grants present access.
+    """
+    discussions.require_clean_session(db)
+    if not status_enabled():
+        error(404, "timeline_marker_status_disabled")
+    payload = payload.model_copy(deep=True)
+    digest = command_hash(payload)
+    try:
+        ctx = bases_registry.context(db, token, share_id, entry_id)
+        receipt = db.get(m.BaseTimelineMarkerReceipt, (ctx.user.id, payload.operation_id))
+        result = dict(
+            status="unknown", operation_id=str(payload.operation_id), entry_id=str(entry_id)
+        )
+        if receipt is not None:
+            definition = db.get(m.BaseDefinition, receipt.definition_id)
+            if definition is None or definition.entry_id != ctx.entry.id:
+                error(404, "target_unavailable")
+            if (
+                receipt.definition_id != payload.definition_id
+                or receipt.generation != payload.generation
+                or receipt.request_hash != digest
+            ):
+                error(409, "operation_id_conflict")
+            result = dict(status="accepted", result=receipt.result)
+        db.commit()
+        return result
+    except OperationalError:
+        db.rollback()
+        error(503, "retryable_transaction")
+    except SQLAlchemyError:
+        db.rollback()
+        error(500, "timeline_marker_storage_error")
+    except Exception:
+        db.rollback()
+        raise
+
+
+def apply_command(db, token, share_id, entry_id, payload, restore_generation=None):
+    discussions.require_clean_session(db)
+    request_hash = command_hash(payload)
     try:
         ctx, definition = scope(db, token, share_id, entry_id, write=True)
         collaboration_restore.require_generation(ctx.share, restore_generation)
