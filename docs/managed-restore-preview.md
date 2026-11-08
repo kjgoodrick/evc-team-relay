@@ -98,6 +98,15 @@ permissions after any lock wait. It releases SQL before socket I/O. Token mintin
 also rechecks the login session after waiting and releases its read lock before
 returning. The unmanaged token response remains unchanged.
 
+A currently authorized document connection whose binding is obsolete receives
+WebSocket close `4412`. For an obsolete credential at admission the gateway accepts
+only to send that close; it does not open an upstream relay or forward content.
+Current file permission and session checks run first. Other refusals retain their
+ordinary denial. This lets the plugin stop an unexpired cached credential's
+reconnect loop immediately. Its automatic document path retains the original
+binding and pauses on that close or the matching HTTP conflict; it does not adopt
+the generation returned by token minting. Late token success cannot unpause it.
+
 This is an admission/revalidation foundation, **not an atomic live restore**.
 There is a boundary between authorization and forwarding a frame. The eventual
 coordinator must stop admission, drain all gateway/relay writers and checkpoint
@@ -115,8 +124,10 @@ must avoid sharing a writable namespace with those workers and preserve old work
 Verification includes `test_managed_socket_restore.py` and
 `tests/integration/managed_socket_restore_postgres.py` (token/socket waits behind
 restore, permission and session changes). `managed_stack.py --document-restore`
-uses the actual TypeScript provider, FastAPI and Rust relay: original reader and
-writer connections close after a synthetic generation rotation, old queued edits
-stay local, headerless/wrong bindings are refused, and fresh explicitly bound
-read/write clients converge. The fixture rotates a generation; it does not claim
-to exercise restored database/CRDT bytes or the missing coordinator.
+uses the actual TypeScript credential cache/ProviderBacked, FastAPI and Rust relay:
+open clients, offline clients holding cached grants and clients requesting new
+grants pause after a synthetic generation rotation without replay or repeated
+refresh. Their edits stay local. Headerless/wrong bindings are refused, and fresh
+explicitly bound low-level read/write clients converge. The original sync/presence/
+offline-recovery scenario also passes. The fixture rotates a generation; it does
+not claim to exercise restored database/CRDT bytes or the missing coordinator.

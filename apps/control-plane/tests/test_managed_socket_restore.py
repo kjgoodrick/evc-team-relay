@@ -2,9 +2,11 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
+from starlette.websockets import WebSocketDisconnect
 from test_discussions import headers
 from test_discussions import world as discussion_world
 
+from app.api.routers import managed
 from app.api.routers.managed import check_socket
 from app.core import security
 from app.db import models as m
@@ -127,3 +129,27 @@ def test_bound_socket_still_requires_current_file_permission_and_live_session(
     with pytest.raises(HTTPException) as logged_out:
         check_socket(grant["token"], world.entry.id)
     assert logged_out.value.status_code == 401
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_stale_socket_delivers_restore_close_only_to_currently_authorized_readers(
+    client, world, db_session, monkeypatch, revoked
+):
+    grant = mint(client, world, mode="read", actor="reader")
+    world.share.collaboration_restore_generation = uuid.uuid4()
+    if revoked:
+        db_session.query(m.ManagedRule).filter_by(user_id=world.reader.id).one().permission = "none"
+    db_session.commit()
+
+    def forbidden_upstream(*args, **kwargs):
+        pytest.fail("An obsolete grant must never open an upstream relay connection")
+
+    monkeypatch.setattr(managed, "connect", forbidden_upstream)
+    url = f"/v1/managed/socket/{world.entry.id}?token={grant['token']}"
+    if revoked:
+        with pytest.raises(WebSocketDisconnect) as denied, client.websocket_connect(url):
+            pytest.fail("Revoked readers must not be admitted")
+        assert denied.value.code == 4403
+    else:
+        with client.websocket_connect(url) as socket:
+            assert socket.receive() == {"type": "websocket.close", "code": 4412, "reason": ""}

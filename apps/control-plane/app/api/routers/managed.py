@@ -36,6 +36,11 @@ from app.services.presence_protocol import (
 )
 
 router = APIRouter(prefix="/managed", tags=["managed shares"])
+RESTORE_REQUIRED_CLOSE = 4412
+
+
+def restore_required(error: HTTPException) -> bool:
+    return error.status_code == 409 and error.detail == {"code": "restore_generation_changed"}
 
 
 def bearer(authorization: str | None) -> str:
@@ -224,10 +229,10 @@ def check_socket(
             generation = uuid.UUID(generation) if generation is not None else None
         except (ValueError, TypeError, AttributeError) as error:
             raise HTTPException(401, "Invalid managed grant binding") from error
-        collaboration_restore.require_generation(share, generation)
         entry = service.authorize_entry(db, share, user, doc_id, claims["mode"] == "write")
         if entry.record["type"] not in {"markdown", "canvas"}:
             raise HTTPException(403, "Not a collaborative document")
+        collaboration_restore.require_generation(share, generation)
         identity = identity_for(db, user, claims) if include_presence else None
         return str(share.id), claims["mode"], identity
 
@@ -236,8 +241,15 @@ def check_socket(
 async def document_socket(websocket: WebSocket, doc_id: str, token: str):
     try:
         share_id, mode, _ = await run_in_threadpool(check_socket, token, doc_id)
-    except HTTPException:
-        await websocket.close(code=4403)
+    except HTTPException as error:
+        if restore_required(error):
+            # This token already passed current file/session authorization.
+            # Deliver only a protocol close so a cached old credential can
+            # pause immediately instead of reconnecting until token expiry.
+            await websocket.accept()
+            await websocket.close(code=RESTORE_REQUIRED_CLOSE)
+        else:
+            await websocket.close(code=4403)
         return
     settings = get_settings()
     # The client receives a managed JWT, never this relay credential. Thus a
@@ -289,7 +301,10 @@ async def document_socket(websocket: WebSocket, doc_id: str, token: str):
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
-    except (HTTPException, WebSocketDisconnect):
+    except HTTPException as error:
+        if restore_required(error):
+            close_code = RESTORE_REQUIRED_CLOSE
+    except WebSocketDisconnect:
         pass
     except InvalidPresence:
         close_code = 4400
