@@ -30,3 +30,5 @@ class RelayTokenResponse(BaseModel):
     relay_url: str
     token: str
     expires_at: datetime
+    restore_guard: bool | None = None
+    restore_generation: uuid.UUID | None = None

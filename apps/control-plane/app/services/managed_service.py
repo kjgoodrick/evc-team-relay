@@ -399,7 +399,18 @@ def grant(
 ) -> RelayTokenResponse:
     share = share_service.get_share(db, payload.share_id)
     member(db, share, user)
+    share, user = lock_inventory(db, share, user, read=True)
     is_index = payload.doc_id == str(share.id)
+    try:
+        requested = request.headers.get("X-Relay-Restore-Generation")
+        requested = uuid.UUID(requested) if requested is not None else None
+    except ValueError as error:
+        raise HTTPException(422, "Invalid restore generation") from error
+    # Index readers must still be able to discover a restore. Document sockets
+    # can merge cached Yjs updates in either direction, even when initially
+    # opened for reading, so both modes require the original request binding.
+    if not is_index or requested is not None:
+        collaboration_restore.require_generation(share, requested)
     if not is_index:
         authorize_entry(db, share, user, payload.doc_id, payload.mode.value == "write")
     settings = get_settings()
@@ -411,10 +422,17 @@ def grant(
         "doc_id": payload.doc_id,
         "mode": payload.mode.value,
         "exp": expires,
+        "restore_generation": str(requested) if requested else None,
     }
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
-        original = security.decode_access_token(header.split(" ", 1)[1])
+        try:
+            original = security.decode_access_token(header.split(" ", 1)[1])
+        except jwt.InvalidTokenError as error:
+            raise HTTPException(401, "Invalid session token") from error
+        from app.api import deps
+
+        deps.validate_user_session(db, original, user)
         if original.get("session_id"):
             claims["session_id"] = original["session_id"]
     base = settings.control_plane_public_url.rstrip("/")
@@ -431,21 +449,40 @@ def grant(
                 "",
             )
         )
-    return RelayTokenResponse(
+    result = RelayTokenResponse(
         relay_url=endpoint,
         token=jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm),
         expires_at=expires,
+        restore_guard=True,
+        restore_generation=share.collaboration_restore_generation,
     )
+    db.commit()
+    return result
 
 
 def authenticate_grant(
-    db: Session, token: str, doc_id: str
+    db: Session, token: str, doc_id: str, *, read_lock: bool = False
 ) -> tuple[models.Share, models.User, dict]:
     try:
         claims = security.decode_access_token(token)
         if claims.get("scope") != "managed" or claims.get("doc_id") != doc_id:
             raise ValueError()
-        share = db.get(models.Share, uuid.UUID(claims["share_id"]))
+        if read_lock:
+            if db.new or db.dirty or db.deleted:
+                raise RuntimeError("Locked grant checks require a clean session")
+            db.expire_all()
+            share = db.scalar(
+                select(models.Share)
+                .where(models.Share.id == uuid.UUID(claims["share_id"]))
+                .with_for_update(read=True)
+                .execution_options(populate_existing=True)
+            )
+            # JWT decode happened before the lock wait. Do not revive an
+            # expired credential when that wait outlasts its remaining life.
+            if int(claims.get("exp", 0)) <= security.utcnow().timestamp():
+                raise ValueError()
+        else:
+            share = db.get(models.Share, uuid.UUID(claims["share_id"]))
         user = db.get(models.User, uuid.UUID(claims["sub"]))
         if not share:
             raise ValueError()
@@ -458,7 +495,7 @@ def authenticate_grant(
                 expiry = expiry.replace(tzinfo=timezone.utc)
             if expiry <= security.utcnow():
                 raise ValueError()
-    except (jwt.InvalidTokenError, ValueError, KeyError, AttributeError):
+    except (jwt.InvalidTokenError, ValueError, TypeError, KeyError, AttributeError):
         raise HTTPException(401, "Invalid or expired managed grant") from None
     member(db, share, user)
     return share, user, claims

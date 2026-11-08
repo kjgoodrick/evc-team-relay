@@ -80,3 +80,43 @@ and writer shutdown are required before reopening a restored deployment.
 
 No live service or native vault is modified by these fixtures. Native acceptance,
 safe resume, byte-level recovery exports and the complete restore drill remain.
+
+## Document grant and socket foundation
+
+Managed token responses now advertise the current restore context. A document
+grant's optional `X-Relay-Restore-Generation` is checked against the locked share
+and copied into its JWT; it is never replaced with the latest generation. Both
+read and write document grants require a matching binding because opening a Yjs
+connection can merge cached state in either direction. Missing bindings belong
+to the original lineage. Index grants can still discover a restored manifest
+without adopting that generation for writes or document connections.
+
+Document admission, incoming frames, outgoing frames and the existing one-second
+connection checks validate the immutable claim. The authority lookup refreshes
+the share under a short read lock, then validates expiry, user/session and file
+permissions after any lock wait. It releases SQL before socket I/O. Token minting
+also rechecks the login session after waiting and releases its read lock before
+returning. The unmanaged token response remains unchanged.
+
+This is an admission/revalidation foundation, **not an atomic live restore**.
+There is a boundary between authorization and forwarding a frame. The eventual
+coordinator must stop admission, drain all gateway/relay writers and checkpoint
+their state before restoring and rotating generations. It must not rotate a live
+deployment and assume these checks eliminate frames already in flight.
+
+The plugin's document cache and automatic token-refresh path still need durable
+lineage binding, retained review and safe resumption. A restored share does not
+become a supported user workflow merely because a manually bound fresh test client
+can connect. Do not add a retry that assigns the latest generation to an old Y.Doc.
+The legacy LocalDocumentStore uses a versionless IndexedDB open; a database-version
+bump alone cannot exclude an older cache worker. Any reviewed new-lineage cache
+must avoid sharing a writable namespace with those workers and preserve old work.
+
+Verification includes `test_managed_socket_restore.py` and
+`tests/integration/managed_socket_restore_postgres.py` (token/socket waits behind
+restore, permission and session changes). `managed_stack.py --document-restore`
+uses the actual TypeScript provider, FastAPI and Rust relay: original reader and
+writer connections close after a synthetic generation rotation, old queued edits
+stay local, headerless/wrong bindings are refused, and fresh explicitly bound
+read/write clients converge. The fixture rotates a generation; it does not claim
+to exercise restored database/CRDT bytes or the missing coordinator.

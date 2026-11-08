@@ -101,6 +101,7 @@ async def relay_token_slot() -> AsyncIterator[None]:
 @router.post(
     "/relay",
     response_model=token_schema.RelayTokenResponse,
+    response_model_exclude_unset=True,
     dependencies=[Depends(relay_token_slot)],
 )
 @limiter.limit(_relay_token_limit, key_func=relay_token_rate_limit_key)

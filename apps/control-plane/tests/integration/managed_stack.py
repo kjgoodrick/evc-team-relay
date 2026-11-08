@@ -53,6 +53,11 @@ def stop(process):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plugin", type=Path, required=True)
+    parser.add_argument(
+        "--document-restore",
+        action="store_true",
+        help="Verify document grants and active sockets across a disposable generation rotation",
+    )
     parser.add_argument("--presence", action="store_true", help="Run authenticated awareness tests")
     parser.add_argument(
         "--presence-locations", action="store_true", help="Run cross-note location transport tests"
@@ -107,6 +112,22 @@ def main():
         help="Hold a disposable desktop smoke-test server open instead of running Jest",
     )
     args = parser.parse_args()
+    if args.document_restore and any(
+        (
+            args.base_lifecycle,
+            args.base_groups,
+            args.base_formula_groups,
+            args.base_formula_presence,
+            args.base_sources,
+            args.text_anchors,
+            args.image_anchors,
+            args.image_files,
+            args.presence,
+            args.presence_locations,
+            args.serve_seconds,
+        )
+    ):
+        parser.error("Choose the document restore fixture by itself")
     if args.base_lifecycle and any(
         (
             args.base_groups,
@@ -435,7 +456,9 @@ path = "{temp / "relay-data"}"
                         time.sleep(0.2)
                     return 0
                 fixture_variable = (
-                    "EVC_BASE_FORMULA_PRESENCE_FIXTURE"
+                    "EVC_DOCUMENT_RESTORE_FIXTURE"
+                    if args.document_restore
+                    else "EVC_BASE_FORMULA_PRESENCE_FIXTURE"
                     if args.base_formula_presence
                     else "EVC_BASE_LIFECYCLE_FIXTURE"
                     if args.base_lifecycle
@@ -454,7 +477,9 @@ path = "{temp / "relay-data"}"
                     else "EVC_MANAGED_FIXTURE"
                 )
                 test_file = (
-                    "__tests__/presence/realBaseFormulaPresence.test.ts"
+                    "__tests__/managed/realDocumentRestore.test.ts"
+                    if args.document_restore
+                    else "__tests__/presence/realBaseFormulaPresence.test.ts"
                     if args.base_formula_presence
                     else "__tests__/bases/realBaseLifecycle.test.ts"
                     if args.base_lifecycle
@@ -486,6 +511,15 @@ path = "{temp / "relay-data"}"
                 )
                 processes.append(test)
                 while test.poll() is None:
+                    if args.document_restore and (temp / "rotate-request").exists():
+                        generation = uuid.UUID((temp / "rotate-request").read_text())
+                        (temp / "rotate-request").unlink()
+                        with session.get_sessionmaker()() as rotating:
+                            rotating.get(
+                                models.Share, share.id
+                            ).collaboration_restore_generation = generation
+                            rotating.commit()
+                        (temp / "rotate-done").write_text(str(generation))
                     if (temp / "restart-request").exists():
                         (temp / "restart-request").unlink()
                         stop(relay)

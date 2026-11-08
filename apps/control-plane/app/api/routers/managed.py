@@ -216,7 +216,15 @@ def check_socket(
     # Fresh session each time: no idle transaction/identity-map cache can hide
     # membership removal, policy changes, account disablement or session revocation.
     with get_sessionmaker()() as db:
-        share, user, claims = service.authenticate_grant(db, token, doc_id)
+        # Refresh authority after any restore/permission lock wait. Check the
+        # immutable grant binding; never assign the current generation to it.
+        share, user, claims = service.authenticate_grant(db, token, doc_id, read_lock=True)
+        try:
+            generation = claims.get("restore_generation")
+            generation = uuid.UUID(generation) if generation is not None else None
+        except (ValueError, TypeError, AttributeError) as error:
+            raise HTTPException(401, "Invalid managed grant binding") from error
+        collaboration_restore.require_generation(share, generation)
         entry = service.authorize_entry(db, share, user, doc_id, claims["mode"] == "write")
         if entry.record["type"] not in {"markdown", "canvas"}:
             raise HTTPException(403, "Not a collaborative document")
