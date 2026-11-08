@@ -7,6 +7,7 @@ source observation is controlled here; managed_stack.py exercises the real relay
 import base64
 import hashlib
 import json
+import os
 import threading
 import time
 import uuid
@@ -42,9 +43,12 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
     settings = get_settings()
     settings.collaboration_bases_groups_enabled = True
     settings.collaboration_bases_group_summaries_enabled = True
+    formula = os.environ.get("EVC_BASE_GROUP_FORMULA") == "1"
+    settings.collaboration_bases_formula_groups_enabled = formula
     settings.collaboration_anchor_relay_token = SecretStr("synthetic-observation-only")
 
-    def publish(group=True, property_name="status"):
+    def publish(group=True, property_name=None):
+        property_name = property_name or ("formula.bucket" if formula else "status")
         raw = json.dumps(
             {
                 "views": [
@@ -56,7 +60,17 @@ def prove_groups(engine, tokens, share_id, entry_id, record_id, view_id, reviewe
                     },
                     {"name": "Cards", "type": "cards"},
                 ],
-                "formulas": {"total": "2"},
+                "formulas": {
+                    "total": "2",
+                    **(
+                        {
+                            "bucket": 'if(status.startsWith("Done"), formula.label, "Other")',
+                            "label": "status",
+                        }
+                        if formula
+                        else {}
+                    ),
+                },
             }
         ).encode()
         with Session(engine, autoflush=False) as db:

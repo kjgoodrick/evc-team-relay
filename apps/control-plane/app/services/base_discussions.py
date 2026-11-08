@@ -61,6 +61,10 @@ def group_summaries_enabled():
     return groups_enabled() and get_settings().collaboration_bases_group_summaries_enabled
 
 
+def formula_groups_enabled():
+    return groups_enabled() and get_settings().collaboration_bases_formula_groups_enabled
+
+
 def definition_for(db, ctx):
     definition = db.scalar(
         select(m.BaseDefinition).where(m.BaseDefinition.entry_id == ctx.entry.id)
@@ -148,6 +152,12 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
             if isinstance(anchor.target, s.BaseGroupTarget) and not groups_enabled():
                 error(409, "base_groups_disabled")
             if (
+                isinstance(anchor.target, s.BaseGroupTarget)
+                and anchor.target.property.source == "formula"
+                and not formula_groups_enabled()
+            ):
+                error(409, "base_formula_groups_disabled")
+            if (
                 isinstance(anchor.target, s.BaseGroupSummaryTarget)
                 and not group_summaries_enabled()
             ):
@@ -184,7 +194,8 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
         # removal or disablement. Definition-only authority is the view;
         # formula cells also require record authority and lineage above.
         # Group values additionally require their exact source witness below.
-        # None of these targets grants access to a formula's evaluated output.
+        # Definition/formula-cell targets do not grant computed-value access.
+        # Formula groups require the source-verified witness below.
     if isinstance(anchor.target, s.BaseGroupTarget):
         from app.services import base_groups
 

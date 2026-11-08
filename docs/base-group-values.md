@@ -1,13 +1,15 @@
 # Typed Bases group values from verified source
 
-Status: November 6, 2026. `base_group_values.derive_note_value` derives typed
+Status: November 7, 2026. `base_group_values.derive_note_value` derives typed
 values and their source references from a private source observation. A gated
 capture endpoint, durable group authorization and client protocol now have
 PostgreSQL and actual Python/Rust/Yjs integration evidence. The plugin now has
 typed native controls, markers/navigation, durable offline capture intents and
-authorized retained-source loading. Integrated native group-comment acceptance
-remains pending. Inventory-backed file-property groups now have server/client
-and actual-service evidence; remaining file properties and formulas are unfinished.
+authorized retained-source loading. Native Table/Cards/List/Timeline/Sequence
+capture, markers and offline/reload checks now have desktop evidence. Inventory
+file groups and the [bounded formula-group subset](base-formula-groups.md) also
+have server/client, actual-service and native evidence; broader acceptance and
+remaining metadata/formula adapters are unfinished.
 
 ## Group capture and authorization
 
@@ -35,8 +37,9 @@ The first adapter supports managed note-property sources in one share, with a
 bounded conservative link resolver. Ambiguous links, missing target lineage and
 unsupported property adapters fail explicitly. It does not evaluate filters or
 prove that a historical group is currently rendered. The inventory adapter below
-adds a separate set of file properties. Formula groups, the remaining file
-properties and aggregate dependency closure remain unfinished.
+adds a separate set of file properties. The formula adapter adds bounded
+single-note calculations with transitive static formula references. Remaining
+file/formula families and aggregate dependency closure remain unfinished.
 
 Migration `202611060006` adds group values, source witnesses and capture receipts;
 downgrade refuses populated tables. The 34 focused tests cover duplicate capture,
@@ -190,17 +193,18 @@ bounded subset; Python's URL parser is not treated as a full WHATWG equivalent.
 The fixture records native behavior for deferred cases too. Do not claim full
 YAML/date/URL compatibility or silently replace these targets with view comments.
 
-The remaining file-property projections, formula/duration evaluation and cross-file
-dependency closure require separate adapters. Group summaries require membership/aggregate
-authorization rather than the single-source semantics used here.
+The remaining file-property projections, broader formula/duration evaluation and
+cross-file dependency closure require separate adapters. Group-summary definition
+comments now retain the exact group witness; authorizing aggregate result values
+still requires their complete dependency closure.
 
 ## Next integration
 
 1. Complete integrated native controls, changed/unprovable-value recovery and
    desktop/mobile/version acceptance, including different local share mounts.
 2. Complete remaining file properties, formula/duration and cross-file dependency
-   adapters, then group summaries and Time & Line targets. This checkpoint does
-   not reduce that scope.
+   adapters, and broaden group-summary and Time & Line acceptance. The bounded
+   formula subset does not reduce that scope.
 3. Add provisional first-use offline identities. Existing verified-context
    offline intents already retain the exact evidence/value and obtain server
    authority before sending; repair must never silently replace a witness.

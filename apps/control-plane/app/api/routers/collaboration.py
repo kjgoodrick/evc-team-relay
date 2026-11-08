@@ -71,6 +71,7 @@ def capabilities(
             "discussion_bases": base_discussions.enabled(),
             "discussion_base_definition_catalog": base_discussions.enabled(),
             "discussion_base_groups": base_discussions.groups_enabled(),
+            "discussion_base_formula_groups": base_discussions.formula_groups_enabled(),
             "discussion_timeline_ranges": base_discussions.timeline_ranges_enabled(),
             "discussion_timeline_markers": timeline_markers.enabled(),
             "bases_sync": get_settings().managed_bases_sync_enabled,

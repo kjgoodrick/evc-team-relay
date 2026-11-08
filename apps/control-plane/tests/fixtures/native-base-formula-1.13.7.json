@@ -1,0 +1,1017 @@
+{
+  "vault": "/private/tmp/evc-formula-semantics-native-20261107",
+  "version": "Obsidian 1.13.7",
+  "cases": [
+    {
+      "id": "arithmetic",
+      "expression": "(order + 1) * 2",
+      "value": {
+        "type": "number",
+        "value": 6.6
+      }
+    },
+    {
+      "id": "remainder",
+      "expression": "-5 % 2",
+      "value": {
+        "type": "number",
+        "value": -1
+      }
+    },
+    {
+      "id": "power",
+      "expression": "2 ** 3",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "booleanAnd",
+      "expression": "1 && 2",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "booleanOr",
+      "expression": "0 || \"fallback\"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "notEmpty",
+      "expression": "!\"\"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "notList",
+      "expression": "!items",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "listTruthy",
+      "expression": "items.isTruthy()",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "nullTruthy",
+      "expression": "null.isTruthy()",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "missingEmpty",
+      "expression": "missing.isEmpty()",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "emptyNumber",
+      "expression": "number(\"\")",
+      "error": "Error: Unable to parse \"\" as a number."
+    },
+    {
+      "id": "nullNumber",
+      "expression": "number(null)",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "booleanNumber",
+      "expression": "number(true)",
+      "value": {
+        "type": "number",
+        "value": 1
+      }
+    },
+    {
+      "id": "trimNumber",
+      "expression": "number(\" 3.4 \")",
+      "value": {
+        "type": "number",
+        "value": 3.4
+      }
+    },
+    {
+      "id": "hexNumber",
+      "expression": "number(\"0x10\")",
+      "value": {
+        "type": "number",
+        "value": 0
+      }
+    },
+    {
+      "id": "badNumber",
+      "expression": "number(\"3.4x\")",
+      "value": {
+        "type": "number",
+        "value": 3.4
+      }
+    },
+    {
+      "id": "textNumberEqual",
+      "expression": "text == 1",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "boolNumberEqual",
+      "expression": "true == 1",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "nullEmptyEqual",
+      "expression": "null == \"\"",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "missingNullEqual",
+      "expression": "missing == null",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "textNumberPlus",
+      "expression": "text + 2",
+      "value": {
+        "type": "text",
+        "value": "12"
+      }
+    },
+    {
+      "id": "numberTextPlus",
+      "expression": "2 + text",
+      "value": {
+        "type": "text",
+        "value": "21"
+      }
+    },
+    {
+      "id": "booleanPlus",
+      "expression": "true + 2",
+      "error": "Error: Invalid operator between Boolean and Number"
+    },
+    {
+      "id": "emptyPlus",
+      "expression": "null + 2",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "numberCompareText",
+      "expression": "2 > \"1\"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "textCompare",
+      "expression": "\"b\" > \"a\"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "divisionZero",
+      "expression": "1 / 0",
+      "nonfinite": "Infinity"
+    },
+    {
+      "id": "zeroDivideZero",
+      "expression": "0 / 0",
+      "nonfinite": "NaN"
+    },
+    {
+      "id": "minMixed",
+      "expression": "min(1, \"2\")",
+      "error": "Error: Type error in \"min\", parameter \"inputs\". Expected Number, given String."
+    },
+    {
+      "id": "maxNumbers",
+      "expression": "max(2,3,-1)",
+      "value": {
+        "type": "number",
+        "value": 3
+      }
+    },
+    {
+      "id": "ifTruthy",
+      "expression": "if(1,\"yes\",\"no\")",
+      "value": {
+        "type": "text",
+        "value": "yes"
+      }
+    },
+    {
+      "id": "ifNoFalse",
+      "expression": "if(false,1)",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "ifLazy",
+      "expression": "if(true,1,file(\"absent\").x)",
+      "value": {
+        "type": "number",
+        "value": 1
+      }
+    },
+    {
+      "id": "lowerUnicode",
+      "expression": "\"İΣẞ\".lower()",
+      "value": {
+        "type": "text",
+        "value": "i̇σß"
+      }
+    },
+    {
+      "id": "urlLower",
+      "expression": "\"HTTPS://EXAMPLE.COM\".lower()",
+      "value": {
+        "type": "text",
+        "value": "https://example.com"
+      }
+    },
+    {
+      "id": "literalDate",
+      "expression": "\"2026-11-07\"",
+      "value": {
+        "type": "text",
+        "value": "2026-11-07"
+      }
+    },
+    {
+      "id": "containsText",
+      "expression": "\"Ready\".contains(\"ea\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "containsNumber",
+      "expression": "\"Ready\".contains(1)",
+      "error": "Error: Type error in \"contains\", parameter \"value\". Expected String, given Number."
+    },
+    {
+      "id": "isTypeString",
+      "expression": "status.isType(\"string\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "isTypeNumber",
+      "expression": "order.isType(\"number\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "nullType",
+      "expression": "null.isType(\"null\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "abs",
+      "expression": "(-2.3).abs()",
+      "value": {
+        "type": "number",
+        "value": 2.3
+      }
+    },
+    {
+      "id": "ceil",
+      "expression": "(-2.3).ceil()",
+      "value": {
+        "type": "number",
+        "value": -2
+      }
+    },
+    {
+      "id": "floor",
+      "expression": "(-2.3).floor()",
+      "value": {
+        "type": "number",
+        "value": -3
+      }
+    },
+    {
+      "id": "chain",
+      "expression": "status.lower().startsWith(\"r\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "bracket",
+      "expression": "note[\"status\"]",
+      "value": {
+        "type": "text",
+        "value": "Ready"
+      }
+    },
+    {
+      "id": "transitive",
+      "expression": "formula.arithmetic + 1",
+      "value": {
+        "type": "number",
+        "value": 7.6
+      }
+    },
+    {
+      "id": "extended_unaryMethod",
+      "expression": "-order.abs()",
+      "value": {
+        "type": "number",
+        "value": -2.3
+      }
+    },
+    {
+      "id": "extended_unaryNested",
+      "expression": "(-order).abs()",
+      "value": {
+        "type": "number",
+        "value": 2.3
+      }
+    },
+    {
+      "id": "extended_precedence",
+      "expression": "1 + 2 * 3 >= 4 && !false",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_notNumber",
+      "expression": "!0",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_notBoolean",
+      "expression": "!flag",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_orEmpty",
+      "expression": "\"\" || 0",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "extended_andText",
+      "expression": "\"a\" && \"b\"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_plusUnary",
+      "expression": "+\"2\"",
+      "value": {
+        "type": "empty"
+      },
+      "deferred": "Native does not parse unary plus"
+    },
+    {
+      "id": "extended_minusString",
+      "expression": "-\"2\"",
+      "error": "Unable to negate 2"
+    },
+    {
+      "id": "extended_emptyNum",
+      "expression": "(0).isEmpty()",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "extended_emptyFalse",
+      "expression": "false.isEmpty()",
+      "error": "Cannot find function isEmpty on type Boolean"
+    },
+    {
+      "id": "extended_emptyTrue",
+      "expression": "true.isEmpty()",
+      "error": "Cannot find function isEmpty on type Boolean"
+    },
+    {
+      "id": "extended_emptyText",
+      "expression": "\"\".isEmpty()",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_truthZero",
+      "expression": "(0).isTruthy()",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "extended_boolType",
+      "expression": "flag.isType(\"boolean\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_textWrongType",
+      "expression": "text.isType(\"unknown\")",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "extended_containsAll",
+      "expression": "status.containsAll(\"Re\", \"dy\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_containsAllFalse",
+      "expression": "status.containsAll(\"Re\", \"x\")",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "extended_containsAny",
+      "expression": "status.containsAny(\"x\", \"dy\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_containsAnyFalse",
+      "expression": "status.containsAny(\"x\", \"y\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_endsWith",
+      "expression": "status.endsWith(\"dy\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_nullMethod",
+      "expression": "null.isEmpty()",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_equalFalseEmpty",
+      "expression": "false == \"\"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_equalFalseZero",
+      "expression": "false == 0",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_equalNullZero",
+      "expression": "null == 0",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "extended_lessNull",
+      "expression": "null < 1",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "extended_lessNullNull",
+      "expression": "null <= null",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "extended_differentTypes",
+      "expression": "\"x\" != 1",
+      "value": {
+        "type": "boolean",
+        "value": true
+      },
+      "deferred": "Non-numeric text comparison remains unavailable"
+    },
+    {
+      "id": "extended_boolSubtract",
+      "expression": "true - 1",
+      "error": "Invalid operator between Boolean and Number"
+    },
+    {
+      "id": "extended_nullMultiply",
+      "expression": "null * 2",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "extended_nullDivide",
+      "expression": "2 / null",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "extended_mixedSubtract",
+      "expression": "\"2\" - 1",
+      "error": "Invalid operator between String and Number"
+    },
+    {
+      "id": "extended_mixedMultiply",
+      "expression": "\"2\" * 2",
+      "error": "Invalid operator between String and Number"
+    },
+    {
+      "id": "extended_nullText",
+      "expression": "null + \"a\"",
+      "value": {
+        "type": "text",
+        "value": "a"
+      }
+    },
+    {
+      "id": "extended_numWhitespace",
+      "expression": "number(\"  2\")",
+      "value": {
+        "type": "number",
+        "value": 2
+      }
+    },
+    {
+      "id": "extended_numExponent",
+      "expression": "number(\"2e3x\")",
+      "value": {
+        "type": "number",
+        "value": 2000
+      }
+    },
+    {
+      "id": "extended_numBadExponent",
+      "expression": "number(\"2e+x\")",
+      "value": {
+        "type": "number",
+        "value": 2
+      }
+    },
+    {
+      "id": "extended_fractionText",
+      "expression": "\"n=\" + 2.3",
+      "value": {
+        "type": "text",
+        "value": "n=2.3"
+      },
+      "deferred": "Fractional number-to-string formatting requires a compatible decimal renderer"
+    },
+    {
+      "id": "extended_intText",
+      "expression": "\"n=\" + 2",
+      "value": {
+        "type": "text",
+        "value": "n=2"
+      }
+    },
+    {
+      "id": "extended_numberAfterPlus",
+      "expression": "2 + 1 + \"x\"",
+      "value": {
+        "type": "text",
+        "value": "3x"
+      }
+    },
+    {
+      "id": "extended_ifNull",
+      "expression": "if(null, 1, 2)",
+      "value": {
+        "type": "number",
+        "value": 2
+      }
+    },
+    {
+      "id": "extended_negativeZero",
+      "expression": "-0",
+      "value": {
+        "type": "number",
+        "value": 0
+      }
+    },
+    {
+      "id": "extended_negModulo",
+      "expression": "5 % -2",
+      "value": {
+        "type": "number",
+        "value": 1
+      }
+    },
+    {
+      "id": "extended_caseProperty",
+      "expression": "note.STATUS",
+      "value": {
+        "type": "text",
+        "value": "Ready"
+      }
+    },
+    {
+      "id": "extended_fileName",
+      "expression": "file.name",
+      "value": {
+        "type": "text",
+        "value": "Source"
+      }
+    },
+    {
+      "id": "extended_fileBase",
+      "expression": "file.basename",
+      "value": {
+        "type": "text",
+        "value": "Source"
+      }
+    },
+    {
+      "id": "extended_fileFull",
+      "expression": "file.fullname",
+      "value": {
+        "type": "text",
+        "value": "Source.md"
+      }
+    },
+    {
+      "id": "extended_fileExt",
+      "expression": "file.ext",
+      "value": {
+        "type": "text",
+        "value": "md"
+      }
+    },
+    {
+      "id": "extended_emptyMin",
+      "expression": "min(null, 2)",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "extended_emptyMax",
+      "expression": "max(2, null)",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "extended_boolMin",
+      "expression": "min(true, 2)",
+      "error": "Type error in min: expected Number, given Boolean"
+    },
+    {
+      "id": "extended_nestedNumbers",
+      "expression": "max((order * 2).ceil(), 3)",
+      "value": {
+        "type": "number",
+        "value": 5
+      }
+    },
+    {
+      "id": "extended_unicodeOrder",
+      "expression": "\"😀\" < \"\"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_escapedTab",
+      "expression": "\"a\\tb\"",
+      "value": {
+        "type": "text",
+        "value": "a\tb"
+      }
+    },
+    {
+      "id": "extended_escapedBackspace",
+      "expression": "\"a\\bb\"",
+      "value": {
+        "type": "text",
+        "value": "a\bb"
+      }
+    },
+    {
+      "id": "extended_numericSuffix",
+      "expression": "number(\".5tail\")",
+      "value": {
+        "type": "number",
+        "value": 0.5
+      }
+    },
+    {
+      "id": "extended_zeroEmpty",
+      "expression": "(0).isType(\"number\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_startsEmpty",
+      "expression": "status.startsWith(\"\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "extended_containsEmpty",
+      "expression": "status.contains(\"\")",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "extended_primitiveLower",
+      "expression": "\"İΣẞ\".lower()",
+      "value": {
+        "type": "text",
+        "value": "i̇σß"
+      }
+    },
+    {
+      "id": "extended_roundingDifference",
+      "expression": "(1e16 + 1) - 1e16",
+      "value": {
+        "type": "empty"
+      },
+      "deferred": "Native does not parse exponent literals"
+    },
+    {
+      "id": "edge_plusNumber",
+      "expression": "+2",
+      "value": {
+        "type": "empty"
+      },
+      "deferred": "Native does not parse unary plus"
+    },
+    {
+      "id": "edge_plusNull",
+      "expression": "+null",
+      "value": {
+        "type": "empty"
+      },
+      "deferred": "Native does not parse unary plus"
+    },
+    {
+      "id": "edge_leadingDecimal",
+      "expression": ".5",
+      "value": {
+        "type": "number",
+        "value": 0.5
+      }
+    },
+    {
+      "id": "edge_negativeDecimal",
+      "expression": "-.5",
+      "value": {
+        "type": "number",
+        "value": -0.5
+      }
+    },
+    {
+      "id": "edge_scientific",
+      "expression": "1e2",
+      "value": {
+        "type": "empty"
+      },
+      "deferred": "Native does not parse exponent literals"
+    },
+    {
+      "id": "edge_decimalExponent",
+      "expression": "1.2e2",
+      "value": {
+        "type": "empty"
+      },
+      "deferred": "Native does not parse exponent literals"
+    },
+    {
+      "id": "edge_containsEmptyAll",
+      "expression": "\"a\".containsAll(\"\", \"a\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "edge_containsEmptyAny",
+      "expression": "\"a\".containsAny(\"\", \"x\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "edge_containsOnlyEmptyAll",
+      "expression": "\"a\".containsAll(\"\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "edge_containsOnlyEmptyAny",
+      "expression": "\"a\".containsAny(\"\")",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "edge_emptyContainsEmpty",
+      "expression": "\"\".contains(\"\")",
+      "value": {
+        "type": "boolean",
+        "value": false
+      }
+    },
+    {
+      "id": "edge_textNull",
+      "expression": "\"a\" + null",
+      "value": {
+        "type": "text",
+        "value": "a"
+      }
+    },
+    {
+      "id": "edge_nullBoth",
+      "expression": "null + null",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "edge_minNullBool",
+      "expression": "min(null, true)",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "edge_minBoolNull",
+      "expression": "min(true, null)",
+      "error": "Type error in min: expected Number, given Boolean"
+    },
+    {
+      "id": "edge_falseEmpty",
+      "expression": "false == \"\"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "edge_falseSpaces",
+      "expression": "false == \"  \"",
+      "value": {
+        "type": "boolean",
+        "value": true
+      }
+    },
+    {
+      "id": "edge_integerUnsafe",
+      "expression": "10000000000000000 + 1",
+      "value": {
+        "type": "number",
+        "value": 10000000000000000
+      }
+    },
+    {
+      "id": "edge_integerSafe",
+      "expression": "9007199254740991",
+      "value": {
+        "type": "number",
+        "value": 9007199254740991
+      }
+    },
+    {
+      "id": "edge_nullAbs",
+      "expression": "null.abs()",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "edge_nullLower",
+      "expression": "null.lower()",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "edge_nullContains",
+      "expression": "null.contains(\"x\")",
+      "value": {
+        "type": "empty"
+      }
+    },
+    {
+      "id": "edge_negNull",
+      "expression": "-null",
+      "value": {
+        "type": "empty"
+      }
+    }
+  ],
+  "source": "---\nstatus: Ready\norder: 2.3\ntext: \"1\"\nempty: \"\"\nflag: false\nitems: [a,b]\n---\nSynthetic formula semantics.\n",
+  "source_sha256": "eb653dd1689885ab16808a1379c75d38b01280b179af67b68c07e247a775e245",
+  "base_sha256": "d8b5a1922c0444d66fb15d13f604cae2c88ff4e538a0683744cbe10e6b45e6a8",
+  "observation": "Native Obsidian 1.13.7 BasesEntry.getValue on the rendered synthetic Source row; read through DevTools UI, no formula model mutation.",
+  "references": [
+    "https://obsidian.md/help/bases/syntax",
+    "https://obsidian.md/help/bases/functions"
+  ],
+  "additional_sources": [
+    {
+      "file": "Extended.base",
+      "sha256": "b6c965362ac3212ab62abfeeb5154207faf221f6e76f430e48e9d0e106259b75"
+    },
+    {
+      "file": "Edges.base",
+      "sha256": "c875e3ce981b3a78def101165ac2b68ce935717066b1c0e016a512ddcf5117e1"
+    }
+  ],
+  "additional_observation": "61 Extended and 23 Edges cases read with getValue through native DevTools via CUA; no community plugins or network service used."
+}

@@ -73,6 +73,11 @@ def main():
         help="Run public group capture through the actual private relay source reader",
     )
     parser.add_argument(
+        "--base-formula-groups",
+        action="store_true",
+        help="Run group capture with transitive source-verified formulas",
+    )
+    parser.add_argument(
         "--image-anchors",
         action="store_true",
         help="Run image occurrence comments through the private relay barrier",
@@ -92,6 +97,8 @@ def main():
         help="Hold a disposable desktop smoke-test server open instead of running Jest",
     )
     args = parser.parse_args()
+    if args.base_formula_groups:
+        args.base_groups = True
     if args.image_anchors or args.base_sources or args.base_groups:
         args.text_anchors = True
     if (args.base_sources or args.base_groups) and (
@@ -189,6 +196,7 @@ allowed_token_types = ["server"]
                 COLLABORATION_BASES_DISCUSSIONS_ENABLED="true",
                 COLLABORATION_BASES_DEFINITION_TARGETS_ENABLED="true",
                 COLLABORATION_BASES_GROUPS_ENABLED="true",
+                COLLABORATION_BASES_FORMULA_GROUPS_ENABLED=str(args.base_formula_groups).lower(),
                 COLLABORATION_BASES_GROUP_SUMMARIES_ENABLED="true",
                 COLLABORATION_BASES_TIMELINE_RANGES_ENABLED="true",
                 MANAGED_BASES_SYNC_ENABLED="true",
@@ -426,6 +434,7 @@ path = "{temp / "relay-data"}"
                     else "__tests__/managed/realStack.test.ts"
                 )
                 env = {**os.environ, fixture_variable: str(fixture_path)}
+                env["EVC_BASE_GROUP_FORMULA"] = "1" if args.base_formula_groups else "0"
                 test = subprocess.Popen(
                     ["npm", "test", "--", "--runInBand", test_file],
                     cwd=args.plugin,

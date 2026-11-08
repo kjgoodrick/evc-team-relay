@@ -16,6 +16,8 @@ from app.schemas import discussions as s
 from app.services import (
     base_discussions,
     base_file_group_values,
+    base_formula_expression,
+    base_formula_group_values,
     base_group_values,
     base_source_service,
     base_target_definitions,
@@ -36,14 +38,20 @@ def _references(db, ctx, evidence, *, user=None):
     if (
         type(evidence.get("version")) is not int
         or evidence["version"] != 1
-        or evidence.get("adapter") not in {"note_property_v1", "file_inventory_v1"}
+        or evidence.get("adapter")
+        not in {"note_property_v1", "file_inventory_v1", "formula_note_v1"}
         or not isinstance(raw, list)
         or not 1 <= len(raw) <= 256
     ):
         error(404, "target_unavailable")
     prop = evidence.get("property")
     file_source = evidence["adapter"] == "file_inventory_v1"
-    if not isinstance(prop, dict) or prop.get("source") != ("file" if file_source else "note"):
+    property_source = {
+        "file_inventory_v1": "file",
+        "note_property_v1": "note",
+        "formula_note_v1": "formula",
+    }[evidence["adapter"]]
+    if not isinstance(prop, dict) or prop.get("source") != property_source:
         error(404, "target_unavailable")
     try:
         refs = {
@@ -153,13 +161,22 @@ def _capture_context(db, ctx, payload):
         error(409, "base_target_definition_changed")
     prop = grouping.descriptor.get("property", {})
     file_source = payload.source_kind == "file"
-    if prop.get("source") != ("file" if file_source else "note") or set(
+    if prop.get("source") not in ({"file"} if file_source else {"note", "formula"}) or set(
         view.descriptor.get("groupBy", {})
     ) - {
         "property",
         "direction",
     }:
         error(409, "base_group_adapter_unavailable")
+    if prop.get("source") == "formula":
+        if not base_discussions.formula_groups_enabled():
+            error(409, "base_formula_groups_disabled")
+        try:
+            base_formula_expression.compile_formula(
+                definition.configuration.get("formulas", {}), prop.get("name")
+            )
+        except base_formula_expression.UnsupportedFormula:
+            error(409, "base_group_adapter_unavailable")
     source = base_discussions.record_for(db, ctx, payload.record_id)
     if source.collaboration_generation != payload.record_generation:
         error(409, "anchor_generation_mismatch")
@@ -275,6 +292,18 @@ def capture(db, token, share_id, entry_id, payload):
                 derived = base_file_group_values.derive(
                     grouping.descriptor["property"]["name"], source_path, identity
                 )
+            elif grouping.descriptor["property"]["source"] == "formula":
+                derived = base_formula_group_values.derive(
+                    observed,
+                    definition.configuration.get("formulas", {}),
+                    grouping.descriptor["property"]["name"],
+                    identity,
+                    share_id=share_id,
+                    dependency=payload.dependency,
+                    source_path=source_path,
+                    time_zone=payload.time_zone,
+                    resolve_link=_link_resolver(db, ctx),
+                )
             else:
                 derived = base_group_values.derive_note_value(
                     observed,
@@ -295,7 +324,13 @@ def capture(db, token, share_id, entry_id, payload):
         )
         evidence = {
             "version": 1,
-            "adapter": "file_inventory_v1" if file_source else "note_property_v1",
+            "adapter": (
+                "file_inventory_v1"
+                if file_source
+                else "formula_note_v1"
+                if grouping.descriptor["property"]["source"] == "formula"
+                else "note_property_v1"
+            ),
             "property": grouping.descriptor["property"],
             "source": {
                 "record_id": str(payload.record_id),

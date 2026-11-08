@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from functools import cached_property
 
 import httpx
 import yaml
@@ -58,6 +59,13 @@ class SourceObservation:
     expires_at_ms: int
     deadline: float
     source_prefix: str = field(repr=False)
+
+    @cached_property
+    def _properties(self):
+        # Private, immutable source observations may serve several properties
+        # in one formula. Parse once per observation, never across snapshots or
+        # accounts. Consumers still check the observation's binding and expiry.
+        return metadata(self.source_prefix, complete=self.source_complete)
 
     def check(self, share_id, entry_id, generation, dependency):
         if self.identity_sha256 != source_identity(share_id, entry_id, generation, dependency):
@@ -254,7 +262,7 @@ def property_value(observation: SourceObservation, name: str):
         name.encode("utf-8")
     except UnicodeError:
         raise InvalidMetadata("Invalid property name") from None
-    values = metadata(observation.source_prefix, complete=observation.source_complete)
+    values = observation._properties
     # Native getInsensitive prefers exact spelling, then the first lowercase
     # match in source order. Unicode casefold is stronger (Straße != STRASSE in
     # this API) and would incorrectly prove a different group's value.

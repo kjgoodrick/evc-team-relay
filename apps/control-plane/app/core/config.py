@@ -77,6 +77,10 @@ class Settings(BaseSettings):
             "and private source observations"
         ),
     )
+    collaboration_bases_formula_groups_enabled: bool = Field(
+        default=False,
+        description="Preview bounded source-verified formula groups; upgrade clients first",
+    )
     collaboration_bases_timeline_ranges_enabled: bool = Field(
         default=False,
         description="Preview saved-view timeline range discussions; requires upgraded clients",

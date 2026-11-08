@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from sqlalchemy import select, tuple_
 
 from app.db import models as m
+from app.services import base_formula_expression
 from app.services import bases_definition as codec
 
 MAX_PER_VIEW = 256
@@ -288,6 +289,19 @@ def catalog(db, token, share_id, entry_id, payload):
             next_after=str(page[-1].id) if page else None,
             computed_values=False,
         )
+        if base_discussions.formula_groups_enabled():
+            # Top-level additive discovery preserves the old target shape.
+            # This describes syntax eligibility, never values or dependencies.
+            result["formula_group_ids"] = [
+                str(row.id)
+                for row in page
+                if row.kind == "group"
+                and row.descriptor.get("property", {}).get("source") == "formula"
+                and base_formula_expression.supported(
+                    definition.configuration.get("formulas", {}),
+                    row.descriptor["property"]["name"],
+                )
+            ]
         db.commit()
         return result
     except Exception:
