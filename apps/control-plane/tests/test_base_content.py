@@ -526,3 +526,42 @@ def test_receipt_cannot_be_inspected_through_another_readable_base(
         json=body,
     )
     assert response.status_code == 404
+
+
+def test_restore_guard_precedes_publication_and_withdrawal_receipt_replay(
+    client, world, content, db_session
+):
+    before = read(client, world)
+    assert before["restore_guard"] and before["restore_generation"] is None
+    original = payload(before["state"])
+    accepted = send(client, world, original)
+    generation = uuid.uuid4()
+    world.share.collaboration_restore_generation = generation
+    db_session.commit()
+    restored = read(client, world)
+    assert restored["restore_generation"] == str(generation)
+    pending = payload(restored["state"], INITIAL)
+    for body in [original, pending]:
+        for binding in [None, str(uuid.uuid4())]:
+            auth = headers(world.tokens["owner"])
+            if binding:
+                auth["X-Relay-Restore-Generation"] = binding
+            for method, url in [
+                (client.put, path(world)),
+                (client.post, path(world) + "/withdraw"),
+            ]:
+                response = method(url, headers=auth, json=body)
+                assert response.status_code == 409, response.text
+                assert response.json()["error"]["message"]["code"] == "restore_generation_changed"
+            assert read(client, world) == restored
+    assert inspect_status(client, world, original) == {"status": "accepted", "result": accepted}
+    assert inspect_status(client, world, pending)["status"] == "unknown"
+    auth = headers(world.tokens["owner"]) | {"X-Relay-Restore-Generation": str(generation)}
+    response = client.put(path(world), headers=auth, json=pending)
+    assert response.status_code == 200, response.text
+    assert client.put(path(world), headers=auth, json=pending).json() == response.json()
+    assert client.post(path(world) + "/withdraw", headers=auth, json=pending).json() == {
+        "status": "accepted",
+        "result": response.json(),
+    }
+    assert db_session.scalar(select(func.count()).select_from(m.ManagedBaseReceipt)) == 2

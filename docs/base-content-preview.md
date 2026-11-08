@@ -39,6 +39,8 @@ requires current file-edit permission, independently of comment permission.
 ```json
 {
   "protocol_version": 1,
+  "restore_guard": true,
+  "restore_generation": null,
   "state": {
     "path": "Planning.base",
     "record": {"id": "<entry UUID>", "version": 0, "type": "file", "hash": "<SHA-256>", "mimetype": "application/yaml", "synctime": 123},
@@ -190,11 +192,38 @@ historical receipt. Deleted/inaccessible entries remain unavailable.
 Unknown is an observation, not proof of non-acceptance: a restored database may
 have lost an earlier receipt. The client therefore retains the exact pending
 request and shows the result without automatically settling, replacing or
-retrying it. Complete restore-generation binding for content/registry/inventory
-mutations and explicit restored-work reconciliation remain unfinished.
+retrying it. Restore-generation binding for registry/inventory mutations and explicit
+restored-work reconciliation remain unfinished.
 
 `tests/integration/base_content_status_postgres.py` requires an empty disposable
 loopback `collaboration_test` database. It verifies no INSERT/UPDATE/DELETE occurs
 for known/unknown inspection, and current read revocation wins while a receipt
 check waits for its share lock. The real plugin HTTP harness checks accepted,
 withdrawn and unknown cases with unchanged source and local pending state.
+
+
+## Restore-generation publication guard
+
+Content reads advertise `restore_guard` and `restore_generation` (NULL for the
+original server lineage). PUT and withdrawal require that original generation
+in `X-Relay-Restore-Generation` when nonnull. The current locked share is checked
+before existing receipts or new content/withdrawal changes. The header is not
+part of the canonical publication body/hash. Historical `/status` inspection
+remains read-only and requires no mutation header.
+
+The Bases client persists this binding on each pending save. Each entry keeps a
+revision-checked observation acquired before the remote read under its native
+entry lock; stale observations and downgrades from a known restored generation
+are refused. Existing baselines and pending bytes are retained. An old pending
+request cannot publish/withdraw; a late old acceptance cannot settle it or
+acknowledge managed inventory after a newer observation. Pre-restore local edits
+and interrupted downloads become explicit conflicts. Fresh local initialization
+on a restored share also requires review when there is no proven baseline.
+Reviewed replacement work binds to that reviewed current snapshot. Original
+NULL-lineage compatibility remains.
+
+The separate Bases IndexedDB is version 3 to fence workers that would otherwise
+drop the binding. Existing records and recoveries survive the upgrade. Native
+acceptance, registry/inventory fencing, reconciliation of historical pending
+requests and the coordinated restore/rollback workflow are still unfinished;
+do not enable a live restore solely on this content guard.

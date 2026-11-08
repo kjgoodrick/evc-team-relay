@@ -1,6 +1,7 @@
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
@@ -70,8 +71,11 @@ def publish(
     payload: PublishBaseContent,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: Annotated[
+        uuid.UUID | None, Header(alias="X-Relay-Restore-Generation")
+    ] = None,
 ):
-    return service.publish(db, token, share_id, entry_id, payload)
+    return service.publish(db, token, share_id, entry_id, payload, restore_generation)
 
 
 @router.post("/withdraw")
@@ -81,9 +85,12 @@ def withdraw(
     payload: PublishBaseContent,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
+    restore_generation: Annotated[
+        uuid.UUID | None, Header(alias="X-Relay-Restore-Generation")
+    ] = None,
 ):
     # Recovery remains available after new guarded saves are disabled.
-    return service.withdraw(db, token, share_id, entry_id, payload)
+    return service.withdraw(db, token, share_id, entry_id, payload, restore_generation)
 
 
 @router.post("/status")

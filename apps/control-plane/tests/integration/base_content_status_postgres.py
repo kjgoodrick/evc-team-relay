@@ -12,7 +12,7 @@ from queue import Queue
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fastapi import HTTPException
-from sqlalchemy import create_engine, event, select, text
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
@@ -146,6 +146,76 @@ def main():
             finally:
                 revoker.rollback()
             waiting.result(timeout=10)
+    # Restore fences publication and withdrawal before either can replay a
+    # receipt or record new intent, including requests that loaded a stale ORM
+    # share before reaching the authority lock.
+    with Session(engine) as db:
+        db.get(m.ManagedRule, rule_id).permission = "write"
+        db.get(m.ManagedBaseContent, entry_id).generation = db.get(
+            m.ManagedEntry, entry_id
+        ).collaboration_generation
+        db.commit()
+    for action in (base_content.publish, base_content.withdraw):
+        with Session(engine) as db:
+            current = base_content.read(db, token, share_id, entry_id)
+            old_generation = uuid.UUID(current["restore_generation"])
+            candidate = payload.model_copy(
+                update={
+                    "operation_id": uuid.uuid4(),
+                    "expected": PublishBaseContent.model_validate(
+                        {**payload.model_dump(mode="json"), "expected": current["state"]}
+                    ).expected,
+                }
+            )
+            count = db.scalar(select(func.count()).select_from(m.ManagedBaseReceipt))
+        with Session(engine) as restorer:
+            restorer.execute(select(m.Share.id).where(m.Share.id == share_id).with_for_update())
+
+            def waiting_write():
+                with Session(engine, autoflush=False) as db:
+                    cached = db.get(m.Share, share_id)
+                    assert cached.collaboration_restore_generation == old_generation
+                    pids.put(db.scalar(text("SELECT pg_backend_pid()")))
+                    try:
+                        action(db, token, share_id, entry_id, candidate, old_generation)
+                    except HTTPException as error:
+                        assert error.status_code == 409 and error.detail == {
+                            "code": "restore_generation_changed"
+                        }
+                    else:
+                        raise AssertionError("Old Bases mutation bypassed restore")
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                waiting = pool.submit(waiting_write)
+                try:
+                    pid = pids.get(timeout=5)
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        with engine.connect() as probe:
+                            locked = (
+                                probe.scalar(
+                                    text(
+                                        "SELECT wait_event_type FROM pg_stat_activity "
+                                        "WHERE pid=:pid"
+                                    ),
+                                    {"pid": pid},
+                                )
+                                == "Lock"
+                            )
+                        if locked:
+                            break
+                        time.sleep(0.01)
+                    else:
+                        raise AssertionError("Bases mutation did not reach the authority lock")
+                    restorer.get(m.Share, share_id).collaboration_restore_generation = uuid.uuid4()
+                    restorer.commit()
+                finally:
+                    restorer.rollback()
+                waiting.result(timeout=10)
+        with Session(engine) as db:
+            assert db.scalar(select(func.count()).select_from(m.ManagedBaseReceipt)) == count
+            assert base_content.read(db, token, share_id, entry_id)["state"] == current["state"]
+        print(f"PASS: waiting Bases {action.__name__} rejects a concurrent restore")
     engine.dispose()
     print("PASS: historical Bases receipts are read-only; lock-wait revocation prevents disclosure")
 

@@ -26,7 +26,7 @@ def main():
     parser.add_argument(
         "--restore-guard",
         action="store_true",
-        help="Verify bound marker saves on a synthetic restored share",
+        help="Verify bound Bases and marker saves on a synthetic restored share",
     )
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="evc-base-content-client-") as temporary:
@@ -312,7 +312,8 @@ def main():
                 if result.returncode:
                     raise RuntimeError("Bases client HTTP proof failed")
                 print(
-                    "PASS: actual restored marker session, immutable binding and exact retry"
+                    "PASS: restored Bases review, immutable saves, old-work fencing "
+                    "and marker retries"
                     if args.restore_guard
                     else "PASS: actual Bases client HTTP, offline persistence, exact retry, "
                     "conflicts, withdrawal, saved-view identity, repair recovery, "

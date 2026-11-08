@@ -13,8 +13,9 @@ client commands across all mutation paths, and the full restore drill remain
 unfinished. Server guards reject old discussion commands/withdrawals, picture
 uploads, Bases group captures, inbox choices, shared marker saves and combined
 permission saves after a share's restore generation changes. Independent legacy
-file/comment rule writers also enforce the same guard. Other mutation paths still
-need equivalent guards.
+file/comment rule writers and guarded Bases content publish/withdraw also enforce
+the same guard. Registry/inventory and other mutation paths still need equivalent
+guards.
 Client transport/store binding, ordinary-session startup/reconnect and local
 quarantine have automated and actual HTTP evidence. Picture object-storage races
 and PostgreSQL group-capture/inbox/marker/permission lock races are covered too. Remaining mutation guards,

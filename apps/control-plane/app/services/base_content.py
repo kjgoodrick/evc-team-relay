@@ -20,7 +20,12 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas.base_content import MAX_BYTES
-from app.services import bases_definition, discussion_service, managed_service
+from app.services import (
+    bases_definition,
+    collaboration_restore,
+    discussion_service,
+    managed_service,
+)
 
 error = discussion_service.error
 _legacy_reads = threading.BoundedSemaphore(2)
@@ -119,6 +124,10 @@ def read(db, token, share_id, entry_id):
                 error(409, "base_content_changed")
         result = {
             "protocol_version": 1,
+            "restore_guard": True,
+            "restore_generation": str(ctx.share.collaboration_restore_generation)
+            if ctx.share.collaboration_restore_generation is not None
+            else None,
             "state": current,
             "content_base64": base64.b64encode(raw).decode() if raw is not None else None,
         }
@@ -163,10 +172,11 @@ def receipt_for(db, ctx, payload, request_hash):
     return receipt
 
 
-def publish(db, token, share_id, entry_id, payload):
+def publish(db, token, share_id, entry_id, payload, restore_generation=None):
     raw, sha256, expected, request_hash = prepare(share_id, entry_id, payload)
     try:
         ctx, content = context(db, token, share_id, entry_id, write=True)
+        collaboration_restore.require_generation(ctx.share, restore_generation)
         receipt = receipt_for(db, ctx, payload, request_hash)
         if receipt:
             if receipt.result.get("withdrawn"):
@@ -230,10 +240,11 @@ def reject_legacy_write(db, share, entry_id):
         error(428, "base_content_protocol_required")
 
 
-def withdraw(db, token, share_id, entry_id, payload):
+def withdraw(db, token, share_id, entry_id, payload, restore_generation=None):
     _, _, _, request_hash = prepare(share_id, entry_id, payload)
     try:
         ctx, _ = context(db, token, share_id, entry_id, write=True)
+        collaboration_restore.require_generation(ctx.share, restore_generation)
         receipt = receipt_for(db, ctx, payload, request_hash)
         if receipt and not receipt.result.get("withdrawn"):
             result = {"status": "accepted", "result": dict(receipt.result)}
