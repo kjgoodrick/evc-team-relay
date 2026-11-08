@@ -60,11 +60,12 @@ def mutate_index(
     payload: service.Batch,
     db: Session = Depends(get_db),
     authorization: str | None = Header(default=None),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
     share, user, claims = service.authenticate_grant(db, bearer(authorization), str(share_id))
     if claims["mode"] != "write":
         raise HTTPException(403, "Read-only grant")
-    return service.apply_batch(db, share, user, payload)
+    return service.apply_batch(db, share, user, payload, restore_generation)
 
 
 class Rule(BaseModel):
@@ -106,12 +107,18 @@ def claim_file(
     payload: Claim,
     db: Session = Depends(get_db),
     authorization: str | None = Header(default=None),
+    restore_generation: uuid.UUID | None = Header(None, alias="X-Relay-Restore-Generation"),
 ):
     share, user, claims = service.authenticate_grant(db, bearer(authorization), str(share_id))
     path = service.canonical_path(payload.path)
     if claims["mode"] != "write":
         raise HTTPException(403, "Read-only grant")
-    db.execute(select(models.Share.id).where(models.Share.id == share_id).with_for_update())
+    share, user = service.lock_inventory(db, share, user)
+    collaboration_restore.require_generation(share, restore_generation)
+    restore_context = {
+        "restore_guard": True,
+        "restore_generation": str(restore_generation) if restore_generation else None,
+    }
     existing = db.scalar(
         select(models.ManagedEntry).where(
             models.ManagedEntry.share_id == share_id,
@@ -125,6 +132,7 @@ def claim_file(
             "won": existing.id == str(payload.record.id),
             "record": existing.record,
             "permission": service.permission(share, user, path, service.rules_for(db, share, user)),
+            **restore_context,
         }
     service.apply_batch(
         db,
@@ -139,8 +147,9 @@ def claim_file(
                 )
             ]
         ),
+        restore_generation,
     )
-    return {"won": True, "record": payload.record.wire(), "permission": "write"}
+    return {"won": True, "record": payload.record.wire(), "permission": "write", **restore_context}
 
 
 @router.get("/shares/{share_id}/rules")

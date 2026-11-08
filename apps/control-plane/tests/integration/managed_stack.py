@@ -475,7 +475,12 @@ path = "{temp / "relay-data"}"
                 env = {**os.environ, fixture_variable: str(fixture_path)}
                 env["EVC_BASE_GROUP_FORMULA"] = "1" if args.base_formula_groups else "0"
                 test = subprocess.Popen(
-                    ["npm", "test", "--", "--runInBand", test_file],
+                    [
+                        "node",
+                        str(args.plugin.resolve() / "node_modules/jest/bin/jest.js"),
+                        "--runInBand",
+                        test_file,
+                    ],
                     cwd=args.plugin,
                     env=env,
                 )

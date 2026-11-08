@@ -23,7 +23,7 @@ from app.core import security
 from app.core.config import get_settings
 from app.db import models
 from app.schemas.token import RelayTokenRequest, RelayTokenResponse
-from app.services import share_service
+from app.services import collaboration_restore, share_service
 
 
 def canonical_path(value: str, root: bool = False) -> str:
@@ -121,7 +121,7 @@ def authorize_entry(
 
 
 def manifest(db: Session, share: models.Share, user: models.User) -> dict:
-    member(db, share, user)
+    share, user = lock_inventory(db, share, user, read=True)
     rules = rules_for(db, share, user)
     entries = list(
         db.scalars(
@@ -147,7 +147,13 @@ def manifest(db: Session, share: models.Share, user: models.User) -> dict:
         for entry in removed
         if entry.last_path and permission(share, user, entry.last_path, rules) != "none"
     ]
-    return {
+    result = {
+        "restore_guard": True,
+        "restore_generation": (
+            str(share.collaboration_restore_generation)
+            if share.collaboration_restore_generation
+            else None
+        ),
         "records": {e.path: e.record for e in visible},
         "permissions": {e.path: permission(share, user, e.path, rules) for e in visible},
         "activity": {e.id: e.activity for e in visible if e.activity},
@@ -158,6 +164,8 @@ def manifest(db: Session, share: models.Share, user: models.User) -> dict:
             for path in {e.last_path for e in visible_removed}
         },
     }
+    db.commit()
+    return result
 
 
 def invalidate_discussion_snapshots(db: Session, share_id: uuid.UUID) -> None:
@@ -174,11 +182,45 @@ def invalidate_discussion_snapshots(db: Session, share_id: uuid.UUID) -> None:
     )
 
 
-def apply_batch(db: Session, share: models.Share, user: models.User, batch: Batch) -> dict:
+def lock_inventory(db: Session, share: models.Share, user: models.User, *, read=False):
+    """Refresh authority after the inventory/permission serialization boundary.
+
+    Selecting only Share.id leaves a preloaded restore generation stale after
+    waiting for a restore. Readers also hold this lock while assembling a manifest.
+    """
+    if db.new or db.dirty or db.deleted:
+        raise RuntimeError("Inventory entry points require a session without pending writes")
+    share_id, user_id = share.id, user.id
+    db.expire_all()
+    share = db.scalar(
+        select(models.Share)
+        .where(models.Share.id == share_id)
+        .with_for_update(read=read)
+        .execution_options(populate_existing=True)
+    )
+    if share is None:
+        raise HTTPException(404, "Share not found")
+    user = db.get(models.User, user_id, populate_existing=True)
     member(db, share, user)
-    # Serialize structural changes and rule edits per share in PostgreSQL.
-    db.execute(select(models.Share.id).where(models.Share.id == share.id).with_for_update())
-    rules = rules_for(db, share, user)
+    return share, user
+
+
+def apply_batch(
+    db: Session,
+    share: models.Share,
+    user: models.User,
+    batch: Batch,
+    restore_generation: uuid.UUID | None = None,
+) -> dict:
+    share, user = lock_inventory(db, share, user)
+    collaboration_restore.require_generation(share, restore_generation)
+    rules = list(
+        db.scalars(
+            select(models.ManagedRule)
+            .where(models.ManagedRule.share_id == share.id, models.ManagedRule.user_id == user.id)
+            .execution_options(populate_existing=True)
+        )
+    )
     entries = list(
         db.scalars(
             select(models.ManagedEntry)

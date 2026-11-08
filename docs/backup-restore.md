@@ -15,8 +15,12 @@ uploads, Bases group captures, inbox choices, shared marker saves and combined
 permission saves after a share's restore generation changes. Independent legacy
 file/comment rule writers, guarded Bases content publish/withdraw and saved-view
 repairs also enforce the same guard. Registry inspection rechecks its observed
-generation across unlocked source reads. Inventory and other mutation paths still
-need equivalent guards.
+generation across unlocked source reads. Inventory batches, activity and file
+claims now enforce the same guard; manifest reads refresh their context under a
+share read lock. The client preserves old inventory work and pauses automatic
+rebase across restore. [Inventory guard and limits](managed-restore-preview.md)
+describe this checkpoint. File-content/document and other writers, minimum client
+versions and complete reconciliation still need work.
 Client transport/store binding, ordinary-session startup/reconnect and local
 quarantine have automated and actual HTTP evidence. Picture object-storage races
 and PostgreSQL group-capture/inbox/marker/permission lock races are covered too. Remaining mutation guards,

@@ -55,9 +55,7 @@ def apply(db, share, user, *changes):
     return managed.apply_batch(db, share, user, managed.Batch(changes=list(changes)))
 
 
-def test_type_conversion_rotates_lineage_once_and_cannot_revive_old_anchors(
-    db_session, team
-):
+def test_type_conversion_rotates_lineage_once_and_cannot_revive_old_anchors(db_session, team):
     share, owner, _ = team
     initial = record("markdown")
     apply(db_session, share, owner, change("Record.md", initial))
@@ -352,9 +350,21 @@ def test_claim_preserves_canonical_identity_and_returns_effective_access(client,
     owner_headers = {"Authorization": "Bearer " + grant(owner)}
     first = record()
     result = client.post(route, headers=owner_headers, json={"path": "New.md", "record": first})
-    assert result.json() == {"won": True, "record": first, "permission": "write"}
+    assert result.json() == {
+        "won": True,
+        "record": first,
+        "permission": "write",
+        "restore_guard": True,
+        "restore_generation": None,
+    }
     result = client.post(route, headers=owner_headers, json={"path": "New.md", "record": record()})
-    assert result.json() == {"won": False, "record": first, "permission": "write"}
+    assert result.json() == {
+        "won": False,
+        "record": first,
+        "permission": "write",
+        "restore_guard": True,
+        "restore_generation": None,
+    }
     bob_headers = {"Authorization": "Bearer " + grant(bob)}
     assert (
         client.post(
@@ -364,7 +374,13 @@ def test_claim_preserves_canonical_identity_and_returns_effective_access(client,
     )
     add_rule(db_session, share, bob, "New.md", "read", False)
     result = client.post(route, headers=bob_headers, json={"path": "New.md", "record": record()})
-    assert result.json() == {"won": False, "record": first, "permission": "read"}
+    assert result.json() == {
+        "won": False,
+        "record": first,
+        "permission": "read",
+        "restore_guard": True,
+        "restore_generation": None,
+    }
 
 
 def test_stale_delete_after_remote_move_is_not_an_acknowledged_delete(db_session, team):
@@ -382,3 +398,71 @@ def test_stale_delete_after_remote_move_is_not_an_acknowledged_delete(db_session
     apply(db_session, share, owner, change("New.md", None, note))
     # A genuinely completed deletion is still safe to retry.
     apply(db_session, share, owner, change("New.md", None, note))
+
+
+def test_restored_inventory_rejects_old_batches_and_claims_before_any_noop_or_mutation(
+    client, db_session, team
+):
+    share, owner, _ = team
+    note = record()
+    apply(db_session, share, owner, change("Note.md", note))
+    token = client.post(
+        "/v1/tokens/relay",
+        headers=auth(owner),
+        json={
+            "share_id": str(share.id),
+            "doc_id": str(share.id),
+            "mode": "write",
+        },
+    ).json()["token"]
+    header = {"Authorization": "Bearer " + token}
+    route = f"/v1/managed/index/{share.id}"
+    original = client.get(route, headers=header).json()
+    assert original["restore_guard"] is True and original["restore_generation"] is None
+    generation = share.collaboration_restore_generation = uuid.uuid4()
+    db_session.commit()
+    current = client.get(route, headers=header).json()
+    assert current["restore_generation"] == str(generation)
+    for changes, activity in [
+        ([], {}),
+        ([change("Note.md", note, note)], {}),
+        ([change("Note.md", None, note)], {}),
+        ([change("New.md", record())], {}),
+        ([change("Note.md", None, note), change("Moved.md", note)], {}),
+        ([change("Note.md", {**note, "type": "image"}, note)], {}),
+        ([], {note["id"]: "old activity"}),
+    ]:
+        for binding in ({}, {"X-Relay-Restore-Generation": str(uuid.uuid4())}):
+            response = client.post(
+                route,
+                headers={**header, **binding},
+                json={"changes": changes, "activity": activity},
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["message"]["code"] == "restore_generation_changed"
+    for path in ("Note.md", "New.md"):
+        response = client.post(
+            route + "/claim", headers=header, json={"path": path, "record": record()}
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["message"]["code"] == "restore_generation_changed"
+    assert client.get(route, headers=header).json() == current
+    header["X-Relay-Restore-Generation"] = str(generation)
+    response = client.post(
+        route,
+        headers=header,
+        json={
+            "changes": [change("Note.md", None, note), change("Moved.md", note)],
+            "activity": {},
+        },
+    )
+    assert response.status_code == 200 and response.json()["records"] == {"Moved.md": note}
+    added = record()
+    response = client.post(
+        route + "/claim", headers=header, json={"path": "New.md", "record": added}
+    )
+    assert response.status_code == 200 and response.json()["restore_generation"] == str(generation)
+    repeated = client.post(
+        route + "/claim", headers=header, json={"path": "New.md", "record": added}
+    )
+    assert repeated.json() == response.json()

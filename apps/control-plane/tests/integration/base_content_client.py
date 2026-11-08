@@ -292,6 +292,7 @@ def main():
                             [
                                 "__tests__/collaboration/realTimelineMarkerRestoreStack.test.ts",
                                 "__tests__/bases/realBaseRegistry.test.ts",
+                                "__tests__/managed/realManagedRestore.test.ts",
                             ]
                             if args.restore_guard
                             else [
