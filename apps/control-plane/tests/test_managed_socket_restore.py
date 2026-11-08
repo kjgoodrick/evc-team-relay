@@ -59,6 +59,7 @@ def test_index_grants_can_discover_restore_without_silently_adopting_it(client, 
     assert security.decode_access_token(data["token"])["restore_generation"] is None
     response = client.get(f"/v1/managed/index/{world.share.id}", headers=headers(data["token"]))
     assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
     assert response.json()["restore_generation"] == data["restore_generation"]
     mint(client, world, index=True, binding=uuid.uuid4(), expected=409)
     mint(client, world, binding="bad", expected=422)

@@ -24,3 +24,11 @@ restored cache or restart a service. See the plugin's
 
 Managed/legacy grant tests and the actual client/HTTP/MinIO fixture cover allowed
 reads, denied owner uploads, generation boundaries and unchanged ordinary sync.
+
+Recovery preparation also uses a fresh read-only inventory grant. Inventory GET
+now authenticates under the share read lock so an expired/revoked session cannot
+survive a lock wait, and returns `Cache-Control: no-store`. Existing index clients
+can still discover a restore; the installation inspection client explicitly
+compares the response generation with its captured source and refuses a change.
+The real HTTP fixture verifies an owner's inspection grant can read inventory but
+cannot POST an index mutation. Managed-share/socket regression passes 35 tests.

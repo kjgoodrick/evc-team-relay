@@ -11,6 +11,7 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
+    Response,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -52,10 +53,14 @@ def bearer(authorization: str | None) -> str:
 @router.get("/index/{share_id}")
 def index(
     share_id: uuid.UUID,
+    response: Response,
     db: Session = Depends(get_db),
     authorization: str | None = Header(default=None),
 ):
-    share, user, _ = service.authenticate_grant(db, bearer(authorization), str(share_id))
+    share, user, _ = service.authenticate_grant(
+        db, bearer(authorization), str(share_id), read_lock=True
+    )
+    response.headers["Cache-Control"] = "no-store"
     return service.manifest(db, share, user)
 
 
