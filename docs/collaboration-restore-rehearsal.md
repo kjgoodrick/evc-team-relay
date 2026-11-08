@@ -5,6 +5,14 @@ rollback checks in 202.894 seconds. All owned containers, volumes and networks
 were removed; the pre-existing container inventory and running/start/finish
 state were unchanged. No live vault or production deployment changed.
 
+An extended inventory run also passed on November 8 in **204.9 seconds**, using
+plugin proof `5fee7f0` over inventory implementation `6f8711c` and server/snapshot
+source `7fd637562c25f2ccaedcd10c905775f1a5a4ffcb`. Application images are unchanged
+from the IDs below. Evidence is at
+`/private/tmp/evc-inventory-cold-drill-20261108-b`; cleanup and unchanged
+pre-existing container state passed. The prior `-a` attempt stopped at image
+preflight because of a mistyped PostgreSQL digest and created no containers.
+
 The run used server/snapshot source `5d0510b13fcca6ba7db9963a62c5c12194f92256`,
 control-plane application source `59bc24596c904aaa6a8df116a2be483098fa2ba3`, and
 unchanged relay source `db57df6d30889fb9ad7cd5ec440b1d586cf8cc30`. Observed images:
@@ -53,6 +61,12 @@ container inventory and running/start/finish state to remain unchanged.
 - A persisted original client retaining its offline edits while paused; rejected
   old command deliveries; read-only receipt lookup without replay.
 - Current-generation document writes and comment delivery after the first restore.
+- Real provider-backed, generation-selected inventory caches: original offline
+  moves survive the first restore; a first-generation claim succeeds; a subsequent
+  offline move survives rollback and reopening without publishing it. A fresh
+  second-generation inventory excludes the post-backup claim and accepts new
+  work. Cached inventory grants may read the replacement manifest but cannot make
+  the selected transport adopt its generation; stale bound token renewal fails.
 - A second capture followed by restoration of the **original** backup into a
   third store set. This rehearses rollback: a different generation fences the
   first restore's cached socket grants and pending commands, while post-backup
