@@ -151,6 +151,16 @@ def threads(
     )
 
 
+@router.get("/shares/{share_id}/export-catalog")
+def export_catalog(
+    share_id: uuid.UUID,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    encoded = discussion_export.catalog(db, token, share_id)
+    return Response(encoded, media_type="application/json", headers={"Cache-Control": "no-store"})
+
+
 @router.get("/shares/{share_id}/entries/{entry_id}/export")
 def export_snapshot(
     share_id: uuid.UUID,

@@ -17,16 +17,25 @@ from pydantic import ValidationError
 from sqlalchemy import and_, case, func, select, text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
+from app.api import deps
 from app.core.config import get_settings
 from app.db import models as m
 from app.schemas import discussions as schema
-from app.services import base_discussions, discussion_pictures, discussion_reattachment
+from app.services import (
+    base_discussions,
+    collaboration_auth,
+    discussion_pictures,
+    discussion_reattachment,
+    managed_service,
+)
 from app.services import discussion_service as discussions
+from app.services.discussion_search import read_predicate
 
 MAX_RECORDS = 5000
 MAX_BYTES = 8 * 1024 * 1024
 MAX_SCANNED = 10000
 MAX_SECONDS = 10
+MAX_CATALOG_SCOPES = 256
 slots = threading.BoundedSemaphore(2)
 
 
@@ -75,6 +84,14 @@ class Archive:
 
 
 def snapshot(db, token, share_id, entry_id, *, view_id=None):
+    return _read(db, lambda: _snapshot(db, token, share_id, entry_id, view_id))
+
+
+def catalog(db, token, share_id):
+    return _read(db, lambda: _catalog(db, token, share_id))
+
+
+def _read(db, work):
     if not enabled():
         discussions.error(404, "discussion_export_disabled")
     discussions.require_clean_session(db)
@@ -84,7 +101,7 @@ def snapshot(db, token, share_id, entry_id, *, view_id=None):
         if db.get_bind().dialect.name == "postgresql":
             db.execute(text("SET LOCAL lock_timeout = '5s'"))
             db.execute(text("SET LOCAL statement_timeout = '10s'"))
-        result = _snapshot(db, token, share_id, entry_id, view_id)
+        result = work()
         db.commit()
         return result
     except OperationalError:
@@ -252,3 +269,101 @@ def _pictures(db, ctx, scope, archive):
             available=available,
             metadata=discussion_pictures.public_data(picture) if available else None,
         )
+
+
+def _catalog(db, token, share_id):
+    """An atomic, bounded scope inventory; per-scope exports reauthorize later.
+
+    Only scopes with an actually readable, nonremoved thread are discoverable.
+    Paths/view names are not returned for a denied Bases record/dependency. We
+    deliberately do not promise that later scope captures share one sequence.
+    """
+    db.expire_all()
+    user = collaboration_auth.lock_actor(db, token, require_session=True)
+    share = db.scalar(select(m.Share).where(m.Share.id == share_id).with_for_update(read=True))
+    if not share or not share.managed:
+        discussions.error(404, "target_unavailable")
+    moderate = user.is_admin or share.owner_user_id == user.id
+    if (
+        not moderate
+        and db.scalar(
+            select(m.ShareMember.id)
+            .where(m.ShareMember.share_id == share.id, m.ShareMember.user_id == user.id)
+            .with_for_update(read=True)
+        )
+        is None
+    ):
+        discussions.error(404, "target_unavailable")
+    deps._get_user_from_token(db, token)
+    rules = managed_service.rules_for(db, share, user)
+    query = (
+        select(m.DiscussionThread, m.DiscussionScope, m.ManagedEntry, m.DiscussionAnchorRevision)
+        .join(m.DiscussionScope, m.DiscussionScope.id == m.DiscussionThread.scope_id)
+        .join(
+            m.ManagedEntry,
+            and_(
+                m.ManagedEntry.id == m.DiscussionScope.entry_id,
+                m.ManagedEntry.share_id == share.id,
+            ),
+        )
+        .join(
+            m.DiscussionAnchorRevision,
+            and_(
+                m.DiscussionAnchorRevision.thread_id == m.DiscussionThread.id,
+                m.DiscussionAnchorRevision.revision == m.DiscussionThread.anchor_revision,
+            ),
+        )
+        .where(
+            m.DiscussionScope.share_id == share.id,
+            m.ManagedEntry.deleted.is_(False),
+            m.DiscussionThread.deleted.is_(False),
+            read_predicate(share, user, rules, m.ManagedEntry.path),
+        )
+        .order_by(m.DiscussionThread.created_sequence)
+    )
+    budget, found = Archive(), {}
+    for thread, scope, entry, revision in db.execute(query).yield_per(50):
+        budget.scan()
+        ctx = discussions.Context(user, share, entry, moderate)
+        if entry.record.get("type") not in {"markdown", "image", "file"} or (
+            scope.kind != discussions.scope_kind(ctx)
+        ):
+            continue
+        view_id = revision.payload.get("view_id") if scope.kind == "base" else None
+        key = (entry.id, view_id)
+        if key in found:
+            continue
+        if not base_discussions.can_read_thread(db, ctx, thread):
+            continue
+        view = None
+        if scope.kind == "base":
+            # can_read_thread verified this exact view/definition lineage.
+            view = db.get(m.BaseView, uuid.UUID(view_id))
+        if len(found) >= MAX_CATALOG_SCOPES:
+            discussions.error(413, "discussion_export_limit")
+        found[key] = {
+            "scope_id": str(scope.id),
+            "entry_id": entry.id,
+            "path": entry.path,
+            "kind": scope.kind,
+            "view_id": view_id,
+            "view_name": view.descriptor.get("name") if view else None,
+            "view_state": view.state if view else None,
+        }
+    value = {
+        "format": "team-relay-discussion-export-catalog",
+        "version": 1,
+        "catalog_id": str(uuid.uuid4()),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "exporter_id": str(user.id),
+        "share_id": str(share.id),
+        "collaboration_epoch": str(share.collaboration_epoch)
+        if share.collaboration_epoch
+        else None,
+        "sequence": share.collaboration_sequence,
+        "scopes": [found[key] for key in sorted(found, key=lambda item: (item[0], item[1] or ""))],
+    }
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_BYTES or time.monotonic() > budget.deadline:
+        discussions.error(413, "discussion_export_limit")
+    return encoded

@@ -156,6 +156,18 @@ def main():
                     str(owner.id), session_id=str(owner_session.id)
                 ),
             }
+        if args.export:
+            with session.get_sessionmaker()() as db:
+                second = m.ManagedEntry(
+                    id=str(uuid.uuid4()),
+                    share_id=uuid.UUID(fixture["share"]),
+                    path="Second.md",
+                    record={"type": "markdown"},
+                    deleted=False,
+                )
+                db.add(second)
+                db.commit()
+                fixture["secondEntry"] = second.id
         if args.pictures_endpoint:
             from PIL import Image, PngImagePlugin
 

@@ -91,6 +91,7 @@ def capabilities(
             "discussion_inbox": discussion_inbox.enabled(),
             "discussion_search": discussion_search.enabled(),
             "discussion_export": discussion_export.enabled(),
+            "discussion_export_catalog": discussion_export.enabled(),
             "discussion_reattach": discussion_reattachment.enabled(),
             "discussion_recovery": (
                 get_settings().collaboration_policy_enabled

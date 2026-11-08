@@ -185,6 +185,7 @@ def main():
     else:
         raise AssertionError("Revoked reader exported a scope")
     print("PASS: subsequent export denies the revoked reader")
+
     def measured_capture():
         queries = []
 
@@ -232,6 +233,53 @@ def main():
         elapsed_ms,
         "ms on disposable local PostgreSQL",
     )
+    entered, release = threading.Event(), threading.Event()
+    catalog_pid = Queue()
+    original_authorize = export.base_discussions.can_read_thread
+
+    def pause_catalog(*args, **kwargs):
+        entered.set()
+        assert release.wait(8), "catalog release timed out"
+        return original_authorize(*args, **kwargs)
+
+    def catalog_capture():
+        with Session(engine, autoflush=False) as db:
+            return json.loads(export.catalog(db, tokens[owner_id], share_id))
+
+    def catalog_writer():
+        with Session(engine, autoflush=False) as db:
+            catalog_pid.put(db.scalar(text("SELECT pg_backend_pid()")))
+            discussions.apply_command(
+                db,
+                tokens[owner_id],
+                envelope(
+                    dict(
+                        type="reply.create",
+                        thread_id=tid,
+                        message_id=uuid.uuid4(),
+                        body=body("After catalog"),
+                    )
+                ),
+            )
+
+    with (
+        patch.object(export.base_discussions, "can_read_thread", side_effect=pause_catalog),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        reading = pool.submit(catalog_capture)
+        assert entered.wait(5)
+        writing = pool.submit(catalog_writer)
+        try:
+            wait_for_lock(engine, catalog_pid.get(timeout=5))
+            assert not writing.done()
+        finally:
+            release.set()
+        inventory = reading.result(timeout=10)
+        writing.result(timeout=10)
+    assert inventory["sequence"] == value["sequence"]
+    assert len(inventory["scopes"]) == 1
+    assert inventory["scopes"][0]["entry_id"] == entry_id
+    print("PASS: scope catalog is encoded before a waiting discussion writer commits")
     engine.dispose()
 
 

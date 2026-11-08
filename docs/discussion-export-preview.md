@@ -3,8 +3,8 @@
 November 7, 2026. The server can produce a bounded, read-only JSON snapshot of
 one readable note, directly opened image, or explicitly selected saved Bases
 view. The client now saves verified local archives with optional sanitized
-picture files and native note/saved-view controls. Share-wide collection and
-import/restore remain unfinished. See the
+picture files, native note/saved-view controls and whole-folder collections.
+Import/restore remains unfinished. See the
 [client preview](../../evc-team-relay-obsidian/docs/discussion-export-preview.md).
 It is not a coherent service backup and cannot be replayed as an outbox.
 
@@ -99,3 +99,37 @@ battery acceptance.
 
 No migration, production deployment, live-vault installation or automatic import
 is included. Local saved-work recovery remains a separate account/device copy.
+
+
+## Shared-folder scope catalog
+
+`GET /v1/collaboration/shares/{share}/export-catalog` is independently negotiated
+through `discussion_export_catalog` under the same default-off export flag. It
+uses actor/session/share read locks and normal managed path-rule precedence in
+SQL, then validates exact current Bases target/dependency access. Only scopes
+with a readable, nonremoved thread are included. Multiple threads deduplicate
+into one note/image or saved-view scope. Authorized archived views retain their
+name/state and are not reactivated. Deleted entries, removed threads, mismatched
+entry kinds and inaccessible record/dependency targets are excluded.
+
+The response format `team-relay-discussion-export-catalog`, version 1, contains a
+catalog ID, capture time, exporter/share, server epoch/sequence and ordered scopes
+(scope/file IDs, path/kind, optional view ID/name/state). No bodies, counts, secret
+keys or additional participant data are returned. It is a bounded atomic inventory,
+not a promise that later scope snapshots are simultaneous. The client checks
+each scope identity/kind/epoch and sequence against this inventory, then records
+separate capture times and writes a non-atomic collection manifest.
+
+The catalog shares the two-export process bound, statement/lock/work timeouts,
+10,000 scan-row budget and no-partial-response behavior. It allows at most 256
+scopes. Duplicate known scopes skip repeated target validation after one readable
+thread establishes discovery. Per-scope snapshot reads still validate every
+included thread independently. No discussion/registry identity is initialized.
+
+Updated evidence: 24 focused server export/catalog tests pass. A disposable
+PostgreSQL check proves a discussion writer waits for encoded catalog completion.
+The actual TypeScript collection writer passes through loopback HTTP/MinIO and
+real filesystem readback with two scopes, sanitized historical picture content,
+completion hashes and revoked download refusal. Native client collection evidence
+is recorded in the linked client preview. Larger/paged catalogs, reviewed import
+and coherent service backup/restore remain unfinished.

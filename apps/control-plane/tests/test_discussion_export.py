@@ -336,3 +336,126 @@ def test_export_capability_matches_its_independent_default_off_gate(client, worl
         )
         assert response.status_code == 200
         assert response.json()["features"]["discussion_export"] is enabled
+
+
+def catalog(client, w, actor="reader", expected=200):
+    response = client.get(
+        f"/v1/collaboration/shares/{w.share.id}/export-catalog",
+        headers=headers(w.tokens[actor]),
+    )
+    assert response.status_code == expected, response.text
+    if expected == 200:
+        assert response.headers["cache-control"] == "no-store"
+        return response.json()
+    return response.json()["error"]["message"]
+
+
+def test_catalog_is_read_only_deduplicated_and_omits_unreadable_paths(client, db_session, world):
+    w = world
+    for number in range(3):
+        send(client, w, create(w, "Visible " + str(number)))
+    private = create(w, "Private catalog body")
+    private["entry_id"] = w.other.id
+    send(client, w, private, actor="owner")
+    before = db_session.query(m.DiscussionReceipt).count()
+    result = catalog(client, w)
+    assert result["format"] == "team-relay-discussion-export-catalog"
+    assert result["exporter_id"] == str(w.reader.id)
+    assert result["share_id"] == str(w.share.id)
+    assert len(result["scopes"]) == 1
+    assert result["scopes"][0] == {
+        "scope_id": str(
+            db_session.scalar(
+                select(m.DiscussionScope.id).where(m.DiscussionScope.entry_id == w.entry.id)
+            )
+        ),
+        "entry_id": w.entry.id,
+        "path": w.entry.path,
+        "kind": "note",
+        "view_id": None,
+        "view_name": None,
+        "view_state": None,
+    }
+    assert w.other.path not in json.dumps(result)
+    assert "catalog body" not in json.dumps(result)
+    assert db_session.query(m.DiscussionReceipt).count() == before
+    assert len(catalog(client, w, "owner")["scopes"]) == 2
+
+
+def test_empty_catalog_does_not_create_discussion_identity(client, db_session, world):
+    generation = world.entry.collaboration_generation
+    assert catalog(client, world)["scopes"] == []
+    assert db_session.query(m.DiscussionScope).count() == 0
+    assert world.entry.collaboration_generation == generation
+
+
+def test_catalog_omits_removed_threads_deleted_entries_and_revoked_members(
+    client, db_session, world
+):
+    w = world
+    made = send(client, w, create(w))
+    thread = db_session.get(m.DiscussionThread, uuid.UUID(made["thread_id"]))
+    thread.deleted = True
+    db_session.commit()
+    assert catalog(client, w)["scopes"] == []
+    thread.deleted = False
+    w.entry.deleted = True
+    db_session.commit()
+    assert catalog(client, w)["scopes"] == []
+    w.entry.deleted = False
+    member = db_session.scalar(
+        select(m.ShareMember).where(
+            m.ShareMember.share_id == w.share.id, m.ShareMember.user_id == w.reader.id
+        )
+    )
+    db_session.delete(member)
+    db_session.commit()
+    assert catalog(client, w, expected=404)["code"] == "target_unavailable"
+
+
+def test_catalog_preserves_distinct_saved_views_and_exact_target_authorization(
+    client, db_session, targets
+):
+    t, w = targets, targets.w
+    send(client, w, command(t))
+    send(client, w, command(t, second=True))
+    result = catalog(client, w, "reviewer")
+    assert len(result["scopes"]) == 2
+    assert {row["view_id"] for row in result["scopes"]} == {
+        view["id"] for view in t.snapshot["views"]
+    }
+    assert all(row["entry_id"] == w.entry.id and row["kind"] == "base" for row in result["scopes"])
+    deny_record(db_session, t)
+    assert catalog(client, w, "reviewer")["scopes"] == []
+    assert len(catalog(client, w, "owner")["scopes"]) == 2
+
+
+def test_catalog_includes_authorized_archived_view_without_reactivating_it(
+    client, db_session, targets
+):
+    t, w = targets, targets.w
+    send(client, w, command(t))
+    view = db_session.get(m.BaseView, uuid.UUID(t.captured["view_id"]))
+    view.state = "archived"
+    view.slot = None
+    db_session.commit()
+    result = catalog(client, w, "reviewer")
+    assert result["scopes"][0]["view_state"] == "archived"
+    assert result["scopes"][0]["view_name"] == view.descriptor["name"]
+    assert archive(client, w, "reviewer", view_id=str(view.id))["records"]
+    assert db_session.get(m.BaseView, view.id).state == "archived"
+
+
+@pytest.mark.parametrize(
+    "setting,limit",
+    [("MAX_CATALOG_SCOPES", 0), ("MAX_SCANNED", 0), ("MAX_BYTES", 10), ("MAX_SECONDS", -1)],
+)
+def test_catalog_limits_fail_without_partial_results_and_release_capacity(
+    client, world, monkeypatch, setting, limit
+):
+    send(client, world, create(world))
+    before = getattr(export, setting)
+    monkeypatch.setattr(export, setting, limit)
+    assert catalog(client, world, expected=413)["code"] == "discussion_export_limit"
+    monkeypatch.setattr(export, setting, before)
+    assert len(catalog(client, world)["scopes"]) == 1
