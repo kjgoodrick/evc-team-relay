@@ -38,6 +38,7 @@ class BoundedDiscussionRoute(APIRoute):
                 or group_capture
                 or request.url.path.endswith("/commands")
                 or request.url.path.endswith("/commands/withdraw")
+                or request.url.path.endswith("/commands/status")
                 else 65536
             )
             async for chunk in request.stream():
@@ -125,6 +126,19 @@ def withdraw(
     payload: CommandEnvelope, token: str = Depends(credential), db: Session = Depends(get_db)
 ):
     return service.withdraw_command(db, token, payload)
+
+
+@router.post("/commands/status")
+def command_status(
+    payload: CommandEnvelope,
+    response: Response,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    # POST avoids logging the original private body in URLs. This route only
+    # reads receipts; absence cannot create a tombstone or submit the command.
+    response.headers["Cache-Control"] = "no-store"
+    return service.command_status(db, token, payload)
 
 
 @router.get("/shares/{share_id}/entries/{entry_id}/anchor-context")

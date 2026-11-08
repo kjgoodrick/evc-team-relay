@@ -91,6 +91,33 @@ authorization**. Changed reuse returns `operation_id_conflict`. Mutations,
 receipt, sequence, and event commit atomically; failed validation rolls back
 all of them. Keep the exact payload and operation ID after a lost response.
 
+### Read-only receipt inspection
+
+`POST /v1/collaboration/commands/status` accepts the same exact envelope and
+returns one of:
+
+- `{"status":"accepted","result": ...}` with the original receipt metadata;
+- `{"status":"withdrawn","operation_id": ..., "entry_id": ...}`;
+- `{"status":"unknown","operation_id": ..., "entry_id": ...}`.
+
+The separate `discussion_command_status` capability is enabled with the command
+preview. This is a bounded, `Cache-Control: no-store` read, using POST to keep the
+private request out of URL logs. It does not create a receipt, scope, event,
+withdrawal or mutation. It never uploads pictures or calls the relay to validate
+an old anchor. Exact actor/operation/request/scope matching and current session,
+membership and note read access still apply. Accepted Bases receipts also require
+read access to their current saved-view target and record dependencies. Comment
+permission is not required for inspection; sending or withdrawing still requires
+it. Other actors receive no information about the original actor's receipt.
+
+`unknown` means that no receipt is present in the current database. It does **not**
+mean never accepted: restore or receipt loss can remove evidence. It must never
+trigger an automatic resend or replacement. Authorization failures, unsupported
+servers and network failures are errors, not `unknown`. Responses contain no
+comment body, history or picture bytes. This supplies a recovery building block;
+archive-request reconciliation UI and restore-epoch command fencing remain
+separate unfinished work.
+
 | Type | Additional fields | Offline queue |
 | --- | --- | --- |
 | `thread.create` | `thread_id`, `message_id`, `anchor`, `body` | Yes |

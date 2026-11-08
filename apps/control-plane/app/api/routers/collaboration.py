@@ -100,6 +100,10 @@ def capabilities(
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled
             ),
+            "discussion_command_status": (
+                get_settings().collaboration_policy_enabled
+                and get_settings().collaboration_discussions_enabled
+            ),
             "discussion_commands": (
                 get_settings().collaboration_policy_enabled
                 and get_settings().collaboration_discussions_enabled

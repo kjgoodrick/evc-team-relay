@@ -262,7 +262,9 @@ def document_context(db, token, share_id, entry_id):
         raise
 
 
-def existing_receipt(db, ctx, envelope, request_hash, *, allow_withdrawn=False):
+def existing_receipt(
+    db, ctx, envelope, request_hash, *, allow_withdrawn=False, authorize_write=True
+):
     receipt = db.get(m.DiscussionReceipt, (ctx.user.id, envelope.operation_id))
     if receipt is None:
         return None
@@ -274,10 +276,54 @@ def existing_receipt(db, ctx, envelope, request_hash, *, allow_withdrawn=False):
         error(410, "operation_withdrawn")
     if ctx.entry.record.get("type") == "file" and result.get("withdrawn") is not True:
         thread_for(
-            db, ctx, uuid.UUID(result["thread_id"]), include_removed=True, write=True, scope=scope
+            db,
+            ctx,
+            uuid.UUID(result["thread_id"]),
+            include_removed=True,
+            write=authorize_write,
+            scope=scope,
         )
     db.commit()
     return result
+
+
+def command_status(db, token, envelope):
+    """Read one actor's exact receipt without accepting or withdrawing work.
+
+    Absence is unknown, including after a restore that lost newer receipts.
+    It is never evidence that a command was not previously accepted, and never
+    authorizes replay. Current read access is sufficient; comment permission is
+    required separately by any later send or explicit withdrawal.
+    """
+    require_clean_session(db)
+    envelope = envelope.model_copy(deep=True)
+    try:
+        ctx = context(db, token, envelope.share_id, envelope.entry_id)
+        prior = existing_receipt(
+            db,
+            ctx,
+            envelope,
+            anchor_service.command_hash(envelope),
+            allow_withdrawn=True,
+            authorize_write=False,
+        )
+        if prior is not None and prior.get("withdrawn") is not True:
+            return dict(status="accepted", result=prior)
+        db.commit()
+        return dict(
+            status="withdrawn" if prior is not None else "unknown",
+            operation_id=str(envelope.operation_id),
+            entry_id=str(envelope.entry_id),
+        )
+    except OperationalError:
+        db.rollback()
+        error(503, "retryable_transaction")
+    except SQLAlchemyError:
+        db.rollback()
+        error(500, "discussion_storage_error")
+    except Exception:
+        db.rollback()
+        raise
 
 
 def withdraw_command(db, token, envelope):
