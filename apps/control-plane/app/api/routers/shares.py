@@ -1150,7 +1150,12 @@ def get_file_content(
     if share.managed:
         data, mime = _managed_file_read(db, share, user, token_payload, path)
         return Response(
-            content=data, media_type=mime, headers={"X-Content-Type-Options": "nosniff"}
+            content=data,
+            media_type=mime,
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                **({"Cache-Control": "no-store"} if token_payload.get("read_only") is True else {}),
+            },
         )
     share_service.ensure_read_access(db, share, user, managed_entry_id=path)
 

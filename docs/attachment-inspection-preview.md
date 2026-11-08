@@ -11,7 +11,8 @@ inventory lock. Its signed `restore_guard: true` and explicit nullable
 `restore_generation` distinguish the original generation from an unbound legacy
 token. All managed reads reject a generation change and recheck current access
 and login session. Storage I/O remains outside the lock; content is reauthorized
-afterward. A headerless inspection request can observe the current generation,
+afterward. Read-only managed content responses send `Cache-Control: no-store`.
+A headerless inspection request can observe the current generation,
 but the client must compare it with its captured source before downloading.
 Normal upload grants continue to retain the request's original generation.
 

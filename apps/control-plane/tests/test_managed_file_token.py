@@ -129,7 +129,9 @@ def test_inspection_grant_reads_but_cannot_upload_even_for_owner(
     auth = headers(grant["token"])
     assert client.head(root, headers=auth).status_code == 200
     assert client.get(root + "/download-url", headers=auth).status_code == 200
-    assert client.get(content_url(world, grant)).content == DATA
+    downloaded = client.get(content_url(world, grant))
+    assert downloaded.content == DATA
+    assert downloaded.headers["Cache-Control"] == "no-store"
     upload_url(client, world, grant, 403)
     assert client.put(content_url(world, grant), content=DATA).status_code == 403
     assert not assets.writes
