@@ -2,13 +2,54 @@
 
 This guide covers backing up and restoring EVC Team Relay data.
 
+## Collaboration backup status
+
+The independent PostgreSQL dump and object mirror below are useful recovery
+inputs. They do **not** yet constitute a coherent backup of the collaboration
+preview. Discussions, permissions, command receipts, Bases identities and guarded
+source bytes must match the relay's complete CRDT checkpoints and private picture
+objects. A verified capture/restore coordinator, restore-epoch fencing of old
+client commands, and the full restore drill remain unfinished. Do not reopen a
+restored collaboration service to clients based only on these older procedures.
+
+### Verified relay drain
+
+On SIGTERM/SIGINT the relay stops HTTP admission, cancels and waits for upgraded
+WebSocket handlers, drains document/barrier workers, then checkpoints every
+remaining loaded document. A failed worker write retains its dirty state so this
+final pass can retry it. One failure does not prevent attempts for the other
+documents. A remaining failure returns a nonzero process exit; the normal
+`Server shut down.` message appears only after the HTTP tasks and final checkpoint
+pass succeed. Successfully evicted documents have already been checkpointed.
+
+A future coordinated backup must inspect the **relay process/container exit
+status**, not just the exit status of `compose stop`. A force kill, timeout,
+nonzero exit, or missing final completion is an unverified drain. Stopping a live
+service remains a disruptive operation requiring its normal deployment approval.
+This behavior does not itself freeze the control plane, object uploads, retention
+or cleanup workers, scheduled operations, or other writers. In-memory relay
+configuration is supported for tests and cannot provide persistent backup input.
+Configured persistent storage and a matching, quiesced database/object capture
+are still required; external store durability is part of that contract.
+
+`scripts/test_relay_shutdown.py --binary /absolute/path/to/relay` exercises an
+explicitly supplied binary using only newly created stores and loopback child
+processes (run with the control-plane Python environment). It keeps a WebSocket
+open during SIGTERM, verifies the CRDT update after a clean restart, and obstructs
+a second fixture's storage to require failure status while preserving its older
+checkpoint. Rust regressions also verify all-document failure reporting,
+retryable dirty state and a final update after the ordinary persistence worker
+has stopped. These are shutdown checks, not a complete service restore drill.
+
 ## Data Locations
 
-All persistent data is stored in the `data/` directory:
+The Compose stack uses both bind-mounted directories and a PostgreSQL named
+volume. Inspect the selected deployment's resolved mounts and configured relay
+store before capturing data; a tar of `infra/data/` does not include the database
+named volume. The typical bind-mounted layout includes:
 
 ```
 infra/data/
-├── postgres/     # PostgreSQL database (via named volume)
 ├── minio/        # Document storage (S3 objects)
 ├── uploads/      # User uploads (logos, etc.)
 ├── backups/      # Automatic PostgreSQL backups
@@ -94,7 +135,9 @@ If you rely on the off-site copy, alert on it separately.
 
 ### Recommended Approach
 
-Stop services, backup everything, restart:
+This legacy filesystem example only captures bind-mounted files and
+configuration. It must be combined with a verified PostgreSQL backup and any
+externally configured object store; it is not a complete collaboration procedure:
 
 ```bash
 cd /opt/evc-team-relay/infra
@@ -102,7 +145,7 @@ cd /opt/evc-team-relay/infra
 # Stop services (brief downtime)
 docker compose down
 
-# Backup entire data directory
+# Backup bind-mounted data (PostgreSQL named volume is separate)
 tar -czvf backup-$(date +%Y%m%d).tar.gz data/
 
 # Also backup configuration
@@ -115,7 +158,8 @@ docker compose up -d
 
 ### Online Backup (No Downtime)
 
-For zero-downtime backup:
+For independent online database/object recovery copies (not a coherent
+collaboration backup):
 
 ```bash
 # PostgreSQL (consistent snapshot)

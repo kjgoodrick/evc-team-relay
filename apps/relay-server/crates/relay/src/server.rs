@@ -60,6 +60,8 @@ use y_sweet_core::{
 
 const RELAY_SERVER_VERSION: &str = env!("GIT_VERSION");
 mod anchor_barrier;
+#[cfg(test)]
+mod shutdown_tests;
 
 #[derive(Clone, Debug)]
 pub struct AllowedHost {
@@ -237,6 +239,7 @@ pub struct Server {
     /// from the store and clobber each other in `docs`.
     loading_locks: Arc<DashMap<String, Arc<AsyncMutex<()>>>>,
     doc_worker_tracker: TaskTracker,
+    connection_tracker: TaskTracker,
     anchor_barriers_enabled: bool,
     anchor_barrier_slots: Arc<tokio::sync::Semaphore>,
     store: Option<Arc<Box<dyn Store>>>,
@@ -305,6 +308,7 @@ impl Server {
             docs: Arc::new(DashMap::new()),
             loading_locks: Arc::new(DashMap::new()),
             doc_worker_tracker: TaskTracker::new(),
+            connection_tracker: TaskTracker::new(),
             anchor_barriers_enabled: false,
             anchor_barrier_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             store: store.map(Arc::new),
@@ -892,22 +896,29 @@ impl Server {
         };
 
         tracing::info!("Starting HTTP server...");
-        axum::serve(listener, app.into_make_service())
+        let serving = axum::serve(listener, app.into_make_service())
             .with_graceful_shutdown(async move {
                 tracing::info!("Waiting for cancellation token...");
                 token.cancelled().await;
                 tracing::info!("Cancellation token triggered, starting graceful shutdown");
             })
-            .await?;
+            .await;
 
-        self.drain_workers().await;
+        let drained = self.drain_workers().await;
+        serving?;
+        drained?;
         Ok(())
     }
 
     /// Called only after HTTP admission stops. Detached barrier tasks are owned
     /// by the same tracker as persistence and must finish before runtime exit.
-    pub async fn drain_workers(&self) {
+    pub async fn drain_workers(&self) -> Result<()> {
         self.cancellation_token.cancel();
+
+        // Upgraded sockets outlive HTTP requests. Their admission-time tokens
+        // include the last in-flight CRDT update before the final checkpoint.
+        self.connection_tracker.close();
+        self.connection_tracker.wait().await;
 
         // Explicitly shutdown event dispatcher before waiting on doc workers
         if let Some(event_dispatcher) = &self.event_dispatcher {
@@ -920,7 +931,30 @@ impl Server {
         self.doc_worker_tracker.close();
         tracing::info!("Waiting for doc workers to finish...");
         self.doc_worker_tracker.wait().await;
-        tracing::info!("All doc workers stopped");
+        // A worker may have checkpointed before a socket/barrier's last write,
+        // or logged a failed final write. PersistAttempt retains dirty state on
+        // failure, so retry every still-loaded document after all writers drain.
+        // Try all documents even when one fails; never claim a clean shutdown
+        // while any dirty document remains uncommitted.
+        let documents: Vec<_> = self
+            .docs
+            .iter()
+            .map(|doc| (doc.key().clone(), doc.sync_kv()))
+            .collect();
+        let mut failed = 0;
+        for (doc_id, document) in documents {
+            if let Err(error) = document.persist().await {
+                tracing::error!(doc_id = %doc_id, %error, "Final document checkpoint failed");
+                failed += 1;
+            }
+        }
+        if failed != 0 {
+            return Err(anyhow!(
+                "Final document checkpoint failed for {failed} documents; shutdown is not a verified backup boundary"
+            ));
+        }
+        tracing::info!("All document writers stopped and final checkpoints completed");
+        Ok(())
     }
 
     pub async fn serve(self, listener: TcpListener, redact_errors: bool) -> Result<()> {
@@ -1092,8 +1126,10 @@ async fn handle_socket_upgrade_with_channel_and_user(
     let sync_protocol_event_sender = server_state.sync_protocol_event_sender.clone();
     let metrics = server_state.metrics.clone();
     let doc_id_clone = doc_id.clone();
+    let connection_guard = server_state.connection_tracker.token();
 
-    Ok(ws.on_upgrade(move |socket| {
+    Ok(ws.on_upgrade(move |socket| async move {
+        let _connection_guard = connection_guard;
         handle_socket(
             socket,
             awareness,
@@ -1106,6 +1142,7 @@ async fn handle_socket_upgrade_with_channel_and_user(
             doc_id_clone,
             metrics,
         )
+        .await
     }))
 }
 

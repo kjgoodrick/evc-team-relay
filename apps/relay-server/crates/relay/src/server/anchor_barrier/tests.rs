@@ -149,7 +149,7 @@ async fn existing_managed_document_binds_without_changing_its_routing() {
         StatusCode::CONFLICT
     );
     assert!(!server.docs.contains_key(SHARE_ID));
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
 }
 
 #[tokio::test]
@@ -168,7 +168,7 @@ async fn private_routes_are_disabled_by_default_and_require_server_authority() {
             .0,
         StatusCode::NOT_FOUND
     );
-    disabled.drain_workers().await;
+    disabled.drain_workers().await.unwrap();
     let (enabled, token, document_token) = server(
         Some(Box::new(
             FileSystemStore::new(temp.path().to_owned()).unwrap(),
@@ -199,7 +199,7 @@ async fn private_routes_are_disabled_by_default_and_require_server_authority() {
     );
     assert!(!temp.path().join(DOC).exists());
     assert!(enabled.docs.is_empty());
-    enabled.drain_workers().await;
+    enabled.drain_workers().await.unwrap();
     assert!(Server::new(
         None,
         Duration::from_secs(60),
@@ -312,7 +312,7 @@ async fn source_observations_bind_generation_and_hashes_and_survive_filesystem_r
         call(&server, &token, "source", foreign).await.1["code"],
         "share_mismatch"
     );
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
 }
 
 #[tokio::test]
@@ -362,7 +362,7 @@ async fn source_requests_cannot_mix_protocols_allocate_from_forged_counts_or_cre
             StatusCode::UNPROCESSABLE_ENTITY
         );
     }
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
 }
 
 #[tokio::test]
@@ -406,7 +406,7 @@ async fn source_prefix_caps_are_explicit_and_checkpoint_failure_returns_no_sourc
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(value["code"], "source_document_too_large");
     assert!(value.get("source_prefix").is_none());
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
 }
 
 #[tokio::test]
@@ -461,7 +461,7 @@ async fn golden_anchors_cross_private_routes_and_filesystem_reload() {
             );
         }
     }
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
 }
 
 #[tokio::test]
@@ -538,7 +538,7 @@ async fn request_limits_generations_and_share_bindings_fail_closed() {
         StatusCode::TOO_MANY_REQUESTS
     );
     drop(slots);
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
 }
 
 struct ControlledStore {
@@ -671,6 +671,7 @@ async fn disconnected_request_keeps_checkpoint_owned_and_shutdown_drains_it() {
     tokio::time::timeout(Duration::from_secs(2), draining)
         .await
         .unwrap()
+        .unwrap()
         .unwrap();
     assert_eq!(server.anchor_barrier_slots.available_permits(), 4);
     let reloaded = DocWithSyncKv::new(
@@ -710,7 +711,7 @@ async fn failed_checkpoint_never_returns_a_receipt_and_retry_saves_state() {
             .0,
         StatusCode::OK
     );
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
 }
 
 #[tokio::test]
@@ -739,7 +740,7 @@ async fn expired_wait_does_not_cancel_storage_or_issue_a_late_receipt() {
     assert!(result.1.get("request_sha256").is_none());
     assert_eq!(server.anchor_barrier_slots.available_permits(), 3);
     files.release.add_permits(1);
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
     assert_eq!(server.anchor_barrier_slots.available_permits(), 4);
     let reloaded = DocWithSyncKv::new(
         DOC,
@@ -806,5 +807,5 @@ async fn eviction_blocks_reload_until_final_checkpoint_and_keeps_live_doc_on_fai
         .unwrap(),
         fixture.expected
     );
-    server.drain_workers().await;
+    server.drain_workers().await.unwrap();
 }

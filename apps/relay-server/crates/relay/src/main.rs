@@ -958,7 +958,6 @@ async fn main() -> Result<()> {
                     axum::serve(listener, app.into_make_service())
                         .with_graceful_shutdown(async move { token.cancelled().await })
                         .await
-                        .unwrap();
                 }
             });
 
@@ -974,7 +973,6 @@ async fn main() -> Result<()> {
                         axum::serve(metrics_listener, metrics_routes.into_make_service())
                             .with_graceful_shutdown(async move { token.cancelled().await })
                             .await
-                            .unwrap();
                     }
                 }))
             } else {
@@ -993,12 +991,27 @@ async fn main() -> Result<()> {
             tracing::info!("Received {}, shutting down.", signal);
             token.cancel();
 
-            if let Some(metrics_handle) = metrics_handle {
-                let _ = tokio::join!(main_handle, metrics_handle);
+            let main_result;
+            let metrics_result = if let Some(metrics_handle) = metrics_handle {
+                let (main, metrics) = tokio::join!(main_handle, metrics_handle);
+                main_result = main;
+                Some(metrics)
             } else {
-                let _ = main_handle.await;
+                main_result = main_handle.await;
+                None
+            };
+            // Always drain before reporting an HTTP-task failure. Successful
+            // process exit must also mean the final document writes succeeded.
+            let drained = server.drain_workers().await;
+            main_result
+                .context("Relay HTTP task failed")?
+                .context("Relay HTTP server failed")?;
+            if let Some(metrics) = metrics_result {
+                metrics
+                    .context("Relay metrics task failed")?
+                    .context("Relay metrics server failed")?;
             }
-            server.drain_workers().await;
+            drained?;
             tracing::info!("Server shut down.");
         }
         ServSubcommand::GenAuth { json, key_type } => {
