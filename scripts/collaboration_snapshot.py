@@ -571,7 +571,12 @@ def stage(engine, folder, target_plan, output):
             "Source archive changed before restore",
         )
         check_target()
-        engine.restore(row["id"], PATHS[role], original)
+        # Podman rejects a valid zero-member tar stream as "not an archive".
+        # There is nothing to write in that case: every destination was proved
+        # empty above, and readback below still verifies the exact empty tree.
+        # A root directory entry has ownership/mode metadata and must be copied.
+        if source["archives"][role]["entries"]:
+            engine.restore(row["id"], PATHS[role], original)
         check_target()
         readback = output / f"restored-{role}.tar"
         engine.archive(row["id"], PATHS[role], readback)

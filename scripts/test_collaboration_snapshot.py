@@ -550,6 +550,58 @@ def test_restore_stages_only_new_empty_isolated_stores_and_verifies_readback(eng
     assert snapshot.verify(source)
 
 
+@pytest.mark.parametrize("root_metadata", [False, True])
+def test_restore_handles_empty_stores_without_losing_directory_metadata(
+    engine, tmp_path, root_metadata
+):
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        if root_metadata:
+            root = tarfile.TarInfo(".")
+            root.type, root.uid, root.gid, root.mode = tarfile.DIRTYPE, 10001, 10001, 0o750
+            archive.addfile(root)
+    raw = stream.getvalue()
+    engine.store_bytes[engine.row("control-plane")["Id"]] = raw
+    source = captured(engine, tmp_path)
+    target, scope = fresh_target()
+    if not root_metadata:
+        target.store_bytes[target.row("control-plane")["Id"]] = raw
+    snapshot.stage(
+        target, source, snapshot.prepare(target, scope, COMMIT, fresh=True), tmp_path / "staging"
+    )
+    assert (("restore", "control-plane") in target.events) == root_metadata
+    proof = snapshot.read_json(tmp_path / "staging/verified-control-plane.json")
+    assert proof["entries"] == int(root_metadata)
+    assert proof == snapshot.archive_info(source / "control-plane.tar")
+
+
+def test_skipped_empty_restore_still_rejects_changed_readback(engine, tmp_path):
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w"):
+        pass
+    raw = stream.getvalue()
+    engine.store_bytes[engine.row("control-plane")["Id"]] = raw
+    source = captured(engine, tmp_path)
+    target, scope = fresh_target()
+    cid = target.row("control-plane")["Id"]
+    target.store_bytes[cid] = raw
+
+    def add_unexpected_file(role):
+        if role == "control-plane":
+            target.store_bytes[cid] = tar_bytes()
+
+    target.after_archive = add_unexpected_file
+    with pytest.raises(snapshot.SnapshotError, match="do not match"):
+        snapshot.stage(
+            target,
+            source,
+            snapshot.prepare(target, scope, COMMIT, fresh=True),
+            tmp_path / "staging",
+        )
+    assert ("restore", "control-plane") not in target.events
+    assert not (tmp_path / "staging/staged.json").exists()
+
+
 @pytest.mark.parametrize(
     "failure",
     ["nonempty", "image", "revision", "running", "network", "reused-id", "reused-set"],
