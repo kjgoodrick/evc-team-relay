@@ -267,7 +267,13 @@ allowed_token_types = ["server"]
                 is_active=True,
             )
             bob = models.User(
-                email="bob@example.com", password_hash="", is_admin=False, is_active=True
+                email="bob@example.com",
+                password_hash=(
+                    security.get_password_hash("disposable-preview-password")
+                    if args.serve_seconds else ""
+                ),
+                is_admin=False,
+                is_active=True,
             )
             db.add_all([owner, bob])
             db.flush()
@@ -310,7 +316,11 @@ allowed_token_types = ["server"]
                     user_id=bob.id,
                     path="",
                     recursive=True,
-                    permission="read" if args.text_anchors or args.image_files else "write",
+                    permission=(
+                        "read"
+                        if (args.text_anchors or args.image_files) and not args.serve_seconds
+                        else "write"
+                    ),
                 )
             )
             if args.text_anchors or args.image_files:
