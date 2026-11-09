@@ -805,14 +805,19 @@ def list_threads(db, token, share_id, entry_id, *, after=0, limit=50, view_id=No
             m.DiscussionThread.deleted.is_(False),
             m.DiscussionThread.created_sequence > after,
         )
-        if view_id is not None:
+        if view_id is not None or scope_kind(ctx) == "note":
             query = query.join(
                 m.DiscussionAnchorRevision,
                 and_(
                     m.DiscussionAnchorRevision.thread_id == m.DiscussionThread.id,
                     m.DiscussionAnchorRevision.revision == m.DiscussionThread.anchor_revision,
                 ),
-            ).where(m.DiscussionAnchorRevision.payload["view_id"].as_string() == str(view_id))
+            )
+            query = query.where(
+                m.DiscussionAnchorRevision.payload["view_id"].as_string() == str(view_id)
+                if view_id is not None
+                else m.DiscussionAnchorRevision.payload["type"].as_string() != "base"
+            )
         rows = list(
             db.scalars(query.order_by(m.DiscussionThread.created_sequence).limit(limit + 1))
         )
@@ -1094,6 +1099,8 @@ def changes(
                     *(
                         [m.DiscussionEvent.payload["view_id"].as_string() == str(view_id)]
                         if view_id is not None
+                        else [m.DiscussionEvent.payload["view_id"].as_string().is_(None)]
+                        if scope_kind(ctx) == "note"
                         else []
                     ),
                 )

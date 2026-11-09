@@ -113,6 +113,13 @@ def _snapshot(db, token, share_id, entry_id, view_id):
                     m.DiscussionAnchorRevision.payload["view_id"].as_string() == str(view_id),
                 )
             )
+        elif discussions.scope_kind(ctx) == "note":
+            query = query.where(
+                or_(
+                    m.DiscussionAnchorRevision.thread_id.is_(None),
+                    m.DiscussionAnchorRevision.payload["type"].as_string() != "base",
+                )
+            )
         for thread, anchor in db.execute(query).yield_per(50):
             budget.scan()
             if anchor is None:

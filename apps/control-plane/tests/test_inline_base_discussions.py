@@ -184,3 +184,19 @@ def test_inline_export_catalog_and_archives_keep_note_and_views_separate(
         assert exported["entry"]["path"] == t.w.entry.path
         assert exported["view_id"] == view_id
         assert [item["id"] for item in records(exported, "thread")] == [expected["thread_id"]]
+
+
+def test_inline_post_does_not_poison_containing_note_sync_baseline(client, targets, monkeypatch):
+    monkeypatch.setattr(get_settings(), "collaboration_snapshot_enabled", True)
+    t = targets
+    ordinary = send(client, t.w, create(t.w))
+    payload = create(t.w)
+    payload["command"]["anchor"] = anchor(t, "view")
+    inline = send(client, t.w, payload)
+    assert [item["id"] for item in get(client, t, "/threads")["threads"]] == [ordinary["thread_id"]]
+    for event in get(client, t, "/changes")["events"]:
+        assert event["data"]["thread_id"] == ordinary["thread_id"]
+    note = get(client, t, "/snapshot")
+    view = get(client, t, "/snapshot", view_id=t.captured["view_id"])
+    assert [item["thread"]["id"] for item in note["threads"]] == [ordinary["thread_id"]]
+    assert [item["thread"]["id"] for item in view["threads"]] == [inline["thread_id"]]

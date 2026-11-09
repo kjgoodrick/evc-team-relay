@@ -270,7 +270,8 @@ allowed_token_types = ["server"]
                 email="bob@example.com",
                 password_hash=(
                     security.get_password_hash("disposable-preview-password")
-                    if args.serve_seconds else ""
+                    if args.serve_seconds
+                    else ""
                 ),
                 is_admin=False,
                 is_active=True,
@@ -465,6 +466,13 @@ path = "{temp / "relay-data"}"
                         "--port",
                         str(cp_port),
                         "--no-access-log",
+                        # Interactive disposable fixtures should pick up server
+                        # fixes without recreating accounts and native vaults.
+                        *(
+                            ["--reload", "--reload-dir", str(ROOT / "app")]
+                            if args.serve_seconds
+                            else []
+                        ),
                     ],
                     cwd=ROOT,
                     stdout=log,
