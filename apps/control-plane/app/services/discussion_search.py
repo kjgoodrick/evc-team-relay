@@ -280,7 +280,9 @@ def _search(db, token, share_id, request: DiscussionSearch):
                     "entry_id": entry.id,
                     "kind": scope.kind,
                     "path": entry.path,
-                    "view_id": anchor.payload["view_id"] if scope.kind == "base" else None,
+                    "view_id": anchor.payload["view_id"]
+                    if anchor.payload.get("type") == "base"
+                    else None,
                     "message_id": str(message.id),
                     "message_revision": message.revision,
                     "message_sequence": message.created_sequence,

@@ -275,7 +275,7 @@ def existing_receipt(
     result = dict(receipt.result)
     if result.get("withdrawn") is True and not allow_withdrawn:
         error(410, "operation_withdrawn")
-    if ctx.entry.record.get("type") == "file" and result.get("withdrawn") is not True:
+    if result.get("withdrawn") is not True:
         thread_for(
             db,
             ctx,
@@ -419,7 +419,10 @@ def validate_image_asset(db, ctx, anchor):
 
 
 def validate_anchor_target(ctx, anchor):
-    if isinstance(anchor, s.BaseAnchor) != (ctx.entry.record.get("type") == "file"):
+    if (ctx.entry.record.get("type") == "file" and not isinstance(anchor, s.BaseAnchor)) or (
+        isinstance(anchor, s.BaseAnchor)
+        and ctx.entry.record.get("type") not in {"file", "markdown"}
+    ):
         error(422, "invalid_anchor_scope")
     image_file = isinstance(anchor, s.ImageFileAnchor)
     if image_file != (ctx.entry.record.get("type") == "image"):
@@ -786,7 +789,9 @@ def requested_view(db, ctx, view_id):
             error(422, "base_view_required")
         base_discussions.view_for(db, ctx, view_id)
     elif view_id is not None:
-        error(422, "invalid_anchor_scope")
+        if ctx.entry.record.get("type") != "markdown":
+            error(422, "invalid_anchor_scope")
+        base_discussions.view_for(db, ctx, view_id)
 
 
 def list_threads(db, token, share_id, entry_id, *, after=0, limit=50, view_id=None):
@@ -1110,7 +1115,7 @@ def changes(
         # Revision hint only: the ordinary authorized catalog read still proves
         # every placement. Piggyback on active discussion polling; old clients
         # neither request nor receive this additive metadata.
-        definition = base_discussions.definition_for(db, ctx)
+        definition, _view = base_discussions.view_for(db, ctx, view_id)
         catalog = db.get(m.BaseTimelineMarkerCatalog, definition.id)
         marker_version = {
             "timeline_markers": {
@@ -1127,7 +1132,7 @@ def changes(
         "events": [
             {"kind": event.kind, "sequence": event.sequence, "data": event.payload}
             for event in page
-            if view_id is None or event_readable(db, ctx, event)
+            if event_readable(db, ctx, event)
         ],
         "cursor": checkpoint,
         "has_more": has_more,

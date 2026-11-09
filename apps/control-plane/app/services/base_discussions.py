@@ -77,13 +77,33 @@ def definition_for(db, ctx):
 
 
 def view_for(db, ctx, view_id, *, active=False):
-    definition = definition_for(db, ctx)
     view = db.get(m.BaseView, view_id)
-    if not view or view.definition_id != definition.id:
+    definition = db.get(m.BaseDefinition, view.definition_id) if view else None
+    if (
+        not definition
+        or definition.entry_id != ctx.entry.id
+        or definition.generation != ctx.entry.collaboration_generation
+    ):
+        error()
+    kind = ctx.entry.record.get("type")
+    if definition.source_key == "file":
+        if kind != "file" or not ctx.entry.path.lower().endswith(".base"):
+            error()
+    elif kind != "markdown" or not definition.source_anchor:
         error()
     if active and view.state != "active":
         error(409, "base_view_unavailable")
     return definition, view
+
+
+def require_source(ctx, definition):
+    # Standalone files have an inventory content hash. Inline configuration is
+    # verified from the containing note by inline-inspect; its historical
+    # registry revision remains the target for a queued/offline discussion.
+    if definition.source_key == "file" and definition.content_sha256 != ctx.entry.record.get(
+        "hash"
+    ):
+        error(409, "base_definition_not_synced")
 
 
 def record_for(db, ctx, record_id, *, user=None, write=False):
@@ -110,7 +130,10 @@ def record_for(db, ctx, record_id, *, user=None, write=False):
 
 
 def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
-    if not isinstance(anchor, s.BaseAnchor) or ctx.entry.record.get("type") != "file":
+    if not isinstance(anchor, s.BaseAnchor) or ctx.entry.record.get("type") not in {
+        "file",
+        "markdown",
+    }:
         error(422, "invalid_anchor_scope")
     definition, _view = view_for(db, ctx, anchor.view_id, active=creation)
     if anchor.definition_id != definition.id or anchor.generation != definition.generation:
@@ -121,10 +144,7 @@ def validate(db, ctx, anchor, *, creation=False, write=False, user=None):
     if creation:
         if not enabled():
             error(409, "base_discussions_disabled")
-        if not ctx.entry.path.lower().endswith(".base"):
-            error()
-        if definition.content_sha256 != ctx.entry.record.get("hash"):
-            error(409, "base_definition_not_synced")
+        require_source(ctx, definition)
         revision = db.get(m.BaseRegistryRevision, (definition.id, anchor.registry_revision))
         if not revision or not any(
             view.get("id") == str(anchor.view_id) for view in revision.result.get("views", [])
@@ -237,11 +257,11 @@ def stored_anchor(payload):
 
 def authorize_thread(db, ctx, thread, *, write=False, user=None):
     """All accesses to a Bases thread, including receipts and pictures, use this."""
-    if ctx.entry.record.get("type") != "file":
-        return None
     revision = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
     if not revision:
         error()
+    if revision.payload.get("type") != "base" and ctx.entry.record.get("type") != "file":
+        return None
     anchor = stored_anchor(revision.payload)
     validate(db, ctx, anchor, write=write, user=user)
     return anchor
@@ -259,16 +279,23 @@ def can_read_thread(db, ctx, thread, *, user=None):
 
 def target_context(db, token, share_id, entry_id, payload):
     """A reader can capture authoritative lineage without editing vault files."""
-    from app.services import bases_registry, discussion_service
+    from app.services import discussion_service
 
     discussion_service.require_clean_session(db)
     try:
         if not enabled():
             error(409, "base_discussions_disabled")
-        ctx = bases_registry.context(db, token, share_id, entry_id, write=True)
+        ctx = discussion_service.context(
+            db,
+            token,
+            share_id,
+            entry_id,
+            write=True,
+            entry_types={"file", "markdown"},
+            require_comment=False,
+        )
         definition, _view = view_for(db, ctx, payload.view_id, active=True)
-        if definition.content_sha256 != ctx.entry.record.get("hash"):
-            error(409, "base_definition_not_synced")
+        require_source(ctx, definition)
         result = dict(
             protocol_version=1,
             entry_id=ctx.entry.id,
@@ -298,16 +325,23 @@ def record_contexts(db, token, share_id, entry_id, payload):
     indistinguishable. The share lock fences permission changes for the entire
     batch; one inventory read and one rules read serve every requested record.
     """
-    from app.services import bases_registry, discussion_service
+    from app.services import discussion_service
 
     discussion_service.require_clean_session(db)
     try:
         if not enabled():
             error(409, "base_discussions_disabled")
-        ctx = bases_registry.context(db, token, share_id, entry_id, write=True)
+        ctx = discussion_service.context(
+            db,
+            token,
+            share_id,
+            entry_id,
+            write=True,
+            entry_types={"file", "markdown"},
+            require_comment=False,
+        )
         definition, _view = view_for(db, ctx, payload.view_id, active=True)
-        if definition.content_sha256 != ctx.entry.record.get("hash"):
-            error(409, "base_definition_not_synced")
+        require_source(ctx, definition)
         ids = [str(record_id) for record_id in payload.record_ids]
         records = {
             record.id: record

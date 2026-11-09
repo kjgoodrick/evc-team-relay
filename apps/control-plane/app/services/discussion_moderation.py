@@ -39,9 +39,9 @@ def aware(value):
 
 
 def view_for(db, ctx, thread):
-    if ctx.entry.record.get("type") != "file":
-        return None
     row = db.get(m.DiscussionAnchorRevision, (thread.id, thread.anchor_revision))
+    if row and row.payload.get("type") != "base" and ctx.entry.record.get("type") != "file":
+        return None
     return base_discussions.stored_anchor(row.payload if row else None).view_id
 
 

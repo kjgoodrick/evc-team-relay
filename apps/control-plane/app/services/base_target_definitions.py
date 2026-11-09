@@ -249,16 +249,23 @@ def public(row):
 
 
 def catalog(db, token, share_id, entry_id, payload):
-    from app.services import base_discussions, bases_registry, discussion_service
+    from app.services import base_discussions, discussion_service
 
     discussion_service.require_clean_session(db)
     try:
         if not base_discussions.enabled():
             base_discussions.error(409, "base_discussions_disabled")
-        ctx = bases_registry.context(db, token, share_id, entry_id, write=True)
+        ctx = discussion_service.context(
+            db,
+            token,
+            share_id,
+            entry_id,
+            write=True,
+            entry_types={"file", "markdown"},
+            require_comment=False,
+        )
         definition, view = base_discussions.view_for(db, ctx, payload.view_id, active=True)
-        if definition.content_sha256 != ctx.entry.record.get("hash"):
-            base_discussions.error(409, "base_definition_not_synced")
+        base_discussions.require_source(ctx, definition)
         if (
             payload.expected_revision is not None
             and payload.expected_revision != definition.revision

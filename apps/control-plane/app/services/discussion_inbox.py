@@ -501,6 +501,7 @@ def list_items(
                 break
             # No copied snippet: use the current, already-authorized message and
             # scope identifiers. The client fetches its body through the normal API.
+            base_anchor = base_discussions.authorize_thread(db, ctx, thread)
             items.append(
                 {
                     "thread_id": str(thread.id),
@@ -513,9 +514,7 @@ def list_items(
                     "reason": reason,
                     "last_sequence": item.last_sequence,
                     "activity_at": aware(item.activity_at),
-                    "view_id": str(base_discussions.authorize_thread(db, ctx, thread).view_id)
-                    if ctx.entry.record.get("type") == "file"
-                    else None,
+                    "view_id": str(base_anchor.view_id) if base_anchor is not None else None,
                     "subscription": pref,
                     **item_state(item),
                 }

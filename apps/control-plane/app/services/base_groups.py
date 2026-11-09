@@ -128,7 +128,7 @@ def _prior(db, ctx, payload, digest):
     if receipt.request_hash != digest:
         error(409, "operation_conflict")
     anchor = base_discussions.stored_anchor(receipt.result["anchor"])
-    if anchor.definition_id != base_discussions.definition_for(db, ctx).id:
+    if anchor.definition_id != base_discussions.view_for(db, ctx, anchor.view_id)[0].id:
         error(404, "target_unavailable")
     base_discussions.validate(db, ctx, anchor)
     return receipt.result
@@ -140,10 +140,7 @@ def _capture_context(db, ctx, payload):
     definition, view = base_discussions.view_for(db, ctx, payload.view_id, active=True)
     if definition.id != payload.definition_id or definition.generation != payload.generation:
         error(409, "anchor_generation_mismatch")
-    if not ctx.entry.path.lower().endswith(
-        ".base"
-    ) or definition.content_sha256 != ctx.entry.record.get("hash"):
-        error(409, "base_definition_not_synced")
+    base_discussions.require_source(ctx, definition)
     revision = db.get(m.BaseRegistryRevision, (definition.id, payload.registry_revision))
     if not revision or not any(
         v.get("id") == str(view.id) for v in revision.result.get("views", [])
@@ -256,7 +253,7 @@ def capture(db, token, share_id, entry_id, payload, restore_generation=None):
     digest = _request_hash(share_id, entry_id, payload)
     try:
         ctx = discussion_service.context(
-            db, token, share_id, entry_id, write=True, entry_types={"file"}
+            db, token, share_id, entry_id, write=True, entry_types={"file", "markdown"}
         )
         collaboration_restore.require_generation(ctx.share, restore_generation)
         prior = _prior(db, ctx, payload, digest)
@@ -277,7 +274,7 @@ def capture(db, token, share_id, entry_id, payload, restore_generation=None):
             )
         )
         ctx = discussion_service.context(
-            db, token, share_id, entry_id, write=True, entry_types={"file"}
+            db, token, share_id, entry_id, write=True, entry_types={"file", "markdown"}
         )
         collaboration_restore.require_generation(ctx.share, restore_generation)
         prior = _prior(db, ctx, payload, digest)
