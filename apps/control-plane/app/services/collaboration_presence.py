@@ -410,8 +410,11 @@ def authorize_location(db, user, location: SurfaceLocation) -> None:
         # materialize the saved configuration or view descriptors.
         definition, view = models.BaseDefinition, models.BaseView
         valid = bool(
-            entry.record.get("type") == "file"
-            and entry.path.lower().endswith(".base")
+            (
+                entry.record.get("type") == "markdown"
+                or entry.record.get("type") == "file"
+                and entry.path.lower().endswith(".base")
+            )
             and entry.collaboration_generation == location.generation
             and db.scalar(
                 select(view.id)
@@ -421,7 +424,14 @@ def authorize_location(db, user, location: SurfaceLocation) -> None:
                     definition.entry_id == entry.id,
                     definition.generation == location.generation,
                     definition.revision == location.registry_revision,
-                    definition.content_sha256 == entry.record.get("hash"),
+                    (
+                        definition.source_key != "file"
+                        if entry.record.get("type") == "markdown"
+                        else and_(
+                            definition.source_key == "file",
+                            definition.content_sha256 == entry.record.get("hash"),
+                        )
+                    ),
                     view.id == location.view_id,
                     view.state == "active",
                 )
@@ -637,7 +647,7 @@ def image_location(token: str, share_id: uuid.UUID, entry_id: uuid.UUID) -> Imag
 
 
 def base_context(
-    token: str, share_id: uuid.UUID, entry_id: uuid.UUID, base_target_version=1
+    token: str, share_id: uuid.UUID, entry_id: uuid.UUID, base_target_version=1, definition_id=None
 ) -> BasePresenceContext:
     """Read existing active identities only: no inspection, repair or object I/O.
 
@@ -653,7 +663,11 @@ def base_context(
         user = deps._get_user_from_token(db, token)
         share = share_service.get_share(db, share_id)
         entry = managed_service.authorize_entry(db, share, user, str(entry_id))
-        if entry.record.get("type") != "file" or not entry.path.lower().endswith(".base"):
+        inline = entry.record.get("type") == "markdown"
+        if (inline and definition_id is None) or (
+            not inline
+            and (entry.record.get("type") != "file" or not entry.path.lower().endswith(".base"))
+        ):
             raise HTTPException(403, "Location unavailable")
         definition, view = models.BaseDefinition, models.BaseView
         # One SQL statement pins descriptors and revision to the same database
@@ -674,7 +688,15 @@ def base_context(
             .where(
                 definition.entry_id == entry.id,
                 definition.generation == entry.collaboration_generation,
-                definition.content_sha256 == entry.record.get("hash"),
+                (
+                    and_(definition.source_key != "file", definition.id == definition_id)
+                    if inline
+                    else and_(
+                        definition.source_key == "file",
+                        definition.content_sha256 == entry.record.get("hash"),
+                    )
+                ),
+                *([definition.id == definition_id] if definition_id is not None else []),
             )
             .order_by(view.slot, view.id)
             .limit(65)

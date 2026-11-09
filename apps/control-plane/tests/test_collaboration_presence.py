@@ -3171,3 +3171,46 @@ def test_formula_group_presence_checks_gate_syntax_and_every_declared_input(
     db_session.commit()
     with pytest.raises(HTTPException):
         presence.authorize_base_state(db_session, team.viewer, location, state)
+
+
+def test_inline_base_presence_context_and_follow_preserve_view_identity(
+    client, db_session, team, surface_team
+):
+    s = surface_team
+    s.base.path = "Inline.md"
+    s.base.record = {"type": "markdown"}
+    s.definition.source_key = "a" * 64
+    s.definition.source_anchor = {"start": "AQ==", "end": "Ag=="}
+    db_session.commit()
+    params = {
+        "share_id": str(team.share.id),
+        "entry_id": s.base.id,
+        "definition_id": str(s.definition.id),
+    }
+    response = client.get(
+        "/v1/collaboration/base-context",
+        params=params,
+        headers={"Authorization": "Bearer " + team.tokens["viewer"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["definition_id"] == str(s.definition.id)
+    assert len(response.json()["views"]) == 2
+    assert base_context(client, team, s.base).status_code == 403
+    params["definition_id"] = str(uuid.uuid4())
+    assert (
+        client.get(
+            "/v1/collaboration/base-context",
+            params=params,
+            headers={"Authorization": "Bearer " + team.tokens["viewer"]},
+        ).status_code
+        == 403
+    )
+    with connected(client, team.tokens["owner"], protocol_version=2) as (publisher, ready):
+        with connected(client, team.tokens["viewer"], protocol_version=2) as (viewer, _):
+            location = s.locations[1]
+            publish(publisher, location)
+            subscription = follow(viewer, team.owner.id, ready, location)
+            assert recv(viewer) == {"type": "following", "subscription_id": subscription}
+            assert recv(viewer) == available(subscription, location)
+            publish(publisher, s.locations[2])
+            assert recv(viewer) == available(subscription, s.locations[2])

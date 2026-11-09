@@ -61,13 +61,14 @@ async def base_context(
     response: Response,
     token: str | None = Depends(deps.oauth2_scheme),
     base_target_version: int = Query(default=1, ge=1, le=3),
+    definition_id: uuid.UUID | None = None,
 ):
     if not enabled() or not presence.bases_registry.enabled():
         raise HTTPException(404, "Bases presence context disabled")
     if not token:
         raise HTTPException(401, "Missing credentials")
     context = await run_in_threadpool(
-        presence.base_context, token, share_id, entry_id, base_target_version
+        presence.base_context, token, share_id, entry_id, base_target_version, definition_id
     )
     response.headers["Cache-Control"] = "no-store"
     return context.model_dump(mode="json", exclude_none=True)
