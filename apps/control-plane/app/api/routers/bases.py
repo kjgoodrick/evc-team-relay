@@ -200,3 +200,14 @@ def inline_source(
     db: Session = Depends(get_db),
 ):
     return inline_base_source.inspect(db, token, share_id, entry_id, payload)
+
+
+@router.post("/inline-inspect")
+def inline_inspect(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: inline_base_source.InspectInlineSource,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return inline_base_source.inspect(db, token, share_id, entry_id, payload, persist=True)

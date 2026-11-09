@@ -923,13 +923,19 @@ class ManagedBaseReceipt(Base):
 
 class BaseDefinition(Base):
     __tablename__ = "collaboration_bases"
+    __table_args__ = (
+        UniqueConstraint("entry_id", "source_key", name="uq_collaboration_base_source"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     entry_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("managed_entries.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
     )
+    source_key: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="file", server_default="file"
+    )
+    source_anchor: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     generation: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)

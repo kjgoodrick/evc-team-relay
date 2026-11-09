@@ -67,7 +67,9 @@ def formula_groups_enabled():
 
 def definition_for(db, ctx):
     definition = db.scalar(
-        select(m.BaseDefinition).where(m.BaseDefinition.entry_id == ctx.entry.id)
+        select(m.BaseDefinition).where(
+            m.BaseDefinition.entry_id == ctx.entry.id, m.BaseDefinition.source_key == "file"
+        )
     )
     if not definition or definition.generation != ctx.entry.collaboration_generation:
         error()

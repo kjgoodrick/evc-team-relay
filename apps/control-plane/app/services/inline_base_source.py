@@ -201,16 +201,22 @@ class InspectInlineSource(BaseModel):
     source: InlineSourceRequest
 
 
-def inspect(db, token, share_id, entry_id, payload: InspectInlineSource):
-    """Read-only inspection for the upcoming inline definition registry.
+def inspect(db, token, share_id, entry_id, payload: InspectInlineSource, *, persist=False):
+    """Inspect verified source, optionally persisting its definition/view registry.
 
-    The response is verified configuration, not a registered discussion target.
+    Inspection requires read access and never changes the containing note.
     """
     from app.services import collaboration_restore, discussion_service
 
-    def context():
+    def context(write=False):
         return discussion_service.context(
-            db, token, share_id, entry_id, entry_types={"markdown"}, require_comment=False
+            db,
+            token,
+            share_id,
+            entry_id,
+            write=write,
+            entry_types={"markdown"},
+            require_comment=False,
         )
 
     try:
@@ -218,13 +224,26 @@ def inspect(db, token, share_id, entry_id, payload: InspectInlineSource):
         if ctx.entry.collaboration_generation != payload.generation:
             anchor_service.fail(409, "anchor_generation_mismatch")
         restore = ctx.share.collaboration_restore_generation
+        expected_revision = 0
+        if persist:
+            from app.services.inline_bases_registry import revision_for
+
+            expected_revision = revision_for(
+                db, ctx.entry.id, payload.source.identity(share_id, entry_id, payload.generation)
+            )
         db.commit()
         proof = observe(share_id, entry_id, payload.generation, payload.source)
-        ctx = context()
+        ctx = context(write=persist)
         collaboration_restore.require_generation(ctx.share, restore)
         if ctx.entry.collaboration_generation != payload.generation:
             anchor_service.fail(409, "anchor_generation_mismatch")
         proof.check(share_id, entry_id, payload.generation, payload.source)
+        if persist:
+            from app.services.inline_bases_registry import synchronize_verified
+
+            result = synchronize_verified(db, ctx, proof, payload.source, expected_revision)
+            db.commit()
+            return result
         result = {
             "protocol_version": 1,
             "entry_id": str(entry_id),

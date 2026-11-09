@@ -56,7 +56,9 @@ def context(db, token, share_id, entry_id, *, write=False, edit=False):
 
 def definition_for(db, ctx):
     definition = db.scalar(
-        select(m.BaseDefinition).where(m.BaseDefinition.entry_id == ctx.entry.id)
+        select(m.BaseDefinition).where(
+            m.BaseDefinition.entry_id == ctx.entry.id, m.BaseDefinition.source_key == "file"
+        )
     )
     if definition and definition.generation != ctx.entry.collaboration_generation:
         error(409, "base_generation_changed")
@@ -369,7 +371,9 @@ def repair_status(db, token, share_id, entry_id, payload):
         if (
             not ctx.entry.path.lower().endswith(".base")
             and db.scalar(
-                select(m.BaseDefinition.id).where(m.BaseDefinition.entry_id == ctx.entry.id)
+                select(m.BaseDefinition.id).where(
+                    m.BaseDefinition.entry_id == ctx.entry.id, m.BaseDefinition.source_key == "file"
+                )
             )
             is None
         ):
