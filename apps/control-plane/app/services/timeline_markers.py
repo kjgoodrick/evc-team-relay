@@ -1,6 +1,6 @@
 """Shared marker identity, editor-only CAS and immutable captured context.
 
-Definitions belong to one managed .base file; placements are explicit saved-view
+Definitions belong to one saved or inline Base; placements are explicit saved-view
 associations. Nothing reads or writes a client's local plugin settings. All
 transactions use the same authenticated share lock as discussions/inventory.
 """
@@ -22,6 +22,7 @@ from app.services import (
     base_target_definitions,
     bases_registry,
     collaboration_restore,
+    managed_service,
 )
 from app.services import discussion_service as discussions
 
@@ -42,9 +43,56 @@ def status_enabled():
     return bases_registry.enabled() and get_settings().collaboration_discussions_enabled
 
 
-def scope(db, token, share_id, entry_id, *, write=False):
-    ctx = bases_registry.context(db, token, share_id, entry_id, write=write, edit=write)
-    definition = base_discussions.definition_for(db, ctx)
+def scope(
+    db, token, share_id, entry_id, *, write=False, view_id=None, definition_id=None, marker_id=None
+):
+    ctx = discussions.context(
+        db,
+        token,
+        share_id,
+        entry_id,
+        write=write,
+        entry_types={"file", "markdown"},
+        require_comment=False,
+    )
+    if (
+        write
+        and managed_service.permission(
+            ctx.share, ctx.user, ctx.entry.path, managed_service.rules_for(db, ctx.share, ctx.user)
+        )
+        != "write"
+    ):
+        error(403, "base_editor_required")
+    if view_id is not None:
+        definition, _view = base_discussions.view_for(db, ctx, view_id)
+    elif definition_id is not None or marker_id is not None:
+        marker = db.get(m.BaseTimelineMarker, marker_id) if marker_id is not None else None
+        definition = (
+            db.get(m.BaseDefinition, marker.definition_id if marker else definition_id)
+            if marker or definition_id
+            else None
+        )
+        if (
+            definition is None
+            or definition.entry_id != ctx.entry.id
+            or definition.generation != ctx.entry.collaboration_generation
+            or (
+                definition.source_key == "file"
+                and (
+                    ctx.entry.record.get("type") != "file"
+                    or not ctx.entry.path.lower().endswith(".base")
+                )
+            )
+            or (
+                definition.source_key != "file"
+                and (ctx.entry.record.get("type") != "markdown" or not definition.source_anchor)
+            )
+        ):
+            error(404, "target_unavailable")
+    else:
+        if ctx.entry.record.get("type") != "file" or not ctx.entry.path.lower().endswith(".base"):
+            error(404, "target_unavailable")
+        definition = base_discussions.definition_for(db, ctx)
     return ctx, definition
 
 
@@ -117,7 +165,7 @@ def target(marker, placement):
 def list_markers(db, token, share_id, entry_id, payload):
     discussions.require_clean_session(db)
     try:
-        _ctx, definition = scope(db, token, share_id, entry_id)
+        _ctx, definition = scope(db, token, share_id, entry_id, view_id=payload.view_id)
         _catalog, revision = state(db, definition)
         if payload.expected_revision is not None and payload.expected_revision != revision:
             error(409, "timeline_marker_catalog_changed")
@@ -177,7 +225,7 @@ def list_markers(db, token, share_id, entry_id, payload):
 def read_marker(db, token, share_id, entry_id, marker_id):
     discussions.require_clean_session(db)
     try:
-        _ctx, definition = scope(db, token, share_id, entry_id)
+        _ctx, definition = scope(db, token, share_id, entry_id, marker_id=marker_id)
         marker = db.get(m.BaseTimelineMarker, marker_id)
         if marker is None or marker.definition_id != definition.id:
             error(404, "target_unavailable")
@@ -237,7 +285,11 @@ def command_status(db, token, share_id, entry_id, payload):
     payload = payload.model_copy(deep=True)
     digest = command_hash(payload)
     try:
-        ctx = bases_registry.context(db, token, share_id, entry_id)
+        ctx = discussions.context(
+            db, token, share_id, entry_id, entry_types={"file", "markdown"}, require_comment=False
+        )
+        if ctx.entry.record.get("type") == "file" and not ctx.entry.path.lower().endswith(".base"):
+            error(404, "target_unavailable")
         receipt = db.get(m.BaseTimelineMarkerReceipt, (ctx.user.id, payload.operation_id))
         result = dict(
             status="unknown", operation_id=str(payload.operation_id), entry_id=str(entry_id)
@@ -270,7 +322,9 @@ def apply_command(db, token, share_id, entry_id, payload, restore_generation=Non
     discussions.require_clean_session(db)
     request_hash = command_hash(payload)
     try:
-        ctx, definition = scope(db, token, share_id, entry_id, write=True)
+        ctx, definition = scope(
+            db, token, share_id, entry_id, write=True, definition_id=payload.definition_id
+        )
         collaboration_restore.require_generation(ctx.share, restore_generation)
         if payload.definition_id != definition.id or payload.generation != definition.generation:
             error(409, "base_generation_changed")
@@ -285,8 +339,7 @@ def apply_command(db, token, share_id, entry_id, payload, restore_generation=Non
             return response
         if not enabled():
             error(409, "timeline_markers_disabled")
-        if definition.content_sha256 != ctx.entry.record.get("hash"):
-            error(409, "base_definition_not_synced")
+        base_discussions.require_source(ctx, definition)
         if payload.registry_revision != definition.revision:
             error(409, "stale_base_revision")
         catalog, catalog_revision = state(db, definition)

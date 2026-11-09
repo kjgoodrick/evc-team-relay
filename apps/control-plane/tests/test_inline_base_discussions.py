@@ -108,3 +108,45 @@ def test_inline_formula_and_group_catalog_keeps_view_scope(client, targets, inli
     other = catalog(client, t, view_id=t.snapshot["views"][1]["id"])
     assert all(item["kind"] != "group" for item in other["targets"])
     assert page["computed_values"] is False
+
+
+def test_inline_timeline_markers_create_read_comment_and_archive(
+    client, targets, inline, monkeypatch
+):
+    from test_timeline_markers import archive, catalog, marker_path, mutate, put, thread
+
+    t = targets
+    monkeypatch.setattr(get_settings(), "collaboration_bases_timeline_ranges_enabled", True)
+    monkeypatch.setattr(get_settings(), "collaboration_bases_timeline_markers_enabled", True)
+    state, generation = inline
+    state["views"][0].update(
+        type="sabidurian-timeline", startDateProp="note.start", timeZone="America/Denver"
+    )
+    t.snapshot = request(client, t.w, generation).json()
+    t.captured = context(client, t.w, t.snapshot["views"][0]["id"])
+    payload = put(client, t)
+    mutate(client, t, payload, actor="reviewer", expected=403)
+    created = mutate(client, t, payload)
+    assert mutate(client, t, payload) == created
+    status = client.post(
+        marker_path(t) + "/commands/status", json=payload, headers=headers(t.w.tokens["owner"])
+    )
+    assert status.status_code == 200, status.text
+    assert status.json()["status"] == "accepted"
+    page = catalog(client, t)
+    assert len(page["markers"]) == 1
+    marker = created["marker"]
+    response = client.get(
+        marker_path(t) + "/" + marker["id"], headers=headers(t.w.tokens["reviewer"])
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["marker"]["id"] == marker["id"]
+    posted = send(client, t.w, thread(client, t))
+    assert (
+        get(client, t, f"/threads/{posted['thread_id']}")["anchor"]["target"]["type"]
+        == "timeline_marker"
+    )
+    other = request(client, t.w, generation, start="Aw==").json()
+    assert catalog(client, t, view_id=other["views"][0]["id"])["markers"] == []
+    mutate(client, t, archive(client, t, marker))
+    assert catalog(client, t)["markers"] == []
