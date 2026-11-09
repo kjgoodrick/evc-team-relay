@@ -343,7 +343,7 @@ allowed_token_types = ["server"]
 
             note, secret, second = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
             entries = [("Note.md", note), ("Budget.md", secret)]
-            if args.presence_locations:
+            if args.presence_locations or args.serve_seconds:
                 entries.append(("Second.md", second))
             managed_service.apply_batch(
                 db,
@@ -415,7 +415,7 @@ allowed_token_types = ["server"]
                 "note": note,
                 "canvas": canvas_id if args.document_restore else None,
                 "secret": secret,
-                "second": second if args.presence_locations else None,
+                "second": second if args.presence_locations or args.serve_seconds else None,
                 "image": image_id
                 if args.image_anchors or args.image_files or args.base_groups
                 else None,
