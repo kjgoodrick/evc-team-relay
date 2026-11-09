@@ -135,3 +135,33 @@ def test_late_different_configuration_cannot_roll_back_newer_registry(
     assert exc.value.detail["code"] == "stale_base_revision"
     db_session.commit()
     assert request(client, world, generation).json() == latest
+
+
+def test_inline_history_is_readable_by_definition_and_stays_isolated(client, world, inline):
+    state, generation = inline
+    first = request(client, world, generation).json()
+    state["views"] = [{"name": "Table", "type": "table"}]
+    updated = request(client, world, generation).json()
+    other = request(client, world, generation, start="Aw==").json()
+    path = f"/v1/collaboration/shares/{world.share.id}/entries/{world.entry.id}/bases/views"
+    result = client.get(
+        path,
+        headers=headers(world.tokens["reader"]),
+        params={"state": "archived", "definition_id": first["definition_id"]},
+    )
+    assert result.status_code == 200, result.text
+    assert [view["id"] for view in result.json()["views"]] == [first["views"][1]["id"]]
+    assert updated["definition_id"] == first["definition_id"]
+    result = client.get(
+        path,
+        headers=headers(world.tokens["reader"]),
+        params={"state": "archived", "definition_id": other["definition_id"]},
+    )
+    assert result.status_code == 200
+    assert result.json()["views"] == []
+    result = client.get(
+        path,
+        headers=headers(world.tokens["reader"]),
+        params={"state": "archived", "definition_id": str(uuid.uuid4())},
+    )
+    assert result.status_code == 404

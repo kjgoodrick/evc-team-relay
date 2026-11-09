@@ -185,10 +185,11 @@ def views(
     entry_id: uuid.UUID,
     state: Literal["unmatched", "archived"],
     after: uuid.UUID | None = None,
+    definition_id: uuid.UUID | None = None,
     token: str = Depends(credential),
     db: Session = Depends(get_db),
 ):
-    return service.list_views(db, token, share_id, entry_id, state, after)
+    return service.list_views(db, token, share_id, entry_id, state, after, definition_id)
 
 
 @router.post("/inline-source")

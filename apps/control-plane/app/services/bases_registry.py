@@ -410,10 +410,23 @@ def repair_status(db, token, share_id, entry_id, payload):
         raise
 
 
-def list_views(db, token, share_id, entry_id, state, after=None):
+def list_views(db, token, share_id, entry_id, state, after=None, definition_id=None):
     try:
-        ctx = context(db, token, share_id, entry_id)
-        definition = definition_for(db, ctx)
+        if definition_id is None:
+            ctx = context(db, token, share_id, entry_id)
+            definition = definition_for(db, ctx)
+        else:
+            ctx = discussion_service.context(
+                db, token, share_id, entry_id, entry_types={"markdown"}, require_comment=False
+            )
+            definition = db.get(m.BaseDefinition, definition_id)
+            if definition and (
+                definition.entry_id != ctx.entry.id
+                or definition.generation != ctx.entry.collaboration_generation
+                or definition.source_key == "file"
+                or not definition.source_anchor
+            ):
+                definition = None
         if not definition:
             error(404, "base_registry_unavailable")
         result = view_page(db, definition, state, after)
