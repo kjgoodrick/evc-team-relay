@@ -20,6 +20,7 @@ from app.services import (
     base_discussions,
     base_groups,
     base_target_definitions,
+    inline_base_source,
     timeline_axes,
     timeline_markers,
 )
@@ -188,3 +189,14 @@ def views(
     db: Session = Depends(get_db),
 ):
     return service.list_views(db, token, share_id, entry_id, state, after)
+
+
+@router.post("/inline-source")
+def inline_source(
+    share_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    payload: inline_base_source.InspectInlineSource,
+    token: str = Depends(credential),
+    db: Session = Depends(get_db),
+):
+    return inline_base_source.inspect(db, token, share_id, entry_id, payload)
