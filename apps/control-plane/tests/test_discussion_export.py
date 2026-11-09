@@ -164,7 +164,7 @@ def test_empty_scope_does_not_create_rows_and_disabled_or_denied_is_bounded(
     monkeypatch.setattr(get_settings(), "collaboration_export_enabled", True)
     response = client.get(route(w, w.other.id) + "/export", headers=headers(w.tokens["reader"]))
     assert response.status_code == 404
-    archive(client, w, expected=422, view_id=str(uuid.uuid4()))
+    archive(client, w, expected=404, view_id=str(uuid.uuid4()))
 
 
 def test_saved_view_exports_exclude_other_views_and_inaccessible_record_targets(

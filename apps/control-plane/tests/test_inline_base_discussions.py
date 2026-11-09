@@ -150,3 +150,37 @@ def test_inline_timeline_markers_create_read_comment_and_archive(
     assert catalog(client, t, view_id=other["views"][0]["id"])["markers"] == []
     mutate(client, t, archive(client, t, marker))
     assert catalog(client, t)["markers"] == []
+
+
+def test_inline_export_catalog_and_archives_keep_note_and_views_separate(
+    client, targets, monkeypatch
+):
+    from test_discussion_export import archive, catalog, records
+
+    monkeypatch.setattr(get_settings(), "collaboration_export_enabled", True)
+    t = targets
+    note = send(client, t.w, create(t.w, "Ordinary note discussion"))
+    first = create(t.w, "First inline view")
+    first["command"]["anchor"] = anchor(t, "view")
+    posted = send(client, t.w, first)
+    second = create(t.w, "Second inline view")
+    second["command"]["anchor"] = anchor(t, "view", second=True)
+    other = send(client, t.w, second)
+    scopes = catalog(client, t.w, "reviewer")["scopes"]
+    assert len(scopes) == 3
+    assert {(item["kind"], item["view_id"]) for item in scopes} == {
+        ("note", None),
+        ("base", t.captured["view_id"]),
+        ("base", t.snapshot["views"][1]["id"]),
+    }
+    ordinary = archive(client, t.w, "reviewer")
+    assert [item["id"] for item in records(ordinary, "thread")] == [note["thread_id"]]
+    for view_id, expected in (
+        (t.captured["view_id"], posted),
+        (t.snapshot["views"][1]["id"], other),
+    ):
+        exported = archive(client, t.w, "reviewer", view_id=view_id)
+        assert exported["entry"]["kind"] == "base"
+        assert exported["entry"]["path"] == t.w.entry.path
+        assert exported["view_id"] == view_id
+        assert [item["id"] for item in records(exported, "thread")] == [expected["thread_id"]]

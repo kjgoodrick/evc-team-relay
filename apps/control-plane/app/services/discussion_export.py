@@ -127,14 +127,24 @@ def _snapshot(db, token, share_id, entry_id, view_id):
             m.DiscussionThread.scope_id == scope.id,
             m.DiscussionThread.deleted.is_(False),
         )
-        if view_id is not None:
+        if view_id is not None or discussions.scope_kind(ctx) == "note":
             query = query.join(
                 m.DiscussionAnchorRevision,
                 and_(
                     m.DiscussionAnchorRevision.thread_id == m.DiscussionThread.id,
                     m.DiscussionAnchorRevision.revision == m.DiscussionThread.anchor_revision,
                 ),
-            ).where(m.DiscussionAnchorRevision.payload["view_id"].as_string() == str(view_id))
+            )
+            if view_id is not None:
+                query = query.where(
+                    m.DiscussionAnchorRevision.payload["view_id"].as_string() == str(view_id)
+                )
+            else:
+                # Inline views have separate portable export scopes even though
+                # their threads share the containing note's database scope.
+                query = query.where(
+                    m.DiscussionAnchorRevision.payload["type"].as_string() != "base"
+                )
         for thread in db.scalars(query.order_by(m.DiscussionThread.created_sequence)).yield_per(50):
             archive.scan()
             if base_discussions.can_read_thread(db, ctx, thread):
@@ -155,7 +165,7 @@ def _snapshot(db, token, share_id, entry_id, view_id):
         "entry": {
             "id": ctx.entry.id,
             "path": ctx.entry.path,
-            "kind": discussions.scope_kind(ctx),
+            "kind": "base" if view_id else discussions.scope_kind(ctx),
             "generation": str(ctx.entry.collaboration_generation)
             if ctx.entry.collaboration_generation
             else None,
@@ -329,14 +339,16 @@ def _catalog(db, token, share_id):
             scope.kind != discussions.scope_kind(ctx)
         ):
             continue
-        view_id = revision.payload.get("view_id") if scope.kind == "base" else None
+        view_id = (
+            revision.payload.get("view_id") if revision.payload.get("type") == "base" else None
+        )
         key = (entry.id, view_id)
         if key in found:
             continue
         if not base_discussions.can_read_thread(db, ctx, thread):
             continue
         view = None
-        if scope.kind == "base":
+        if view_id:
             # can_read_thread verified this exact view/definition lineage.
             view = db.get(m.BaseView, uuid.UUID(view_id))
         if len(found) >= MAX_CATALOG_SCOPES:
@@ -345,7 +357,7 @@ def _catalog(db, token, share_id):
             "scope_id": str(scope.id),
             "entry_id": entry.id,
             "path": entry.path,
-            "kind": scope.kind,
+            "kind": "base" if view_id else scope.kind,
             "view_id": view_id,
             "view_name": view.descriptor.get("name") if view else None,
             "view_state": view.state if view else None,
