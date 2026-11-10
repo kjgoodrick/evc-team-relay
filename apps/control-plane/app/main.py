@@ -180,6 +180,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
         discussions,
         managed,
         native_oauth,
+        shared_plugins,
     )
     from app.services.collaboration_presence import PresenceBroker
 
@@ -193,6 +194,7 @@ Get a token by calling `POST /auth/login` with valid credentials.
     app.include_router(discussion_pictures.router, prefix="/v1")
     app.include_router(native_oauth.router, prefix="/v1")
     app.include_router(managed.router, prefix="/v1")
+    app.include_router(shared_plugins.router, prefix="/v1")
     app.include_router(users.router, prefix="/v1")
     app.include_router(admin.router, prefix="/v1")
     app.include_router(admin_ui.router, prefix="/v1")  # Admin web UI

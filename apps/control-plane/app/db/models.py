@@ -177,6 +177,8 @@ class User(Base, TimestampMixin):
 
 
 class Share(Base, TimestampMixin):
+    plugin_setup_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    plugin_setup: Mapped[list] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
     __tablename__ = "shares"
 
     managed: Mapped[bool] = mapped_column(
