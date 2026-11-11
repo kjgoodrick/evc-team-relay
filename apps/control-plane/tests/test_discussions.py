@@ -176,7 +176,7 @@ def test_participant_directory_is_entry_authorized_and_pages_without_hidden_memb
         str(w.reviewer.id),
         str(w.reader.id),
     }
-    assert all(set(person) == {"id", "name"} and "@" not in person["name"] for person in seen)
+    assert all(set(person) == {"id", "name", "picture"} and "@" not in person["name"] for person in seen)
     assert (
         client.get(
             base(w, w.other.id) + "/participants", headers=headers(w.tokens["reviewer"])
@@ -1488,3 +1488,17 @@ def test_discussion_dates_include_utc_offset_after_database_round_trip(client, w
     for value in timestamps:
         parsed = datetime.fromisoformat(value)
         assert parsed.utcoffset() == timedelta(0), value
+
+
+def test_participant_profiles_use_identity_names_and_pictures(client, db_session, world, monkeypatch):
+    from app.services import oauth_service
+    seen = []
+    def profile(db, user):
+        seen.append(user.id)
+        return {"name": "Kyle Goodrick", "picture": "https://example.test/avatar.png"}
+    monkeypatch.setattr(oauth_service, "user_profile", profile)
+    response = client.get(base(world) + "/participants", headers=headers(world.tokens["reviewer"]))
+    assert response.status_code == 200
+    people = response.json()["participants"]
+    assert people and all(p["name"] == "Kyle Goodrick" and p["picture"] == "https://example.test/avatar.png" for p in people)
+    assert set(seen) == {world.owner.id, world.reviewer.id, world.reader.id}

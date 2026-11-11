@@ -156,7 +156,9 @@ def participants(db, token, share_id, entry_id, *, after=None, limit=50):
             ctx.share, user, ctx.entry.path, managed_service.rules_for(db, ctx.share, user)
         ) not in {"read", "write"}:
             continue
-        people.append({"id": str(user.id), "name": user.email.split("@")[0]})
+        from app.services.oauth_service import user_profile
+        profile = user_profile(db, user)
+        people.append({"id": str(user.id), "name": profile["name"] or user.email.split("@")[0], "picture": profile["picture"]})
         if len(people) > limit:
             break
     page = people[:limit]
