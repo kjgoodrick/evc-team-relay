@@ -1502,3 +1502,31 @@ def test_participant_profiles_use_identity_names_and_pictures(client, db_session
     people = response.json()["participants"]
     assert people and all(p["name"] == "Kyle Goodrick" and p["picture"] == "https://example.test/avatar.png" for p in people)
     assert set(seen) == {world.owner.id, world.reviewer.id, world.reader.id}
+
+
+def test_unicode_reactions_negotiate_without_breaking_older_clients(client, world):
+    w = world
+    result = send(client, w, create(w))
+    tid, mid = result["thread_id"], result["message_id"]
+    for emoji in ("🦊", "👩🏽‍💻", "🇨🇦"):
+        send(client, w, envelope(w, {
+            "type": "reaction.set", "thread_id": tid, "message_id": mid,
+            "emoji": emoji, "present": True,
+        }))
+    path = base(w) + f"/threads/{tid}/messages/{mid}"
+    old = client.get(path, headers=headers(w.tokens["reviewer"]))
+    assert old.status_code == 200
+    assert old.json()["message"]["reactions"] == []
+    new = client.get(path, headers={**headers(w.tokens["reviewer"]), "X-Relay-Reaction-Catalog": "unicode-16.0"})
+    assert {r["emoji"] for r in new.json()["message"]["reactions"]} == {"🦊", "👩🏽‍💻", "🇨🇦"}
+    again = client.get(path, headers=headers(w.tokens["reviewer"]))
+    assert again.json()["message"]["reactions"] == []
+
+
+def test_reaction_catalog_rejects_arbitrary_text():
+    from app.schemas.discussions import ReactionSet, VALID_REACTIONS
+    from pydantic import ValidationError
+    assert len(VALID_REACTIONS) > 3000
+    for invalid in ("hello", "😀😀", "<script>", "__proto__", "", "\u200d"):
+        with pytest.raises(ValidationError):
+            ReactionSet(type="reaction.set", thread_id=uuid.uuid4(), message_id=uuid.uuid4(), emoji=invalid, present=True)

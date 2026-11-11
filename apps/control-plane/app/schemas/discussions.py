@@ -4,6 +4,7 @@ import base64
 import binascii
 import json
 import uuid
+from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -533,26 +534,24 @@ class MessageDelete(StrictModel):
     reason: str | None = Field(default=None, min_length=1, max_length=512)
 
 
-REACTION_KEYS = (
-    "thumbs_up",
-    "thumbs_down",
-    "heart",
-    "laugh",
-    "celebrate",
-    "eyes",
-    "question",
-    "check",
-)
+# Keep discovery compact; clients negotiate the expanded catalog separately.
+REACTION_KEYS = ("thumbs_up", "thumbs_down", "heart", "laugh", "celebrate", "eyes", "question", "check")
+VALID_REACTIONS = frozenset(json.loads(Path(__file__).with_name("reaction_emoji.json").read_text()))
 
 
 class ReactionSet(StrictModel):
     type: Literal["reaction.set"]
     thread_id: uuid.UUID
     message_id: uuid.UUID
-    emoji: Literal[
-        "thumbs_up", "thumbs_down", "heart", "laugh", "celebrate", "eyes", "question", "check"
-    ]
+    emoji: str = Field(strict=True, max_length=32)
     present: StrictBool
+
+    @field_validator("emoji")
+    @classmethod
+    def valid_emoji(cls, value):
+        if value not in VALID_REACTIONS:
+            raise ValueError("Choose a supported emoji")
+        return value
 
 
 class ThreadState(StrictModel):

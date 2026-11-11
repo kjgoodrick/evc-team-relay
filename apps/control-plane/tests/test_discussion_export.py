@@ -459,3 +459,14 @@ def test_catalog_limits_fail_without_partial_results_and_release_capacity(
     assert catalog(client, world, expected=413)["code"] == "discussion_export_limit"
     monkeypatch.setattr(export, setting, before)
     assert len(catalog(client, world)["scopes"]) == 1
+
+
+def test_unicode_export_requires_capable_client_without_silently_dropping_reactions(client, world):
+    w = world
+    result = send(client, w, create(w))
+    send(client, w, envelope(w, {"type": "reaction.set", "thread_id": result["thread_id"],
+        "message_id": result["message_id"], "emoji": "🦊", "present": True}))
+    assert client.get(route(w) + "/export", headers=headers(w.tokens["reader"])).status_code == 409
+    response = client.get(route(w) + "/export", headers={**headers(w.tokens["reader"]), "X-Relay-Reaction-Catalog": "unicode-16.0"})
+    assert response.status_code == 200
+    assert '🦊' in response.text

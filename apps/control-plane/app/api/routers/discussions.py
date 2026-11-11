@@ -86,7 +86,14 @@ class BoundedDiscussionRoute(APIRoute):
                 # Keep comment bodies out of errors, including invalid Unicode.
                 raise HTTPException(422, {"code": "invalid_command"}) from None
 
-        return bounded
+        async def negotiated(request: Request):
+            token = service.unicode_reactions.set(request.headers.get("X-Relay-Reaction-Catalog") == "unicode-16.0")
+            try:
+                return await bounded(request)
+            finally:
+                service.unicode_reactions.reset(token)
+
+        return negotiated
 
 
 def require_preview():

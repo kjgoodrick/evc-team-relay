@@ -160,6 +160,7 @@ def capabilities(
         "discussion_body_version": 1,
         "discussion_session_required": True,
         "reaction_keys": REACTION_KEYS,
+        "reaction_catalog": "unicode-16.0",
         "discussion_limits": {
             "message_bytes": 32768,
             "command_bytes": 256 * 1024 if anchor_service.enabled() else 65536,

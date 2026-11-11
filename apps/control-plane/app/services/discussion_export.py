@@ -258,6 +258,8 @@ def _thread(db, ctx, thread, archive):
         .group_by(m.DiscussionReaction.message_id, m.DiscussionReaction.emoji)
         .order_by(m.DiscussionReaction.message_id, m.DiscussionReaction.emoji)
     ).yield_per(50):
+        if not discussions.unicode_reactions.get() and emoji not in discussions.s.REACTION_KEYS:
+            discussions.error(409, "client_update_required_for_emoji_export")
         archive.append(
             "reaction", message_id=str(message_id), emoji=emoji, count=total, mine=bool(mine)
         )

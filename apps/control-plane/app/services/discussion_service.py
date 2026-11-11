@@ -12,6 +12,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -34,6 +35,9 @@ from app.services import (
     discussion_reattachment,
     managed_service,
 )
+
+
+unicode_reactions = ContextVar("discussion_unicode_reactions", default=True)
 
 
 def error(status: int, code: str):
@@ -666,6 +670,11 @@ def _apply_command(
             reaction = db.get(m.DiscussionReaction, (message.id, ctx.user.id, command.emoji))
             changed = (reaction is not None) != command.present
             if command.present and reaction is None:
+                existing = set(db.scalars(select(m.DiscussionReaction.emoji).where(
+                    m.DiscussionReaction.message_id == message.id
+                ).distinct()))
+                if command.emoji not in existing and len(existing) >= 64:
+                    error(409, "reaction_limit_reached")
                 db.add(
                     m.DiscussionReaction(
                         message_id=message.id, user_id=ctx.user.id, emoji=command.emoji
@@ -883,6 +892,8 @@ def message_data(db, ctx, rows):
             .group_by(m.DiscussionReaction.message_id, m.DiscussionReaction.emoji)
             .order_by(m.DiscussionReaction.emoji)
         ):
+            if not unicode_reactions.get() and emoji not in s.REACTION_KEYS:
+                continue
             reactions.setdefault(message_id, []).append(
                 {"emoji": emoji, "count": total, "mine": bool(mine)}
             )

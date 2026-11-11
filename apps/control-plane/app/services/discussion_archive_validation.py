@@ -431,7 +431,7 @@ def _snapshot(value, manifest):
             key = (row.get("message_id"), row.get("emoji"))
             require(
                 identifier(key[0])
-                and key[1] in schema.REACTION_KEYS
+                and isinstance(key[1], str) and key[1] in schema.VALID_REACTIONS
                 and key not in reactions
                 and number(row.get("count"), positive=True)
                 and type(row.get("mine")) is bool
